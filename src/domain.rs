@@ -68,6 +68,22 @@ pub struct ImportTrackInput {
     pub track_number: Option<u32>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CatalogReleaseInput {
+    pub title: String,
+    pub year: Option<i32>,
+    pub artists: Vec<ArtistCreditInput>,
+    pub tracks: Vec<CatalogTrackInput>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatalogTrackInput {
+    pub title: String,
+    pub artists: Vec<ArtistCreditInput>,
+    pub disc_number: Option<u32>,
+    pub track_number: Option<u32>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImportedRelease {
     pub release_id: ReleaseId,
@@ -97,6 +113,7 @@ pub struct TrackSearchResult {
     pub title: String,
     pub release_title: String,
     pub artist_names: String,
+    pub year: Option<i32>,
     pub available: bool,
 }
 

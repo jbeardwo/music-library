@@ -4,8 +4,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use thiserror::Error;
 
 use crate::domain::{
-    ArtistCreditInput, ArtistId, DiscoveryCandidate, ImportReleaseRequest, ImportedRelease,
-    ObservedMetadata, ReleaseId, RootId, SearchRequest, SourceId, TrackId, TrackSearchResult,
+    ArtistCreditInput, ArtistId, CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest,
+    ImportedRelease, ObservedMetadata, ReleaseId, RootId, SearchRequest, SourceId, TrackId,
+    TrackSearchResult,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
@@ -347,6 +348,72 @@ impl Store {
         })
     }
 
+    pub fn create_catalog_release(
+        &mut self,
+        input: &CatalogReleaseInput,
+    ) -> Result<ImportedRelease> {
+        if input.tracks.is_empty() {
+            return Err(Error::Invalid(
+                "a catalog Release needs at least one Track".into(),
+            ));
+        }
+
+        let tx = self.connection.transaction()?;
+        let release_id = ReleaseId::new();
+        tx.execute("INSERT INTO release(id) VALUES (?1)", [release_id.as_ref()])?;
+        tx.execute(
+            "INSERT INTO release_application_metadata(release_id, title, year)
+             VALUES (?1, ?2, ?3)",
+            params![release_id.as_ref(), input.title, input.year],
+        )?;
+        insert_credits(
+            &tx,
+            "release_artist_credit",
+            release_id.as_ref(),
+            &input.artists,
+        )?;
+
+        let mut track_ids = Vec::with_capacity(input.tracks.len());
+        for track in &input.tracks {
+            let track_id = TrackId::new();
+            tx.execute(
+                "INSERT INTO track(id, release_id, disc_number, track_number)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    track_id.as_ref(),
+                    release_id.as_ref(),
+                    track.disc_number,
+                    track.track_number
+                ],
+            )?;
+            tx.execute(
+                "INSERT INTO track_application_metadata(track_id, title) VALUES (?1, ?2)",
+                params![track_id.as_ref(), track.title],
+            )?;
+            insert_credits(
+                &tx,
+                "track_artist_credit",
+                track_id.as_ref(),
+                &track.artists,
+            )?;
+            refresh_effective_track_tx(&tx, &track_id)?;
+            track_ids.push(track_id);
+        }
+        tx.commit()?;
+
+        Ok(ImportedRelease {
+            release_id,
+            track_ids,
+        })
+    }
+
+    pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT OR IGNORE INTO library_membership(track_id) VALUES (?1)",
+            [track_id.as_ref()],
+        )? > 0)
+    }
+
     pub fn remove_from_library(&mut self, track_id: &TrackId) -> Result<bool> {
         Ok(self.connection.execute(
             "DELETE FROM library_membership WHERE track_id = ?1",
@@ -393,7 +460,7 @@ impl Store {
         let artist_id = request.artist_id.as_ref().map(AsRef::as_ref);
         let fts_query = fts_prefix_query(&request.text);
         let mut statement = self.connection.prepare(
-            "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names,
+            "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names, e.year,
                     EXISTS(
                         SELECT 1 FROM track_source ts
                         JOIN local_file_observation l ON l.source_id = ts.source_id
@@ -436,7 +503,8 @@ impl Store {
                     title: row.get(2)?,
                     release_title: row.get(3)?,
                     artist_names: row.get(4)?,
-                    available: row.get(5)?,
+                    year: row.get(5)?,
+                    available: row.get(6)?,
                 })
             },
         )?;

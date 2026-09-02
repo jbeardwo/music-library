@@ -1,13 +1,13 @@
 use std::path::Path;
 
 use crate::domain::{
-    DiscoveryCandidate, ImportReleaseRequest, ImportedRelease, RootId, ScanReport, SearchRequest,
-    SourceId, TrackId, TrackSearchResult,
+    CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest, ImportedRelease, RootId,
+    ScanReport, SearchRequest, SourceId, TrackId, TrackSearchResult,
 };
 use crate::filesystem::{MetadataExtractor, scan};
 use crate::storage::{Result, Store};
 
-/// Frontend-independent entry point for product operations in the first slice.
+/// Frontend-independent entry point for backend product operations.
 pub struct Library {
     store: Store,
 }
@@ -47,6 +47,19 @@ impl Library {
 
     pub fn import_release(&mut self, request: &ImportReleaseRequest) -> Result<ImportedRelease> {
         self.store.import_release(request)
+    }
+
+    /// Creates a known Release and Tracks from structured metadata without
+    /// inventing any playable source or library membership.
+    pub fn create_catalog_release(
+        &mut self,
+        input: &CatalogReleaseInput,
+    ) -> Result<ImportedRelease> {
+        self.store.create_catalog_release(input)
+    }
+
+    pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {
+        self.store.add_to_library(track_id)
     }
 
     pub fn remove_from_library(&mut self, track_id: &TrackId) -> Result<bool> {
