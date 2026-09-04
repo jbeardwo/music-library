@@ -1,6 +1,7 @@
 use music_library::Library;
 use music_library::domain::{
-    ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput, SearchRequest,
+    ArtistCreditInput, ArtistId, CatalogReleaseInput, CatalogTrackInput, SearchCursor,
+    SearchRequest,
 };
 use rusqlite::Connection;
 use tempfile::TempDir;
@@ -10,6 +11,138 @@ fn credit(name: &str, role: &str) -> ArtistCreditInput {
         name: name.into(),
         role: Some(role.into()),
     }
+}
+
+#[test]
+fn release_filter_preserves_search_and_keyset_ordering() {
+    let temp = TempDir::new().unwrap();
+    let database_path = temp.path().join("release-filter.sqlite");
+    let mut library = Library::open(&database_path).unwrap();
+    let target = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Target Edition".into(),
+            year: Some(2001),
+            artists: vec![credit("Release Artist", "primary")],
+            tracks: vec![
+                CatalogTrackInput {
+                    title: "Alpha Match".into(),
+                    artists: vec![credit("First Artist", "primary")],
+                    disc_number: Some(1),
+                    track_number: Some(1),
+                },
+                CatalogTrackInput {
+                    title: "Alpha Match".into(),
+                    artists: vec![credit("Second Artist", "primary")],
+                    disc_number: Some(1),
+                    track_number: Some(2),
+                },
+                CatalogTrackInput {
+                    title: "Zeta Match".into(),
+                    artists: vec![credit("Third Artist", "primary")],
+                    disc_number: Some(1),
+                    track_number: Some(3),
+                },
+                CatalogTrackInput {
+                    title: "Excluded Nonmember".into(),
+                    artists: vec![credit("Fourth Artist", "primary")],
+                    disc_number: Some(1),
+                    track_number: Some(4),
+                },
+            ],
+        })
+        .unwrap();
+    let other = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Other Edition".into(),
+            year: None,
+            artists: Vec::new(),
+            tracks: vec![CatalogTrackInput {
+                title: "Alpha Match".into(),
+                artists: vec![credit("Other Artist", "primary")],
+                disc_number: Some(1),
+                track_number: Some(1),
+            }],
+        })
+        .unwrap();
+    for track_id in target.track_ids.iter().take(3).chain(&other.track_ids) {
+        library.add_to_library(track_id).unwrap();
+    }
+
+    let expected = library
+        .search(&SearchRequest {
+            release_id: Some(target.release_id.clone()),
+            availability: Some(false),
+            limit: 20,
+            ..SearchRequest::default()
+        })
+        .unwrap();
+    assert_eq!(expected.len(), 3);
+    assert!(expected.windows(2).all(|pair| {
+        (pair[0].title.as_str(), pair[0].track_id.as_ref())
+            < (pair[1].title.as_str(), pair[1].track_id.as_ref())
+    }));
+
+    let filtered_match = library
+        .search(&SearchRequest {
+            text: "Alpha".into(),
+            release_id: Some(target.release_id.clone()),
+            availability: Some(false),
+            limit: 20,
+            ..SearchRequest::default()
+        })
+        .unwrap();
+    assert_eq!(filtered_match.len(), 2);
+    assert!(
+        filtered_match
+            .iter()
+            .all(|track| track.release_id == target.release_id)
+    );
+
+    let database = Connection::open(&database_path).unwrap();
+    let second_artist = ArtistId(
+        database
+            .query_row(
+                "SELECT id FROM artist WHERE name = 'Second Artist'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap(),
+    );
+    let artist_filtered = library
+        .search(&SearchRequest {
+            text: "Alpha".into(),
+            release_id: Some(target.release_id.clone()),
+            artist_id: Some(second_artist),
+            availability: Some(false),
+            limit: 20,
+            ..SearchRequest::default()
+        })
+        .unwrap();
+    assert_eq!(artist_filtered.len(), 1);
+    assert_eq!(artist_filtered[0].artist_names, "Second Artist");
+
+    let mut paged = Vec::new();
+    let mut after = None;
+    loop {
+        let page = library
+            .search(&SearchRequest {
+                release_id: Some(target.release_id.clone()),
+                availability: Some(false),
+                after: after.clone(),
+                limit: 1,
+                ..SearchRequest::default()
+            })
+            .unwrap();
+        let Some(last) = page.last() else {
+            break;
+        };
+        after = Some(SearchCursor {
+            title: last.title.clone(),
+            track_id: last.track_id.clone(),
+        });
+        paged.extend(page);
+    }
+    assert_eq!(paged, expected);
 }
 
 #[test]

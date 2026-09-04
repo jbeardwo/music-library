@@ -459,6 +459,50 @@ impl Store {
         let release_id = request.release_id.as_ref().map(AsRef::as_ref);
         let artist_id = request.artist_id.as_ref().map(AsRef::as_ref);
         let fts_query = fts_prefix_query(&request.text);
+        if let Some(release_id) = release_id {
+            let mut statement = self.connection.prepare(
+                "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names, e.year,
+                        EXISTS(
+                            SELECT 1 FROM track_source ts
+                            JOIN local_file_observation l ON l.source_id = ts.source_id
+                            WHERE ts.track_id = t.id AND l.available = 1
+                        ) AS available
+                 FROM track t
+                 JOIN effective_track_metadata e ON e.track_id = t.id
+                 JOIN library_membership lm ON lm.track_id = t.id
+                 WHERE t.release_id = ?1
+                   AND (?2 = '' OR e.rowid IN (
+                           SELECT rowid FROM track_search WHERE track_search MATCH ?2
+                       ))
+                   AND (?3 IS NULL OR EXISTS (
+                           SELECT 1 FROM track_artist_credit tac
+                           WHERE tac.track_id = t.id AND tac.artist_id = ?3
+                       ))
+                   AND (?4 IS NULL OR EXISTS(
+                           SELECT 1 FROM track_source ts
+                           JOIN local_file_observation l ON l.source_id = ts.source_id
+                           WHERE ts.track_id = t.id AND l.available = 1
+                       ) = ?4)
+                   AND (?5 = '' OR e.title > ?5 OR (e.title = ?5 AND e.track_id > ?6))
+                 ORDER BY e.title, e.track_id
+                 LIMIT ?7",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    release_id,
+                    fts_query,
+                    artist_id,
+                    request.availability,
+                    cursor_title,
+                    cursor_id,
+                    limit
+                ],
+                map_search_result,
+            )?;
+            return rows
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(Into::into);
+        }
         let mut statement = self.connection.prepare(
             "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names, e.year,
                     EXISTS(
@@ -496,21 +540,23 @@ impl Store {
                 cursor_id,
                 limit
             ],
-            |row| {
-                Ok(TrackSearchResult {
-                    track_id: TrackId(row.get(0)?),
-                    release_id: ReleaseId(row.get(1)?),
-                    title: row.get(2)?,
-                    release_title: row.get(3)?,
-                    artist_names: row.get(4)?,
-                    year: row.get(5)?,
-                    available: row.get(6)?,
-                })
-            },
+            map_search_result,
         )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
+}
+
+fn map_search_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackSearchResult> {
+    Ok(TrackSearchResult {
+        track_id: TrackId(row.get(0)?),
+        release_id: ReleaseId(row.get(1)?),
+        title: row.get(2)?,
+        release_title: row.get(3)?,
+        artist_names: row.get(4)?,
+        year: row.get(5)?,
+        available: row.get(6)?,
+    })
 }
 
 fn bounded_limit(limit: u32) -> u32 {
