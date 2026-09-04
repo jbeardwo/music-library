@@ -117,10 +117,13 @@ fn create_fixture(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
 
          INSERT INTO track_application_metadata(track_id, title)
          SELECT printf('track-%06d', value),
-                CASE WHEN value % 10 = 0
-                     THEN printf('Ambient Track %06d', value)
-                     ELSE printf('Track %06d', value)
-                END
+                printf(
+                    'Song %06d Track%s%s%s',
+                    value,
+                    CASE WHEN value % 10000 = 0 THEN ' Quasar' ELSE '' END,
+                    CASE WHEN value % 200 = 0 THEN ' Nocturne' ELSE '' END,
+                    CASE WHEN value % 10 = 0 THEN ' Love' ELSE '' END
+                )
          FROM fixture_number;
 
          INSERT INTO track_artist_credit(track_id, position, artist_id, role)
@@ -180,6 +183,25 @@ fn validate_fixture(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if sources != 0 {
         return Err(format!("fixture unexpectedly contains {sources} playable sources").into());
     }
+    for (term, expected) in [
+        ("Quasar", 20),
+        ("Nocturne", 1_000),
+        ("Love", 20_000),
+        ("Track", TRACK_COUNT),
+    ] {
+        let query = format!("\"{term}\"*");
+        let actual: i64 = connection.query_row(
+            "SELECT count(*) FROM track_search WHERE track_search MATCH ?1",
+            [query],
+            |row| row.get(0),
+        )?;
+        if actual != expected {
+            return Err(format!(
+                "fixture search term {term} matches {actual} Tracks, expected {expected}"
+            )
+            .into());
+        }
+    }
     Ok(())
 }
 
@@ -211,21 +233,53 @@ fn run_measurements(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         })?;
         ensure_count("first library page", &rows, 50)
     })?;
-    measure("common FTS prefix (50)", ITERATIONS, || {
+    measure("rare FTS prefix (20 of 200k)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
-            text: "Ambient".into(),
+            text: "Quasar".into(),
+            limit: 50,
+            ..SearchRequest::default()
+        })?;
+        ensure_count("rare FTS prefix", &rows, 20)
+    })?;
+    measure("moderate FTS prefix (1k of 200k)", ITERATIONS, || {
+        let rows = library.search(&SearchRequest {
+            text: "Nocturne".into(),
+            limit: 50,
+            ..SearchRequest::default()
+        })?;
+        ensure_count("moderate FTS prefix", &rows, 50)
+    })?;
+    measure("common FTS prefix (20k of 200k)", ITERATIONS, || {
+        let rows = library.search(&SearchRequest {
+            text: "Love".into(),
             limit: 50,
             ..SearchRequest::default()
         })?;
         ensure_count("common FTS prefix", &rows, 50)
     })?;
-    measure("selective FTS query (1)", ITERATIONS, || {
+    measure("common plus unique FTS query (1)", ITERATIONS, || {
+        let rows = library.search(&SearchRequest {
+            text: "Love 123450".into(),
+            limit: 50,
+            ..SearchRequest::default()
+        })?;
+        ensure_count("common plus unique FTS query", &rows, 1)
+    })?;
+    measure("pathological FTS prefix (200k of 200k)", ITERATIONS, || {
+        let rows = library.search(&SearchRequest {
+            text: "Track".into(),
+            limit: 50,
+            ..SearchRequest::default()
+        })?;
+        ensure_count("pathological FTS prefix", &rows, 50)
+    })?;
+    measure("pathological plus unique FTS query (1)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
             text: "Track 123457".into(),
             limit: 50,
             ..SearchRequest::default()
         })?;
-        ensure_count("selective FTS query", &rows, 1)
+        ensure_count("pathological plus unique FTS query", &rows, 1)
     })?;
     measure("Release filter page (10)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
@@ -246,7 +300,7 @@ fn run_measurements(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
     measure("deep keyset page (50)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
             after: Some(SearchCursor {
-                title: "Track 100000".into(),
+                title: "Song 100000 Track Quasar Nocturne Love".into(),
                 track_id: TrackId("track-100000".into()),
             }),
             limit: 50,
