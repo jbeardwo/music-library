@@ -128,3 +128,79 @@ scanning the title index and can stop as soon as a page is full; it is strong fo
 moderate and broad result sets. The candidate-driven shape avoids global exhaustion for small
 result sets, but must sort all qualifying FTS candidates before returning an early page. It is not
 a suitable unconditional replacement. No production SQL or schema has been changed.
+
+## Release-Filtered Search Optimization
+
+The generic search shape expressed Release filtering as an optional predicate:
+
+```sql
+? IS NULL OR track.release_id = ?
+```
+
+On the 200,000-Track fixture, SQLite scanned `effective_track_metadata` globally through
+`effective_track_title`, looked up each Track and membership record, and exhausted the result set
+because the selected Release had only 10 Tracks for a 50-row page. The existing
+`track_release_order` index was not used to select candidates.
+
+The production search operation now uses a dedicated SQL shape when a Release ID is present. Its
+direct `track.release_id = ?` predicate starts with `track_release_order`, looks up effective and
+membership rows by their existing indexes, and uses a temporary B-tree to sort only the matched
+Release Tracks into stable `(title, Track ID)` order.
+
+The 2026-09-03 release-mode comparison measured:
+
+| Release-filter shape | Median | p95 |
+| --- | ---: | ---: |
+| Legacy optional predicate | 61.315 ms | 70.388 ms |
+| Dedicated direct predicate | 0.110 ms | 0.144 ms |
+
+The dedicated query retains free-text FTS, Artist, availability, membership, and keyset-cursor
+predicates. No schema or index change was needed.
+
+Separate diagnostics found equivalent global title-scan behavior for other selective optional
+filters. An Artist matching 200 Tracks took 281.185 ms to return its first 50 rows. An
+`available=true` query with no matches in the source-less fixture took 694.188 ms. Those paths were
+not changed as part of the Release-focused optimization.
+
+## Artist Candidate-Driven Query Experiment
+
+The fixture includes three additional deterministic ordered Track credits for Artist-filter
+diagnostics: a rare Artist credited on 20 Tracks, a moderate Artist credited on 200 Tracks, and a
+common Artist credited on 20,000 Tracks. They do not replace the fixture's ordinary primary
+credits. Rebuild the fixture, then run the comparison with:
+
+```sh
+cargo run --release --example database_performance -- --rebuild
+cargo run --release --example artist_query_comparison
+```
+
+The experiment compares the production title-driven query with a direct Artist-credit-driven
+shape. It asserts identical ordered results for first and subsequent keyset pages, and also checks
+combined FTS, Release, availability, and membership filtering. The 2026-09-03 comparison measured:
+
+| Artist cardinality and page | Current | Artist-driven |
+| --- | ---: | ---: |
+| Rare, 20 matches, first page | 106.959 ms | 0.099 ms |
+| Moderate, 200 matches, first page | 255.945 ms | 0.403 ms |
+| Common, 20,000 matches, first page | 3.384 ms | 33.780 ms |
+| Rare, cursor halfway through library | 573.963 ms | 0.100 ms |
+| Moderate, cursor at 75% of library | 295.899 ms | 0.334 ms |
+| Common, cursor at 95% of library | 18.066 ms | 22.973 ms |
+
+The production plan scans `effective_track_title` in output order and performs a correlated probe
+of `track_artist_credit_artist` for each candidate Track. Its cost therefore depends on how much of
+the globally ordered library it must inspect before filling the page. A sparse Artist can require a
+large scan or full exhaustion, while a common Artist fills an early page quickly without sorting.
+
+The candidate-driven plan searches `track_artist_credit_artist` directly by Artist ID, performs
+indexed point lookups for Track, effective metadata, and membership, then uses temporary B-trees
+to de-duplicate Tracks and establish stable `(title, Track ID)` ordering. De-duplication preserves
+the production behavior if one Artist occupies multiple credit positions on a Track. Candidate
+work and sorting grow with the Artist's total cardinality. The existing indexes support this plan;
+no schema change is needed.
+
+This is a meaningful execution-strategy crossover, not one universally superior query. An
+unconditional Artist-driven production shape would fix sparse Artists but regress common-Artist
+first pages substantially. Production SQL remains unchanged pending evidence that an adaptive or
+explicitly selected strategy is worth its complexity. The availability predicate remains unchanged
+and was only checked for semantic equivalence in this experiment.
