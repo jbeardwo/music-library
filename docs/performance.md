@@ -128,6 +128,9 @@ scanning the title index and can stop as soon as a page is full; it is strong fo
 moderate and broad result sets. The candidate-driven shape avoids global exhaustion for small
 result sets, but must sort all qualifying FTS candidates before returning an early page. It is not
 a suitable unconditional replacement. No production SQL or schema has been changed.
+SQLite's [query-planning discussion of searching and sorting](https://www.sqlite.org/queryplanner.html)
+explains the competing costs of selective lookups followed by sorting versus scanning an index in
+`ORDER BY` order. This is the tradeoff measured here and in the Artist and availability experiments.
 
 ## Release-Filtered Search Optimization
 
@@ -297,6 +300,12 @@ universal: for a rare availability set after a deep cursor, repeated per-Track s
 `available=false` results also require exhausting the outer Track set. Correcting the inner join
 order therefore does not remove the execution-strategy crossover.
 
+[Navidrome issue #4592](https://github.com/navidrome/navidrome/issues/4592) reports related prior art:
+adding `missing=false` selected a boolean-filter index plus a temporary sort instead of an index
+preserving song order, slowing the query. It supports checking availability filters together with
+`ORDER BY`; our Track-first fix follows our own correlated-subquery measurements, rather than
+copying Navidrome's schema or its reported index-removal workaround.
+
 For `available=false`, the prototype uses the availability index to create a list subquery with a
 Bloom filter, then scans in title order and excludes available Track IDs. It was faster throughout
 the unstructured-filter matrix. However, materializing a large available set can conflict with a
@@ -322,10 +331,13 @@ WHERE ts.track_id = t.id AND l.source_id = ts.source_id AND l.available = 1
 ```
 
 This intentionally constrains SQLite join order because measurements demonstrated a severe planner
-mischoice. [SQLite's query-planner documentation, section 7.1.2](https://www.sqlite.org/optoverview.html#manual_control_of_query_plans_using_cross_join)
+mischoice. [SQLite Query Optimizer Overview, section 7.1.2](https://www.sqlite.org/optoverview.html#manual_control_of_query_plans_using_cross_join)
 is the authority: SQLite does not reorder the two sides of a `CROSS JOIN`. An ordinary inner join,
 even written with `track_source` first, does not impose that ordering. The association predicate is
 retained, so this does not generate an unconstrained Cartesian product.
+The [Next-Generation Query Planner discussion](https://www.sqlite.org/queryplanner-ng.html)
+also documents this loop-order mechanism and cautions against routine manual planner hints.
+Our constraint is specific to the measured inner-subquery mischoice, not a general query policy.
 
 The observed inner plans on bundled SQLite 3.53.2 are:
 
@@ -435,6 +447,10 @@ from the OS filesystem cache. Repeating a query or warming the OS cache could no
 starved SQLite cache. No system caches were flushed and no cold-disk performance claim is made.
 
 ### Corrected methodology
+
+The page-cache contention finding is project-specific evidence from our measurements with this
+SQLite build and workload. It should not be generalized to all SQLite builds or multi-connection
+workloads; the source reference explains the mechanism behind our observed result.
 
 Run the audit against the existing deterministic fixture:
 
