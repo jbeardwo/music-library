@@ -38,6 +38,20 @@ pub struct ObservedMetadata {
     pub format: Option<String>,
 }
 
+/// A resolved source snapshot, separate from durable Track identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PlayableSource {
+    pub source_id: SourceId,
+    pub location: SourceLocation,
+}
+
+/// Source adapters supply engine input here. Only the existing local adapter is implemented.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum SourceLocation {
+    LocalFile(PathBuf),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryCandidate {
     pub source_id: SourceId,

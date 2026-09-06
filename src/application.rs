@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use crate::domain::{
-    CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest, ImportedRelease, RootId,
-    ScanReport, SearchRequest, SourceId, TrackId, TrackSearchResult,
+    CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest, ImportedRelease, PlayableSource,
+    RootId, ScanReport, SearchRequest, SourceId, TrackId, TrackSearchResult,
 };
 use crate::filesystem::{MetadataExtractor, scan};
 use crate::storage::{Result, Store};
@@ -72,6 +72,12 @@ impl Library {
 
     pub fn clear_track_title_override(&mut self, track_id: &TrackId) -> Result<bool> {
         self.store.clear_track_title_override(track_id)
+    }
+
+    /// Select the available source with the smallest opaque ID in SQLite binary order.
+    /// Availability is an observation; opening the source may still fail in the engine.
+    pub fn available_playback_source(&self, track_id: &TrackId) -> Result<Option<PlayableSource>> {
+        self.store.available_playback_source(track_id)
     }
 
     pub fn search(&self, request: &SearchRequest) -> Result<Vec<TrackSearchResult>> {

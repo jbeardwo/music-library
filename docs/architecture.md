@@ -429,7 +429,7 @@ Likely operations include:
 * Clear metadata overrides.
 * Search the library.
 * Reconcile known sources.
-* Later, control queue and playback.
+* Control the in-memory queue and playback.
 
 These operations should accept and return bounded plain data structures.
 
@@ -467,6 +467,56 @@ Do not commit to GStreamer or another engine yet.
 Do not build a generalized playback plugin framework before requirements justify it.
 
 A small engine adapter should be enough to prototype competing playback implementations later.
+
+The initial backend slice implements `playback::Playback<E>`, which owns an engine and
+an in-memory `PlaybackState` (Track-ID queue, position, status, and resolved source).
+Callers observe state through an immutable snapshot reference and issue commands;
+no frontend types or SQLite session persistence are involved. Queue entries may
+repeat and need not be library members.
+
+`Library::available_playback_source` resolves through Track/source associations.
+It selects the available supported source with the smallest opaque source ID in
+SQLite binary order. This is a deterministic initial rule, not a preference or
+fallback policy. `PlayableSource` carries source identity and a `SourceLocation`;
+the existing local-file adapter is the only implemented location variant. Tracks
+remain independent of paths. No available supported source produces an explicit
+error without changing queue contents, membership, or metadata. The attempted
+entry remains selected; prior playback is stopped so it cannot be mistaken for
+playback of that entry. Successful stop leaves status `Stopped` with the error
+returned to the caller; an engine stop failure instead leaves status `Failed`.
+Availability is a stored observation; opening a source can still fail.
+
+The synchronous `PlaybackEngine` boundary accepts a resolved source for `start`
+(replacing the previous input and starting from the beginning), plus `pause`,
+`resume`, and `stop`. Tests use a fake engine; no audio output is integrated.
+
+* Setting a queue stops playback and selects its first entry without starting it.
+* Enqueue appends one Track without disturbing playback; appending to an empty
+  queue selects position zero. Duplicate IDs remain distinct queue entries.
+* Clear stops playback, empties the queue, and clears position/source. A failed
+  engine stop retains the queue and position and reports failure; retry is explicit.
+* Play starts the selected entry, resumes an already loaded paused input, or is
+  a no-op while playing. Resume does not resolve the source again.
+* Pause affects playing input; stop clears the loaded source and retains the
+  queue and position. Repeated pause/stop commands are harmless.
+* Next/previous select and attempt the neighboring entry, including from `Failed`.
+  Position records the attempted entry even when resolution, start, or recovery
+  fails, so another navigation command can move past it. All earlier queue entries
+  remain available to Previous; no listening-history subsystem is needed.
+* Previous at the first entry does nothing; next at the last stops and retains
+  the last position. Neither wraps nor silently skips an unavailable entry.
+  `can_next`/`can_previous` depend on position and length, never playback status.
+* An engine error preserves queue contents and the attempted selection, clears the
+  resolved source, and marks status `Failed`: actual output may be unknown. Play
+  and navigation perform a recovery stop internally before starting another input;
+  callers do not need a separate Stop command. If that stop fails, return its error.
+  Queue replacement/clear commit only after a successful stop.
+
+Before integrating a real engine, define threading and command acknowledgement,
+resource teardown, and delivery of asynchronous completion/errors (including
+rejecting events from replaced inputs). Automatic advancement on completion,
+seeking, richer source policy, and queue/session persistence remain deferred.
+
 
 ## Frontend Architecture
 

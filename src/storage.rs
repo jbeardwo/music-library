@@ -5,8 +5,8 @@ use thiserror::Error;
 
 use crate::domain::{
     ArtistCreditInput, ArtistId, CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest,
-    ImportedRelease, ObservedMetadata, ReleaseId, RootId, SearchRequest, SourceId, TrackId,
-    TrackSearchResult,
+    ImportedRelease, ObservedMetadata, PlayableSource, ReleaseId, RootId, SearchRequest, SourceId,
+    SourceLocation, TrackId, TrackSearchResult,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
@@ -442,6 +442,29 @@ impl Store {
         refresh_effective_track_tx(&tx, track_id)?;
         tx.commit()?;
         Ok(changed)
+    }
+
+    /// Resolve one available source using existing association indexes, independently of membership.
+    pub fn available_playback_source(&self, track_id: &TrackId) -> Result<Option<PlayableSource>> {
+        Ok(self
+            .connection
+            .query_row(
+                "SELECT ps.id, l.path
+             FROM track_source ts
+             CROSS JOIN playable_source ps ON ps.id = ts.source_id
+             CROSS JOIN local_file_observation l ON l.source_id = ps.id
+             WHERE ts.track_id = ?1 AND ps.kind = 'local_file' AND l.available = 1
+             ORDER BY ts.source_id COLLATE BINARY
+             LIMIT 1",
+                [track_id.as_ref()],
+                |row| {
+                    Ok(PlayableSource {
+                        source_id: SourceId(row.get(0)?),
+                        location: SourceLocation::LocalFile(bytes_to_path(row.get(1)?)),
+                    })
+                },
+            )
+            .optional()?)
     }
 
     pub fn search(&self, request: &SearchRequest) -> Result<Vec<TrackSearchResult>> {

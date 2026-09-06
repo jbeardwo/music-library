@@ -3,6 +3,7 @@
 pub mod application;
 pub mod domain;
 pub mod filesystem;
+pub mod playback;
 pub mod storage;
 
 pub use application::Library;
