@@ -445,6 +445,10 @@ impl Store {
     }
 
     pub fn search(&self, request: &SearchRequest) -> Result<Vec<TrackSearchResult>> {
+        // SQLite deliberately preserves CROSS JOIN order in every availability EXISTS
+        // below: probe this Track's associations before its local observations. An
+        // ordinary JOIN chose a global available-source scan per Track in measurements.
+        // See https://www.sqlite.org/optoverview.html#manual_control_of_query_plans_using_cross_join
         let limit = bounded_limit(request.limit);
         let cursor_title = request
             .after
@@ -464,8 +468,8 @@ impl Store {
                 "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names, e.year,
                         EXISTS(
                             SELECT 1 FROM track_source ts
-                            JOIN local_file_observation l ON l.source_id = ts.source_id
-                            WHERE ts.track_id = t.id AND l.available = 1
+                            CROSS JOIN local_file_observation l
+                            WHERE ts.track_id = t.id AND l.source_id = ts.source_id AND l.available = 1
                         ) AS available
                  FROM track t
                  JOIN effective_track_metadata e ON e.track_id = t.id
@@ -480,8 +484,8 @@ impl Store {
                        ))
                    AND (?4 IS NULL OR EXISTS(
                            SELECT 1 FROM track_source ts
-                           JOIN local_file_observation l ON l.source_id = ts.source_id
-                           WHERE ts.track_id = t.id AND l.available = 1
+                           CROSS JOIN local_file_observation l
+                           WHERE ts.track_id = t.id AND l.source_id = ts.source_id AND l.available = 1
                        ) = ?4)
                    AND (?5 = '' OR e.title > ?5 OR (e.title = ?5 AND e.track_id > ?6))
                  ORDER BY e.title, e.track_id
@@ -507,8 +511,8 @@ impl Store {
             "SELECT e.track_id, t.release_id, e.title, e.release_title, e.artist_names, e.year,
                     EXISTS(
                         SELECT 1 FROM track_source ts
-                        JOIN local_file_observation l ON l.source_id = ts.source_id
-                        WHERE ts.track_id = t.id AND l.available = 1
+                        CROSS JOIN local_file_observation l
+                        WHERE ts.track_id = t.id AND l.source_id = ts.source_id AND l.available = 1
                     ) AS available
              FROM effective_track_metadata e
              JOIN track t ON t.id = e.track_id
@@ -523,8 +527,8 @@ impl Store {
                    ))
                AND (?4 IS NULL OR EXISTS(
                        SELECT 1 FROM track_source ts
-                       JOIN local_file_observation l ON l.source_id = ts.source_id
-                       WHERE ts.track_id = t.id AND l.available = 1
+                       CROSS JOIN local_file_observation l
+                       WHERE ts.track_id = t.id AND l.source_id = ts.source_id AND l.available = 1
                    ) = ?4)
                AND (?5 = '' OR e.title > ?5 OR (e.title = ?5 AND e.track_id > ?6))
              ORDER BY e.title, e.track_id
