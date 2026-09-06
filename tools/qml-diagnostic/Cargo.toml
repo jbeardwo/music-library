@@ -1,0 +1,11 @@
+[package]
+name = "qml-diagnostic"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+music-library = { path = "../.." }
+qmetaobject = "0.2.10"
+rusqlite = { version = "0.40", features = ["bundled"] }
+tempfile = "3"
