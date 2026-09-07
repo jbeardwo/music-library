@@ -462,7 +462,7 @@ The engine should own:
 * Audio-device interaction.
 * Format-specific playback work.
 
-Do not commit to GStreamer or another engine yet.
+GStreamer/GstPlay is the first empirical local-audio adapter, not a final engine choice.
 
 Do not build a generalized playback plugin framework before requirements justify it.
 
@@ -486,9 +486,13 @@ playback of that entry. Successful stop leaves status `Stopped` with the error
 returned to the caller; an engine stop failure instead leaves status `Failed`.
 Availability is a stored observation; opening a source can still fail.
 
-The synchronous `PlaybackEngine` boundary accepts a resolved source for `start`
-(replacing the previous input and starting from the beginning), plus `pause`,
-`resume`, and `stop`. Tests use a fake engine; no audio output is integrated.
+`PlaybackEngine` accepts a resolved source for `start` (replacing the previous
+input and starting from the beginning), plus `pause`, `resume`, and `stop`.
+The default fake engine completes commands synchronously. An asynchronous engine
+accepts commands on return and confirms them with plain `EngineEvent` values.
+`PlaybackState.status` is confirmed state; `pending` is the latest requested target.
+The application also owns media position/duration in milliseconds, separate from
+the queue index. Neither events nor domain types contain GStreamer or Qt types.
 
 * Setting a queue stops playback and selects its first entry without starting it.
 * Enqueue appends one Track without disturbing playback; appending to an empty
@@ -510,12 +514,63 @@ The synchronous `PlaybackEngine` boundary accepts a resolved source for `start`
   resolved source, and marks status `Failed`: actual output may be unknown. Play
   and navigation perform a recovery stop internally before starting another input;
   callers do not need a separate Stop command. If that stop fails, return its error.
-  Queue replacement/clear commit only after a successful stop.
+  Immediate stop rejection prevents queue replacement/clear. With an asynchronous
+  engine, accepted commands commit queue changes without waiting; output remains
+  explicitly pending until confirmed. A subsequent engine error is surfaced as
+  `Failed`, not a rollback of already accepted queue edits.
 
-Before integrating a real engine, define threading and command acknowledgement,
-resource teardown, and delivery of asynchronous completion/errors (including
-rejecting events from replaced inputs). Automatic advancement on completion,
-seeking, richer source policy, and queue/session persistence remain deferred.
+Playback also owns an ephemeral normalized `Volume` (finite 0–1, default 1).
+Invalid values are rejected. A volume command updates accepted session state
+without changing transport status, pending transport commands, queue position,
+or media generation; rejection leaves the previous state intact. Engines retain
+volume across Stop and source replacement. This is not stored in SQLite.
+
+The optional `adapters/gstreamer` package uses GstPlay, which provides application
+playback over playbin3. This avoids building a custom decoder pipeline for this
+slice ([GstPlay overview](https://gstreamer.freedesktop.org/documentation/play/gstplay.html)).
+Its owned worker serializes commands and drains the GstPlay bus with a 20 ms
+maximum idle wait. It sends state, EOS, errors, position, and duration as plain
+application events. No GStreamer wait runs on the GUI thread. The diagnostic
+frontend uses Qt queued callbacks to apply events and notify QML; it does not poll.
+Its callback factory constructs the C++ QObject before capturing the weak pointer
+([QPointer precondition](https://docs.rs/qmetaobject/0.2.10/qmetaobject/struct.QPointer.html));
+otherwise engine events silently disappear before reaching orchestration.
+
+Each Start creates a new GstPlay instance with an immutable media generation.
+Stop, replacement, terminal errors, and consumed EOS retire the prior generation;
+late messages from it are ignored, including for repeated copies of the same Track.
+Pause/resume retain the input and position. GstPlay supplies no command IDs, so
+state notifications may only confirm the latest requested target: an obsolete
+Playing notification cannot undo a pending Pause. Errors/EOS still refer to the
+same input across pause/resume. This is a media-lifetime protocol, not a general
+operation/event framework; seeking will need its own completion semantics.
+
+Accepted EOS invokes application Next once. At the last entry it stops and retains
+queue/position. If the next entry is unplayable, it remains selected with an error;
+there is no automatic skipping. Position updates are requested every 200 ms;
+unknown duration stays optional. Stop resets the application clock and releases
+the input; Play resolves and starts a fresh input. Tests with GstPlay 1.28.2 found
+its stopped position getter could retain a cached nonzero value even though a
+subsequent Play restarted at the beginning; the application does not use that
+cache as its stopped clock.
+
+Only native local paths are accepted. The adapter converts absolute paths through
+[GLib filename_to_uri](https://docs.gtk.org/glib/func.filename_to_uri.html), preserving
+Unix filename bytes and escaping reserved characters. WSL `/mnt/c/...` paths are
+ordinary Linux paths here; no Windows-path string rewriting or network URI input
+is exposed.
+
+On replacement/Stop the worker stops the old player, flushes its bus, and releases
+it before confirming Stop or starting another input. Bus flushing breaks the
+player/message reference cycle required by the
+[GstPlay cleanup contract](https://gstreamer.freedesktop.org/documentation/play/gstplay.html).
+No bus watch or application GLib loop is installed. Shutdown joins the worker while
+Qt and its callback target still exist; only exit may wait for cleanup. A wedged
+plugin could still delay shutdown and needs investigation before product use.
+
+Seeking, gapless/preloading, richer source policy, and queue/session persistence
+remain deferred. See the [local-audio test guide](../adapters/gstreamer/README.md)
+for measured behavior, platform limitations, and manual audio checks.
 
 
 ## Frontend Architecture

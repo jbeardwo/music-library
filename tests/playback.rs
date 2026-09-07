@@ -5,13 +5,14 @@ use music_library::{
     domain::{
         CatalogReleaseInput, CatalogTrackInput, PlayableSource, SourceId, SourceLocation, TrackId,
     },
-    playback::{EngineError, Playback, PlaybackEngine, PlaybackError, PlaybackStatus},
+    playback::{EngineError, Playback, PlaybackEngine, PlaybackError, PlaybackStatus, Volume},
 };
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
+    Volume(Volume),
     Start(PlayableSource),
     Pause,
     Resume,
@@ -37,6 +38,9 @@ impl FakeEngine {
     }
 }
 impl PlaybackEngine for FakeEngine {
+    fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
+        self.call(Call::Volume(volume))
+    }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
         self.call(Call::Start(source.clone()))
     }
@@ -514,4 +518,311 @@ fn clear_stops_empties_and_preserves_durable_data_with_explicit_stop_failure() {
         assert_eq!(engine.borrow().calls, calls);
         assert_eq!(f.durable_state(), before);
     }
+}
+
+struct AsyncEngine {
+    fake: FakeEngine,
+    generation: Rc<std::cell::Cell<u64>>,
+}
+impl PlaybackEngine for AsyncEngine {
+    fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
+        self.fake.set_volume(volume)
+    }
+    fn asynchronous(&self) -> bool {
+        true
+    }
+    fn set_event_generation(&mut self, generation: u64) {
+        self.generation.set(generation);
+    }
+    fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
+        self.fake.start(source)
+    }
+    fn pause(&mut self) -> Result<(), EngineError> {
+        self.fake.pause()
+    }
+    fn resume(&mut self) -> Result<(), EngineError> {
+        self.fake.resume()
+    }
+    fn stop(&mut self) -> Result<(), EngineError> {
+        self.fake.stop()
+    }
+}
+
+#[test]
+fn async_confirmation_pause_races_timing_and_stop_reject_stale_events() {
+    use music_library::playback::{EngineEvent, EngineEventKind as Event};
+    let f = Fixture::new();
+    f.source("a", 0, true);
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let mut p = Playback::new(AsyncEngine {
+        fake: FakeEngine(Rc::default()),
+        generation: generation.clone(),
+    });
+    p.enqueue(f.tracks[0].clone());
+    p.play(&f.library).unwrap();
+    let input = generation.get();
+    let event = |kind| EngineEvent {
+        generation: input,
+        kind,
+    };
+    assert_eq!(p.state().status, PlaybackStatus::Stopped);
+    assert_eq!(p.state().pending, Some(PlaybackStatus::Playing));
+    // URI replacement/startup notifications must not terminate this input or
+    // invalidate its generation before the Playing confirmation arrives.
+    for status in [PlaybackStatus::Stopped, PlaybackStatus::Paused] {
+        assert!(
+            !p.handle_event(&f.library, event(Event::State(status)))
+                .unwrap()
+        );
+        assert_eq!(generation.get(), input);
+        assert_eq!(p.state().pending, Some(PlaybackStatus::Playing));
+        assert!(p.state().source.is_some());
+    }
+    p.handle_event(&f.library, event(Event::State(PlaybackStatus::Playing)))
+        .unwrap();
+    assert_eq!(p.state().pending, None);
+    p.handle_event(&f.library, event(Event::Duration(Some(10_000))))
+        .unwrap();
+    p.handle_event(&f.library, event(Event::Position(2400)))
+        .unwrap();
+    p.pause().unwrap();
+    assert_eq!(p.state().status, PlaybackStatus::Playing);
+    assert_eq!(p.state().pending, Some(PlaybackStatus::Paused));
+    assert!(
+        !p.handle_event(&f.library, event(Event::State(PlaybackStatus::Playing)))
+            .unwrap()
+    );
+    p.handle_event(&f.library, event(Event::State(PlaybackStatus::Paused)))
+        .unwrap();
+    assert_eq!(p.state().media_position_ms, 2400);
+    assert_eq!(p.state().duration_ms, Some(10_000));
+    p.play(&f.library).unwrap();
+    assert!(
+        !p.handle_event(&f.library, event(Event::State(PlaybackStatus::Paused)))
+            .unwrap()
+    );
+    p.handle_event(&f.library, event(Event::State(PlaybackStatus::Playing)))
+        .unwrap();
+    p.stop().unwrap();
+    assert_eq!(p.state().media_position_ms, 0);
+    assert_eq!(p.state().pending, Some(PlaybackStatus::Stopped));
+    let stopped_generation = generation.get();
+    for kind in [
+        Event::EndOfStream,
+        Event::Error(EngineError("late".into())),
+        Event::Position(9900),
+        Event::Duration(Some(1)),
+        Event::State(PlaybackStatus::Playing),
+    ] {
+        assert!(!p.handle_event(&f.library, event(kind)).unwrap());
+    }
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: stopped_generation,
+            kind: Event::State(PlaybackStatus::Stopped),
+        },
+    )
+    .unwrap();
+    assert_eq!(p.state().status, PlaybackStatus::Stopped);
+    assert_eq!(p.state().pending, None);
+    p.play(&f.library).unwrap();
+    assert!(
+        !p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: stopped_generation,
+                kind: Event::State(PlaybackStatus::Stopped)
+            }
+        )
+        .unwrap()
+    );
+    let active = generation.get();
+    assert!(matches!(
+        p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: active,
+                kind: Event::Error(EngineError("decode".into()))
+            }
+        ),
+        Err(PlaybackError::Engine(_))
+    ));
+    assert_eq!(p.state().status, PlaybackStatus::Failed);
+    assert!(
+        !p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: active,
+                kind: Event::State(PlaybackStatus::Playing)
+            }
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn eos_advances_once_retains_duplicates_and_surfaces_unplayable_next() {
+    use music_library::playback::{EngineEvent, EngineEventKind as Event};
+    let f = Fixture::new();
+    f.source("a", 0, true);
+    let before = f.durable_state();
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let mut p = Playback::new(AsyncEngine {
+        fake: FakeEngine(Rc::default()),
+        generation: generation.clone(),
+    });
+    let queue = vec![
+        f.tracks[0].clone(),
+        f.tracks[0].clone(),
+        f.tracks[1].clone(),
+    ];
+    p.set_queue(queue.clone()).unwrap();
+    p.play(&f.library).unwrap();
+    let first = generation.get();
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: first,
+            kind: Event::EndOfStream,
+        },
+    )
+    .unwrap();
+    assert_eq!(p.state().position, Some(1));
+    for kind in [
+        Event::EndOfStream,
+        Event::Error(EngineError("old input".into())),
+    ] {
+        assert!(
+            !p.handle_event(
+                &f.library,
+                EngineEvent {
+                    generation: first,
+                    kind
+                }
+            )
+            .unwrap()
+        );
+    }
+    assert_eq!(p.state().position, Some(1));
+    let second = generation.get();
+    assert!(matches!(
+        p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: second,
+                kind: Event::EndOfStream
+            }
+        ),
+        Err(PlaybackError::NoAvailableSource(_))
+    ));
+    assert_eq!(p.state().position, Some(2));
+    assert_eq!(p.state().queue, queue);
+    assert!(p.state().source.is_none());
+    p.set_queue(vec![f.tracks[0].clone()]).unwrap();
+    p.play(&f.library).unwrap();
+    let last = generation.get();
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: last,
+            kind: Event::EndOfStream,
+        },
+    )
+    .unwrap();
+    assert_eq!(p.state().position, Some(0));
+    assert_eq!(p.state().queue.len(), 1);
+    assert_eq!(p.state().pending, Some(PlaybackStatus::Stopped));
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: generation.get(),
+            kind: Event::State(PlaybackStatus::Stopped),
+        },
+    )
+    .unwrap();
+    assert_eq!(p.state().status, PlaybackStatus::Stopped);
+    assert_eq!(p.state().media_position_ms, 0);
+    p.clear_queue().unwrap();
+    assert!(
+        !p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: last,
+                kind: Event::EndOfStream
+            }
+        )
+        .unwrap()
+    );
+    assert!(p.state().queue.is_empty());
+    assert_eq!(f.durable_state(), before);
+}
+
+#[test]
+fn volume_is_bounded_ephemeral_and_does_not_change_transport_or_generation() {
+    use music_library::playback::{EngineEvent, EngineEventKind};
+    let f = Fixture::new();
+    f.source("a", 0, true);
+    let durable = f.durable_state();
+    let engine = Rc::new(RefCell::new(EngineState::default()));
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let mut p = Playback::new(AsyncEngine {
+        fake: FakeEngine(engine.clone()),
+        generation: generation.clone(),
+    });
+    p.enqueue(f.tracks[0].clone());
+    assert_eq!(p.state().volume.get(), 1.0);
+    for (action, value) in [
+        ("stopped", 0.0),
+        ("play", 0.25),
+        ("pause", 0.5),
+        ("stop", 1.0),
+    ] {
+        match action {
+            "play" => p.play(&f.library).unwrap(),
+            "pause" => p.pause().unwrap(),
+            "stop" => p.stop().unwrap(),
+            _ => {}
+        }
+        let before = p.state().clone();
+        let input_generation = generation.get();
+        p.set_volume(value).unwrap();
+        let mut expected = before;
+        expected.volume = Volume::new(value).unwrap();
+        assert_eq!(p.state(), &expected);
+        assert_eq!(generation.get(), input_generation);
+        assert_eq!(
+            engine.borrow().calls.last(),
+            Some(&Call::Volume(expected.volume))
+        );
+        if let Some(target) = p.state().pending {
+            assert!(
+                p.handle_event(
+                    &f.library,
+                    EngineEvent {
+                        generation: input_generation,
+                        kind: EngineEventKind::State(target),
+                    }
+                )
+                .unwrap()
+            );
+        }
+    }
+    let before = p.state().clone();
+    let count = engine.borrow().calls.len();
+    for invalid in [-0.01, 1.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(matches!(
+            p.set_volume(invalid),
+            Err(PlaybackError::InvalidVolume)
+        ));
+        assert_eq!(p.state(), &before);
+    }
+    assert_eq!(engine.borrow().calls.len(), count);
+    engine.borrow_mut().fail_next = true;
+    assert!(matches!(p.set_volume(0.3), Err(PlaybackError::Engine(_))));
+    assert_eq!(p.state(), &before);
+    p.set_volume(0.4).unwrap();
+    p.clear_queue().unwrap();
+    assert_eq!(p.state().volume.get(), 0.4);
+    assert_eq!(f.durable_state(), durable);
 }

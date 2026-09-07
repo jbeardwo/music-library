@@ -1,0 +1,13 @@
+[package]
+name = "music-library-gstreamer"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+music-library = { path = "../.." }
+gstreamer = "0.25"
+gstreamer-play = "0.25"
+
+[dev-dependencies]
+tempfile = "3"
