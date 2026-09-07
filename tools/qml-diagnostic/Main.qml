@@ -10,7 +10,7 @@ ApplicationWindow {
     minimumWidth: 800
     minimumHeight: 700
     visible: true
-    title: "Music Library — disposable QML diagnostic (NO AUDIO)"
+    title: window.view.realAudio ? "Music Library — GstPlay local audio diagnostic" : "Music Library — fake engine (NO AUDIO)"
     // One dynamic context object; the Rust/QML smoke test checks this boundary.
     // qmllint disable unqualified
     readonly property var bridge: diagnostic
@@ -26,6 +26,12 @@ ApplicationWindow {
                 throw new Error(message);
         }
         try {
+            check(view.volume === 1 && volumeSlider.value === 100, "default volume");
+            volumeSlider.value = 35;
+            volumeSlider.moved();
+            check(view.volume === 0.35 && view.status === "Stopped", "stopped volume");
+            window.bridge.set_volume(1);
+            check(view.volume === 1, "restore volume");
             check(view.rows.length === 20, "bounded initial page");
             check(results.count === 20, "list model binding");
             const firstId = view.rows[0].trackId;
@@ -40,6 +46,11 @@ ApplicationWindow {
             check(view.status === "Playing", "play notification");
             window.bridge.command("pause");
             check(view.status === "Paused", "pause notification");
+            window.bridge.set_volume(0.6);
+            check(view.volume === 0.6 && view.status === "Paused", "paused volume");
+            window.bridge.set_volume(-1);
+            check(view.volume === 0.6 && view.error.length > 0, "invalid volume");
+            window.bridge.set_volume(1);
             window.bridge.command("play");
             check(view.status === "Playing", "resume notification");
             window.bridge.toggle_failure();
@@ -116,7 +127,7 @@ ApplicationWindow {
         anchors.margins: 12
         spacing: 8
         Label {
-            text: "DIAGNOSTIC ONLY · Synthetic 45-Track library · Fake engine · No audio or real files"
+            text: window.view.realAudio ? "DIAGNOSTIC ONLY · Real local audio · Temporary library from supplied folder" : "DIAGNOSTIC ONLY · Synthetic 45-Track library · Fake engine · No audio or real files"
             Layout.fillWidth: true
             wrapMode: Text.Wrap
         }
@@ -191,7 +202,7 @@ ApplicationWindow {
             }
         }
         Label {
-            text: "Current: " + window.view.currentTitle + " · " + window.view.status + " · Position " + (window.view.position < 0 ? "—" : (window.view.position + 1) + "/" + window.view.queue.length)
+            text: "Current: " + window.view.currentTitle + " · " + window.view.status + window.view.pending + " · " + window.view.time + " · Queue position " + (window.view.position < 0 ? "—" : (window.view.position + 1) + "/" + window.view.queue.length)
             textFormat: Text.PlainText
             font.bold: true
             Layout.fillWidth: true
@@ -229,8 +240,26 @@ ApplicationWindow {
                 onClicked: window.bridge.command("next")
             }
             Button {
+                visible: !window.view.realAudio
                 text: window.view.failureArmed ? "Failure ARMED — cancel" : "Fail next engine call"
                 onClicked: window.bridge.toggle_failure()
+            }
+        }
+        RowLayout {
+            Label {
+                text: "Volume"
+            }
+            Slider {
+                id: volumeSlider
+                from: 0
+                to: 100
+                stepSize: 1
+                value: window.view.volume * 100
+                onMoved: window.bridge.set_volume(value / 100)
+                Layout.fillWidth: true
+            }
+            Label {
+                text: Math.round(window.view.volume * 100) + "%"
             }
         }
         RowLayout {
@@ -276,9 +305,11 @@ ApplicationWindow {
             textFormat: Text.PlainText
         }
         Label {
+            visible: !window.view.realAudio
             text: "Last 12 engine calls (Failed means output is unknown; recovery stops before restarting):"
         }
         ScrollView {
+            visible: !window.view.realAudio
             Layout.fillWidth: true
             Layout.preferredHeight: 110
             TextArea {

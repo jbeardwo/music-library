@@ -1,7 +1,8 @@
 # Disposable Qt Quick diagnostic
 
 This is integration tooling, not the product UI, skin format, or a final frontend
-choice. It uses the existing backend with a fake engine. **There is no audio.**
+choice. The default fake engine produces no audio. An optional GstPlay mode plays
+local files; see [real-audio setup and manual checks](../../adapters/gstreamer/README.md).
 Delete this directory to remove the experiment; the backend has no Qt dependency.
 
 ## Build and launch
@@ -22,7 +23,7 @@ editing it. The package has its own lockfile and build directory; ordinary backe
 builds do not need Qt. `QMAKE=/path/to/qmake6` selects a non-default Qt installation
 ([binding build configuration](https://github.com/woboq/qmetaobject-rs/blob/master/qttypes/build.rs)).
 
-Every launch creates a disposable 45-Track database and deletes it on exit.
+Every default/fake launch creates a disposable 45-Track database and deletes it on exit.
 It includes named source-less, unavailable, available, and multiple-source cases,
 plus duplicate titles spanning search pages. Availability observations and paths
 are synthetic: no local collection, actual files, or network access is required.
@@ -69,15 +70,23 @@ NOTIFY signal; search pages and the complete queue use `QVariantList` snapshots.
 this directly without handwritten C++ or a project build script
 ([binding example and pinning rules](https://docs.rs/qmetaobject/0.2.10/qmetaobject/)).
 [CXX-Qt](https://kdab.github.io/cxx-qt/book/) offers a generated C++/Rust bridge and
-threading support, but this small synchronous probe does not yet justify its
-additional bridge/build setup. This choice is local to the experiment.
+threading support; the small bridge still uses qmetaobject
+queued callbacks without adding another bridge/build setup. This choice is local to the experiment.
 
 Rust owns `Library`, `Playback`, and the pinned QObject. After every command the
 QObject notifies QML, which re-reads one snapshot; QML never optimistically changes
 playback state. The object outlives the QML engine. NOTIFY signals are required for
 QML bindings to react to property changes
 ([Qt property integration](https://doc.qt.io/qt-6/qtqml-cppintegration-exposecppattributes.html)).
-There is no timer, polling, event bus, or second playback-state model.
+Real audio events use `queued_callback` with a weak QObject pointer to reach the
+Qt owning thread. The callback factory first constructs the C++ QObject, as
+required by [QPointer](https://docs.rs/qmetaobject/0.2.10/qmetaobject/struct.QPointer.html).
+Capturing it earlier produced a permanently null pointer: GstPlay reached Playing,
+but every notification was dropped and the UI stayed Stopped with Play pending.
+Both commands and accepted events publish state. Routine
+position/state events preserve visible errors; stale events do not publish.
+There is no GUI timer/polling, generic event bus, or second playback-state model.
+The audio worker itself checks its bus at bounded intervals.
 
 The deliberately small context-object bridge is dynamic and limits static QML
 tooling ([Qt context-property limitations](https://doc.qt.io/qt-6/qtqml-cppintegration-contextproperties.html)).
@@ -102,33 +111,40 @@ Friction exposed so far:
   need structured backend results; do not parse error strings to infer them.
 * Failed engine output is unknown. QML shows Failed, and recovery remains entirely
   inside `Playback`; no UI-specific recovery state was added.
-* Commands/search run synchronously on the GUI thread. The tiny sample needs no
-  polling, but does not validate responsiveness at 200,000 Tracks. Real engine or
-  scanner events need notifications, GUI-thread delivery, and stale-event handling;
-  blocking work must move off the GUI thread without moving state ownership to QML.
+* Search/source resolution still run synchronously on the GUI thread; this does not
+  validate responsiveness at 200,000 Tracks. GStreamer work runs on an owned worker
+  and event delivery is queued. Folder scanning/import happens before window creation.
+* Real-mode state may show a pending target until confirmed (for example,
+  Playing → Paused pending). Queue edits commit when the engine accepts the stop,
+  not after its completion. Later asynchronous failure remains visible without
+  silently restoring an earlier queue.
 * Pagination has no snapshot isolation across external edits. Reset search to
   refresh; this fixed fixture cannot assess concurrent library changes.
 
 The application-facing additions are `enqueue`, `clear_queue`, movement queries,
 and the attempted-entry position semantics. No schema, search strategy, or
 source-selection rule changed.
-Before real audio, specify asynchronous completion/error acknowledgement,
-stop/replacement cancellation, late-event rejection, shutdown, and automatic
-end-of-input advancement. Seeking remains outside this probe.
+Real mode adds generation-tagged engine events, pending/confirmed state, media
+position/duration, and EOS advancement. Seeking remains outside this probe.
 
 The experiment modestly increases confidence in QML for command/state integration:
 controls bind to Rust-owned state without polling. It provides no evidence yet for
-skinning, large-library responsiveness, packaging across platforms, or real audio.
+skinning, large-library responsiveness, or packaging across platforms. Audible
+WSLg output still requires the manual checks linked above.
 
 ## Checks
 
-In addition to the repository's usual format/test/strict-Clippy/diff checks:
+In addition to the repository's usual format/test/strict-Clippy/diff checks
+(the all-feature checks require the GStreamer development packages):
 
 ```sh
 cargo fmt --manifest-path tools/qml-diagnostic/Cargo.toml --all -- --check
 cargo test --manifest-path tools/qml-diagnostic/Cargo.toml
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  cargo test --manifest-path tools/qml-diagnostic/Cargo.toml --all-features
 cargo clippy --manifest-path tools/qml-diagnostic/Cargo.toml --all-targets --all-features -- -D warnings
 cargo build --manifest-path tools/qml-diagnostic/Cargo.toml
+cargo build --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer
 /usr/lib/qt6/bin/qmllint tools/qml-diagnostic/Main.qml
 QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
   tools/qml-diagnostic/target/debug/qml-diagnostic --smoke-test
@@ -140,3 +156,24 @@ Rust adapter tests cover complete duplicate-title pagination, cursor reset,
 source errors, stale selections, retained/duplicate entries, append/clear, queue-label
 preservation, and failure recovery. The QML smoke test also checks full queue
 snapshots, current markers, and navigation-button bounds in failed states.
+
+The all-feature Qt regression test constructs the callback before QML exposure
+and sends controlled events from a worker. It requires Qt's offscreen platform.
+The action/result label retains only the last action name and derives confirmed
+state and the pending target from Playback on every snapshot read. Previously it
+cached state at command return: QML's Current label correctly changed to Paused,
+but the bottom label still said “pause → Playing” until another command.
+Accepted engine events apply state, increment revision, and emit `changed()`;
+QML then rereads the snapshot. No polling or extra notification is needed.
+The regression loads the actual QML window and confirms Playing, Paused, resumed
+Playing, Stopped, and Failed from queued test events without a subsequent command
+or position update. It checks both visible labels, pending targets, and stale
+event rejection; no audio hardware is used.
+
+
+Volume is a basic 0–100% slider, enabled in all transport states. It calls
+`Playback::set_volume` through the diagnostic adapter and shows the accepted
+session setting. Invalid/non-finite values are rejected without changing it.
+Volume defaults to 100%, survives Stop/queue changes, and is never persisted.
+The direct linear gain mapping is intentional for this probe; a perceptual
+slider curve remains deferred (see the GStreamer guide).

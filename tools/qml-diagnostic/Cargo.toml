@@ -4,7 +4,11 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 
+[features]
+gstreamer = ["dep:music-library-gstreamer"]
+
 [dependencies]
+music-library-gstreamer = { path = "../../adapters/gstreamer", optional = true }
 music-library = { path = "../.." }
 qmetaobject = "0.2.10"
 rusqlite = { version = "0.40", features = ["bundled"] }

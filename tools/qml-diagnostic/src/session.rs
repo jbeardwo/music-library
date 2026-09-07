@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 use music_library::{
     Library,
     domain::{PlayableSource, SearchCursor, SearchRequest, TrackSearchResult},
-    playback::{EngineError, Playback, PlaybackEngine},
+    playback::{EngineError, Playback, PlaybackEngine, Volume},
 };
 
 pub const PAGE_SIZE: usize = 20;
@@ -36,6 +36,9 @@ impl DiagnosticEngine {
     }
 }
 impl PlaybackEngine for DiagnosticEngine {
+    fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
+        self.call(&format!("volume {}", volume.get()))
+    }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
         self.call(&format!("start {}", source.source_id.as_ref()))
     }
@@ -50,9 +53,57 @@ impl PlaybackEngine for DiagnosticEngine {
     }
 }
 
+pub enum Engine {
+    #[cfg(all(test, feature = "gstreamer"))]
+    Deferred(DiagnosticEngine),
+    Fake(DiagnosticEngine),
+    #[cfg(feature = "gstreamer")]
+    GStreamer(music_library_gstreamer::GStreamerEngine),
+}
+impl Engine {
+    fn inner(&mut self) -> &mut dyn PlaybackEngine {
+        match self {
+            Self::Fake(engine) => engine,
+            #[cfg(all(test, feature = "gstreamer"))]
+            Self::Deferred(engine) => engine,
+            #[cfg(feature = "gstreamer")]
+            Self::GStreamer(engine) => engine,
+        }
+    }
+}
+impl PlaybackEngine for Engine {
+    fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
+        self.inner().set_volume(volume)
+    }
+    fn asynchronous(&self) -> bool {
+        match self {
+            Self::Fake(_) => false,
+            #[cfg(all(test, feature = "gstreamer"))]
+            Self::Deferred(_) => true,
+            #[cfg(feature = "gstreamer")]
+            Self::GStreamer(_) => true,
+        }
+    }
+    fn set_event_generation(&mut self, generation: u64) {
+        self.inner().set_event_generation(generation);
+    }
+    fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
+        self.inner().start(source)
+    }
+    fn pause(&mut self) -> Result<(), EngineError> {
+        self.inner().pause()
+    }
+    fn resume(&mut self) -> Result<(), EngineError> {
+        self.inner().resume()
+    }
+    fn stop(&mut self) -> Result<(), EngineError> {
+        self.inner().stop()
+    }
+}
+
 pub struct Session {
     pub library: Library,
-    pub playback: Playback<DiagnosticEngine>,
+    pub playback: Playback<Engine>,
     pub diagnostics: Rc<RefCell<EngineDiagnostics>>,
     pub rows: Vec<TrackSearchResult>,
     // Display metadata captured when queueing; never a second queue authority.
@@ -62,7 +113,7 @@ pub struct Session {
     pub page: usize,
     cursors: Vec<Option<SearchCursor>>,
     pub error: String,
-    pub outcome: String,
+    operation: String,
     pub revision: u32,
 }
 
@@ -71,7 +122,7 @@ impl Session {
         let diagnostics = Rc::new(RefCell::new(EngineDiagnostics::default()));
         let mut session = Self {
             library,
-            playback: Playback::new(DiagnosticEngine(diagnostics.clone())),
+            playback: Playback::new(Engine::Fake(DiagnosticEngine(diagnostics.clone()))),
             diagnostics,
             rows: vec![],
             queue_labels: vec![],
@@ -80,11 +131,45 @@ impl Session {
             page: 0,
             cursors: vec![None],
             error: String::new(),
-            outcome: String::new(),
+            operation: String::new(),
             revision: 0,
         };
         session.search(String::new());
         session
+    }
+
+    #[cfg(feature = "gstreamer")]
+    pub fn shutdown_audio(&mut self) {
+        self.playback = Playback::new(Engine::Fake(DiagnosticEngine(self.diagnostics.clone())));
+    }
+
+    #[cfg(all(test, feature = "gstreamer"))]
+    pub fn defer_confirmations(&mut self) {
+        self.playback = Playback::new(Engine::Deferred(DiagnosticEngine(self.diagnostics.clone())));
+    }
+
+    #[cfg(feature = "gstreamer")]
+    pub fn engine_event(&mut self, event: music_library::playback::EngineEvent) -> bool {
+        let terminal = matches!(
+            event.kind,
+            music_library::playback::EngineEventKind::EndOfStream
+        );
+        match self.playback.handle_event(&self.library, event) {
+            Ok(false) => false,
+            Ok(true) => {
+                self.revision = self.revision.wrapping_add(1);
+                // Position/state notifications must not erase a visible decoder/source error.
+                if terminal {
+                    self.error.clear();
+                    self.operation = "EOS".into();
+                }
+                true
+            }
+            Err(error) => {
+                self.finish("engine event", Err(error.to_string()));
+                true
+            }
+        }
     }
 
     fn load(&mut self, text: String, after: Option<SearchCursor>) -> Result<(), String> {
@@ -104,10 +189,28 @@ impl Session {
         Ok(())
     }
 
+    // Keep only the last action, never a cached copy of confirmed playback state.
+    // Async confirmations already notify QML; every snapshot must render their state.
+    pub fn outcome(&self) -> String {
+        let state = self.playback.state();
+        let pending = state
+            .pending
+            .map_or(String::new(), |target| format!(" → {target:?} pending"));
+        format!("{} → {:?}{pending}", self.operation, state.status)
+    }
+
     fn finish(&mut self, operation: &str, result: Result<(), String>) {
         self.revision = self.revision.wrapping_add(1);
         self.error = result.err().unwrap_or_default();
-        self.outcome = format!("{operation} → {:?}", self.playback.state().status);
+        self.operation = operation.into();
+    }
+
+    pub fn set_volume(&mut self, value: f64) {
+        let result = self
+            .playback
+            .set_volume(value)
+            .map_err(|error| error.to_string());
+        self.finish("volume", result);
     }
 
     pub fn search(&mut self, text: String) {
