@@ -827,6 +827,34 @@ The application does not initially require its own durable Recording entity. Rec
 
 External identities should be represented generically rather than by provider-specific columns on Track or Release. Track and Release identities should use separate relational tables so that ordinary foreign-key integrity is preserved without polymorphic entity references.
 
+Migration `0002_external_identities.sql` implements this as two STRICT tables:
+`track_external_identity(track_id, provider, kind, external_id)` and
+`release_external_identity(release_id, provider, kind, external_id)`. Entity
+foreign keys cascade on durable deletion, consistent with other entity-owned
+records. Removing library membership does not remove external identities.
+
+Each table has an entity-first composite primary key across all four columns
+and a non-unique `(provider, kind, external_id)` lookup index. The primary key
+supports ordered entity-local listing and prevents only exact duplicate
+associations. Multiple different IDs of the same provider/kind are allowed on
+an entity, and the same external identity may be shared by multiple entities.
+For example, Tracks on different Releases can share a Recording MBID or ISRC,
+and multiple Releases can share a Release Group MBID. No provider-specific
+cardinality rules are imposed by this generic storage layer.
+
+`ExternalIdentity` contains three opaque strings, persisted without case folding
+or normalization. `Library` and `Store` expose
+`attach_track_external_identity`, `list_track_external_identities`,
+`resolve_tracks_external_identity`, and corresponding Release methods
+(`resolve_releases_external_identity` for reverse lookup). Attachment uses one
+atomic insert with an exact-association conflict target: it returns true for an
+insertion and false for an identical existing association. Sharing an identity
+with another entity is valid. Listing is in binary provider/kind/ID order;
+reverse lookup returns all associated IDs in unspecified order, including an
+empty vector for no matches. Attachment requires an existing entity through
+foreign-key enforcement. No provider client, matching policy, metadata update,
+membership change, or playable source is introduced.
+
 ### Metadata and matching
 
 Human-facing metadata and matching metadata are separate concerns.

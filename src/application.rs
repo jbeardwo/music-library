@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use crate::domain::{
-    CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest, ImportedRelease, PlayableSource,
-    RootId, ScanReport, SearchRequest, SourceId, TrackId, TrackSearchResult,
+    CatalogReleaseInput, DiscoveryCandidate, ExternalIdentity, ImportReleaseRequest,
+    ImportedRelease, PlayableSource, ReleaseId, RootId, ScanReport, SearchRequest, SourceId,
+    TrackId, TrackSearchResult,
 };
 use crate::filesystem::{MetadataExtractor, scan};
 use crate::storage::{Result, Store};
@@ -23,6 +24,51 @@ impl Library {
         Ok(Self {
             store: Store::open_in_memory()?,
         })
+    }
+
+    /// Attach without changing internal identity, metadata, sources, or membership.
+    /// Returns false if this exact association already exists.
+    pub fn attach_track_external_identity(
+        &mut self,
+        id: &TrackId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        self.store.attach_track_external_identity(id, identity)
+    }
+
+    pub fn list_track_external_identities(&self, id: &TrackId) -> Result<Vec<ExternalIdentity>> {
+        self.store.list_track_external_identities(id)
+    }
+
+    pub fn resolve_tracks_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<TrackId>> {
+        self.store.resolve_tracks_external_identity(identity)
+    }
+
+    /// Attach without changing internal identity, metadata, sources, or membership.
+    /// Returns false if this exact association already exists.
+    pub fn attach_release_external_identity(
+        &mut self,
+        id: &ReleaseId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        self.store.attach_release_external_identity(id, identity)
+    }
+
+    pub fn list_release_external_identities(
+        &self,
+        id: &ReleaseId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        self.store.list_release_external_identities(id)
+    }
+
+    pub fn resolve_releases_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<ReleaseId>> {
+        self.store.resolve_releases_external_identity(identity)
     }
 
     pub fn register_local_root(&mut self, path: impl AsRef<Path>) -> Result<RootId> {

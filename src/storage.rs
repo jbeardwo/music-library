@@ -4,12 +4,14 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use thiserror::Error;
 
 use crate::domain::{
-    ArtistCreditInput, ArtistId, CatalogReleaseInput, DiscoveryCandidate, ImportReleaseRequest,
-    ImportedRelease, ObservedMetadata, PlayableSource, ReleaseId, RootId, SearchRequest, SourceId,
-    SourceLocation, TrackId, TrackSearchResult,
+    ArtistCreditInput, ArtistId, CatalogReleaseInput, DiscoveryCandidate, ExternalIdentity,
+    ImportReleaseRequest, ImportedRelease, ObservedMetadata, PlayableSource, ReleaseId, RootId,
+    SearchRequest, SourceId, SourceLocation, TrackId, TrackSearchResult,
 };
 
 const INITIAL_MIGRATION: &str = include_str!("../migrations/0001_initial.sql");
+const EXTERNAL_IDENTITIES_MIGRATION: &str =
+    include_str!("../migrations/0002_external_identities.sql");
 const MAX_PAGE_SIZE: u32 = 200;
 
 #[derive(Debug, Error)]
@@ -68,12 +70,108 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version != 1 {
+        } else if version > 2 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
         }
+        if version < 2 {
+            connection.execute_batch(EXTERNAL_IDENTITIES_MIGRATION)?;
+        }
         Ok(Self { connection })
+    }
+
+    /// Returns true for a new association, false for an identical existing association.
+    pub fn attach_track_external_identity(
+        &mut self,
+        id: &TrackId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO track_external_identity(track_id, provider, kind, external_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(track_id, provider, kind, external_id) DO NOTHING",
+            params![id.as_ref(), identity.provider, identity.kind, identity.external_id],
+        )? != 0)
+    }
+
+    /// Lists in binary provider/kind/ID order; an unknown entity returns an empty list.
+    pub fn list_track_external_identities(&self, id: &TrackId) -> Result<Vec<ExternalIdentity>> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider, kind, external_id FROM track_external_identity WHERE track_id = ?1 ORDER BY provider, kind, external_id",
+        )?;
+        Ok(statement
+            .query_map([id.as_ref()], |row| {
+                Ok(ExternalIdentity {
+                    provider: row.get(0)?,
+                    kind: row.get(1)?,
+                    external_id: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns every associated entity; result order is unspecified.
+    pub fn resolve_tracks_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<TrackId>> {
+        let mut statement = self.connection.prepare(
+            "SELECT track_id FROM track_external_identity WHERE provider = ?1 AND kind = ?2 AND external_id = ?3",
+        )?;
+        Ok(statement
+            .query_map(
+                params![identity.provider, identity.kind, identity.external_id],
+                |row| row.get::<_, String>(0).map(TrackId),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns true for a new association, false for an identical existing association.
+    pub fn attach_release_external_identity(
+        &mut self,
+        id: &ReleaseId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO release_external_identity(release_id, provider, kind, external_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(release_id, provider, kind, external_id) DO NOTHING",
+            params![id.as_ref(), identity.provider, identity.kind, identity.external_id],
+        )? != 0)
+    }
+
+    /// Lists in binary provider/kind/ID order; an unknown entity returns an empty list.
+    pub fn list_release_external_identities(
+        &self,
+        id: &ReleaseId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider, kind, external_id FROM release_external_identity WHERE release_id = ?1 ORDER BY provider, kind, external_id",
+        )?;
+        Ok(statement
+            .query_map([id.as_ref()], |row| {
+                Ok(ExternalIdentity {
+                    provider: row.get(0)?,
+                    kind: row.get(1)?,
+                    external_id: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns every associated entity; result order is unspecified.
+    pub fn resolve_releases_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<ReleaseId>> {
+        let mut statement = self.connection.prepare(
+            "SELECT release_id FROM release_external_identity WHERE provider = ?1 AND kind = ?2 AND external_id = ?3",
+        )?;
+        Ok(statement
+            .query_map(
+                params![identity.provider, identity.kind, identity.external_id],
+                |row| row.get::<_, String>(0).map(ReleaseId),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn register_local_root(&mut self, path: impl AsRef<Path>) -> Result<RootId> {

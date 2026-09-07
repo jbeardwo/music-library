@@ -25,6 +25,14 @@ id_type!(ArtistId);
 id_type!(SourceId);
 id_type!(RootId);
 
+/// Provider-neutral identity. Strings are persisted exactly, without normalization.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExternalIdentity {
+    pub provider: String,
+    pub kind: String,
+    pub external_id: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObservedMetadata {
     pub track_title: Option<String>,
