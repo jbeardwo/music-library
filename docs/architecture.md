@@ -572,7 +572,6 @@ Seeking, gapless/preloading, richer source policy, and queue/session persistence
 remain deferred. See the [local-audio test guide](../adapters/gstreamer/README.md)
 for measured behavior, platform limitations, and manual audio checks.
 
-
 ## Frontend Architecture
 
 Frontend technology is intentionally undecided.
@@ -785,6 +784,99 @@ Eventually establish measurable budgets for:
 * No-change scanning.
 
 Do not invent arbitrary budgets before an early prototype provides meaningful measurements.
+
+## External catalog identity and matching
+
+The application database is authoritative for the user's library. External catalogs provide metadata, identifiers, and evidence that can enrich library entities, but they do not define application identity.
+
+Application entities use opaque internal IDs. External identifiers are stored separately and may be added, corrected, or associated with an existing entity without changing its internal identity.
+
+MusicBrainz is the initial external catalog provider. The architecture must remain provider-neutral so additional catalogs and services such as Spotify and Apple Music can be associated with the same library entities later.
+
+### External identity
+
+External identity is distinct from playable-source availability.
+
+A Track may have:
+
+* no external identities and one or more playable sources;
+* one or more external identities and no playable sources;
+* both external identities and playable sources;
+* neither, when only local or user-supplied metadata is known.
+
+External identifiers may include:
+
+* MusicBrainz Release Group MBID;
+* MusicBrainz Release MBID;
+* MusicBrainz Track MBID;
+* MusicBrainz Recording MBID;
+* ISRC;
+* provider-specific identifiers such as Spotify Track IDs or Apple Music Song IDs.
+
+External identifiers must not be used as application primary keys.
+
+The initial MusicBrainz mapping is:
+
+* a MusicBrainz Release corresponds to an external identity for an application Release;
+* its MusicBrainz Release Group may also be retained as an external identity for that Release;
+* a MusicBrainz Track corresponds to an external identity for an application Track;
+* the MusicBrainz Recording referenced by that track may also be retained as an external identity for the application Track;
+* ISRCs associated with the recording may be retained as additional recording-level external identifiers for that Track.
+
+The application does not initially require its own durable Recording entity. Recording identifiers may be associated with release-specific Tracks until product requirements demonstrate that a first-class Recording entity is necessary.
+
+External identities should be represented generically rather than by provider-specific columns on Track or Release. Track and Release identities should use separate relational tables so that ordinary foreign-key integrity is preserved without polymorphic entity references.
+
+### Metadata and matching
+
+Human-facing metadata and matching metadata are separate concerns.
+
+Metadata received from local files, external catalogs, or other providers should be preserved as observations rather than rewritten into a single provider-independent title string.
+
+Matching may derive normalized comparison values from those observations, but derived matching values must not replace the original metadata.
+
+Matching should use the strongest available evidence and should prefer:
+
+1. already-known external identifiers;
+2. strong recording identifiers such as ISRC;
+3. structured release context, including artist credit, release title, disc and track positions, track titles, track count, and duration;
+4. conservative metadata comparison when stronger evidence is unavailable.
+
+Normalization must not blindly discard terms that can distinguish different recordings or versions. Terms such as "live", "remix", "edit", "acoustic", or similar qualifiers may carry identity information rather than merely cosmetic formatting.
+
+### Local-file matching
+
+Local-file import does not require an external catalog match.
+
+When imported music has sufficiently complete metadata, the application may attempt to associate it with an existing library Track or an external catalog entry.
+
+Initial matching should favor release-level context. A consistently tagged album with matching artist, album title, track positions, track titles, track count, and compatible durations provides stronger evidence than independently matching each track by title.
+
+If a source-less catalog Track already exists in the library and a newly imported local file can be confidently associated with it, the local file should become a PlayableSource for the existing Track rather than creating a duplicate Track.
+
+Likewise, a local-first Track may later gain MusicBrainz, ISRC, Spotify, Apple Music, or other identities without being recreated.
+
+Matching is best-effort enrichment. Failure to find a catalog match is a normal state and must not prevent local files from entering or functioning in the library.
+
+The initial implementation deliberately does not attempt to recover severely incomplete or incorrect metadata. It does not require acoustic fingerprinting, aggressive fuzzy matching, filename inference, automatic tag repair, or automatic metadata rewriting. Users may manage poor source metadata externally, and more sophisticated recovery tools can be added later if demonstrated to be valuable.
+
+### Match decisions and provenance
+
+Candidate scoring and match evidence may exist transiently while a match is being evaluated. The initial architecture does not require a durable generic numeric match-confidence field.
+
+Once an association has been accepted, the durable useful information is the external identity attached to the library entity.
+
+The system may later distinguish associations established through direct catalog import, automatic matching, or explicit user confirmation if product behavior requires that provenance, but a generalized persistent match-evidence system is deferred.
+
+### Catalog integration boundary
+
+MusicBrainz access belongs behind a catalog/provider boundary rather than in the domain model or UI.
+
+The domain and application layers must not depend on MusicBrainz-specific API types.
+
+Catalog integration should convert provider responses into application-owned data before persistence. This keeps catalog access replaceable and allows later providers to participate in matching without redefining Track, Release, or PlayableSource.
+
+Use of the public MusicBrainz service must account for its API identification and rate-limiting requirements. Catalog access should therefore be explicit, cacheable where appropriate, and avoid unnecessary repeated requests.
 
 ## Durable Versus Reconstructible State
 

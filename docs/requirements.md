@@ -123,6 +123,60 @@ The application may continue to know about a source associated with a Track that
 
 The exact initial import workflow may be chosen later.
 
+## Catalog-backed library additions and matching
+
+The library must support music that has no currently playable source.
+
+### Catalog-backed additions
+
+* The user must be able to discover music through an external catalog and add it to the library without possessing a local file or other playable source.
+* MusicBrainz is the initial external catalog provider.
+* Adding a catalog Release creates normal application Releases and Tracks.
+* Library membership remains Track-level.
+* A catalog-added Track may have zero PlayableSources.
+* The absence of a PlayableSource must not make a Track incomplete, invalid, or unavailable for ordinary library organization.
+* Catalog metadata and external identifiers must be retained so they can assist later matching to local files or playback providers.
+* Application identity must remain independent of MusicBrainz or any other external provider.
+* The architecture must permit additional external identities, including Spotify and Apple Music identifiers, without changing the identity of existing library entities.
+
+### External metadata and identity
+
+* Original provider metadata must be preserved.
+* Metadata used for display must not be destructively rewritten solely to improve cross-provider matching.
+* Matching may use derived normalized values without replacing original metadata observations.
+* External identifiers such as MusicBrainz MBIDs, ISRCs, and provider-specific track IDs should be preferred over title-string matching when available.
+* MusicBrainz Recording identifiers and ISRCs may be associated with application Tracks without requiring an application-level Recording entity.
+
+### Local-file import and catalog matching
+
+* Local files must always be importable without a successful external catalog match.
+* An unmatched local Track is a normal supported library state.
+* When local metadata is sufficiently complete, import may attempt to associate the music with an existing library Track or external catalog identity.
+* Initial automatic matching should prefer structured release-level evidence over isolated fuzzy title matching.
+* Useful evidence may include artist credit, release title, disc number, track number, track title, release track count, duration, embedded external identifiers, and ISRC.
+* If imported files confidently correspond to source-less Tracks already in the library, their local files should be attached as PlayableSources to those existing Tracks rather than creating duplicate Tracks.
+* Local-first Tracks may gain external catalog and playback-provider identities later without being recreated or losing their local metadata observations.
+* Failure to find a match must not prevent import or local playback.
+* Ambiguous matches must not be silently treated as certain matches.
+
+### Initial matching scope
+
+The initial matching implementation assumes reasonably tagged music.
+
+It is not required to:
+
+* identify severely mistagged or untagged music;
+* infer identities primarily from filenames or directory names;
+* perform acoustic fingerprinting;
+* use AcoustID or similar fingerprint services;
+* aggressively fuzzy-match weak metadata;
+* automatically repair or rewrite file tags;
+* guarantee a catalog identity for every imported Track.
+
+Users may correct poor metadata outside the application. More sophisticated identification and tag-management functionality may be added later, but it is not required for the initial catalog-matching system.
+
+Catalog matching is an enrichment feature, not a prerequisite for library membership or playback.
+
 ## Availability and Missing Sources
 
 A Track remains a valid library entity when its sources are unavailable.
