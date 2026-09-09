@@ -1,6 +1,10 @@
 //! Benchmark-only access to the unchanged Store implementation and its connection.
+use music_library::matching;
 use std::hint::black_box;
 use std::time::Instant;
+#[allow(dead_code)]
+#[path = "../src/catalog.rs"]
+mod catalog;
 #[allow(dead_code)]
 #[path = "../src/domain.rs"]
 mod domain;

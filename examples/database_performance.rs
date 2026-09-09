@@ -139,14 +139,19 @@ fn create_fixture(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
          )
          INSERT INTO fixture_number SELECT value FROM numbers;
 
-         INSERT INTO release(id)
-         SELECT printf('release-%05d', value) FROM fixture_number WHERE value <= 20000;
+         INSERT INTO album(id)
+         SELECT printf('album-%05d', value) FROM fixture_number WHERE value <= 20000;
+         INSERT INTO release(id, album_id)
+         SELECT printf('release-%05d', value), printf('album-%05d', value) FROM fixture_number WHERE value <= 20000;
 
          INSERT INTO release_application_metadata(release_id, title, year)
          SELECT printf('release-%05d', value),
                 printf('Release %05d', value),
                 1950 + (value % 76)
          FROM fixture_number WHERE value <= 20000;
+
+         INSERT INTO album_application_metadata(album_id, title, year)
+         SELECT r.album_id, m.title, m.year FROM release r JOIN release_application_metadata m ON m.release_id=r.id;
 
          INSERT INTO artist(id, name)
          SELECT printf('artist-%04d', value), printf('Artist %04d', value)
@@ -161,6 +166,13 @@ fn create_fixture(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
          SELECT printf('release-%05d', value), 0,
                 printf('artist-%04d', ((value - 1) % 1000) + 1), 'primary'
          FROM fixture_number WHERE value <= 20000;
+
+         INSERT INTO album_artist_credit(album_id, position, artist_id, role)
+         SELECT r.album_id, c.position, c.artist_id, c.role FROM release r JOIN release_artist_credit c ON c.release_id=r.id;
+
+         -- These fixture strings are ASCII with single spaces; production uses Rust normalization.
+         UPDATE album_application_metadata SET match_title=lower(title),
+             match_artist_credit=lower((SELECT a.name FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=album_application_metadata.album_id AND c.position=0));
 
          INSERT INTO track(id, release_id, disc_number, track_number)
          SELECT printf('track-%06d', value),
@@ -305,6 +317,95 @@ fn run_measurements(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         database.display(),
         fs::metadata(database)?.len() as f64 / 1_048_576.0
     );
+
+    // One live connection for this lookup measurement, matching Store configuration.
+    // The query and preparation/result consumption match grouped local import.
+    {
+        let db = Connection::open(database)?;
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;",
+        )?;
+        let sql = "SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65";
+        let plan: String = db.query_row(
+            &format!("EXPLAIN QUERY PLAN {sql}"),
+            ["release 20000", "artist 1000"],
+            |r| r.get(3),
+        )?;
+        println!("Album matching plan: {plan}");
+        for (title, expected) in [("release 20000", 1), ("absent album", 0)] {
+            measure(
+                &format!("Album candidate {title} (20k Albums)"),
+                1000,
+                || {
+                    let rows = db
+                        .prepare(sql)?
+                        .query_map([title, "artist 1000"], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    if rows.len() != expected {
+                        return Err(
+                            format!("unexpected Album candidate count: {}", rows.len()).into()
+                        );
+                    }
+                    black_box(rows);
+                    Ok(())
+                },
+            )?;
+        }
+    }
+
+    {
+        use music_library::matching::{TrackEvidence, normalize, tracks_support_album};
+        let db = Connection::open(database)?;
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;",
+        )?;
+        let sql = "SELECT r.id,t.disc_number,t.track_number,e.title FROM release r JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1";
+        let album: String = db.query_row("SELECT album_id FROM album_application_metadata WHERE match_title='release 20000' AND match_artist_credit='artist 1000'", [], |r|r.get(0))?;
+        for row in db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?
+            .query_map([&album], |r| r.get::<_, String>(3))?
+        {
+            println!("Album Track verification plan: {}", row?);
+        }
+        let local = vec![TrackEvidence {
+            disc: 1,
+            position: 1,
+            title: normalize("Song 199991 Track"),
+        }];
+        measure(
+            "Album Track verification (one 10-Track edition)",
+            1000,
+            || {
+                let mut editions = std::collections::BTreeMap::<String, Vec<TrackEvidence>>::new();
+                let mut query = db.prepare(sql)?;
+                for row in query.query_map([&album], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<u32>>(1)?,
+                        r.get::<_, Option<u32>>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                })? {
+                    let (release, disc, position, title) = row?;
+                    if let (Some(disc), Some(position)) = (disc, position) {
+                        editions.entry(release).or_default().push(TrackEvidence {
+                            disc,
+                            position,
+                            title: normalize(&title),
+                        });
+                    }
+                }
+                if !editions
+                    .values()
+                    .any(|tracks| tracks_support_album(&local, tracks))
+                {
+                    return Err("expected fixture Track support".into());
+                }
+                black_box(editions);
+                Ok(())
+            },
+        )?;
+    }
 
     let first_open = Instant::now();
     let mut library = Library::open(database)?;
