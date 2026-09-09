@@ -888,6 +888,212 @@ Matching is best-effort enrichment. Failure to find a catalog match is a normal 
 
 The initial implementation deliberately does not attempt to recover severely incomplete or incorrect metadata. It does not require acoustic fingerprinting, aggressive fuzzy matching, filename inference, automatic tag repair, or automatic metadata rewriting. Users may manage poor source metadata externally, and more sophisticated recovery tools can be added later if demonstrated to be valuable.
 
+### Local import and automatic matching workflow
+
+Local-file import and catalog matching are separate operations.
+
+Import must complete independently of catalog availability or matching success. Local files should become usable library entries immediately after their metadata and playable sources have been persisted.
+
+After a successful local import, the application may automatically initiate catalog matching as a best-effort enrichment step when the imported metadata is sufficiently complete.
+
+The intended flow is:
+
+`local import -> usable library entities -> optional catalog matching`
+
+Catalog latency, service outages, rate limiting, or ambiguous matches must not delay, roll back, or invalidate the completed local import.
+
+Automatic matching is enabled by default for sufficiently well-tagged music, but it must be treated as application policy rather than a requirement of the filesystem scanner or importer. The architecture must permit automatic matching to be disabled later without changing local-import behavior.
+
+A user must also be able to initiate or retry catalog matching manually after import. Manual matching remains available even when automatic matching is disabled.
+
+No settings system or preferences UI is required initially. The first implementation may use the default automatic policy while keeping the importer and matcher sufficiently separated to support a future setting.
+
+#### Partial Albums
+
+A local Album does not need to contain every Track from the corresponding catalog Album or Release.
+
+Import creates library membership only for Tracks actually represented by the user's local files. Catalog matching must not add missing Tracks to library membership merely because an external catalog indicates that they exist.
+
+For example, three local Tracks from a fifteen-Track Album remain a valid partial Album containing only those three library Tracks.
+
+Matching should therefore support local Track sets that are subsets of a catalog Release.
+
+Album-level matching may still be strong when a partial set of Tracks consistently agrees with a catalog candidate by evidence such as:
+
+* Album title;
+* Album artist credit;
+* Track positions;
+* Track titles;
+* durations;
+* year or date where available;
+* embedded external identifiers.
+
+A complete Track count match is useful evidence when available but must not be required.
+
+The application may confidently associate a partial local Album with a provider-neutral Album while leaving the exact Release unresolved when there is insufficient evidence to distinguish between multiple editions.
+
+Likewise, individual Tracks may gain Recording-level external identities without requiring the application to claim certainty about the exact physical or digital Release from which the local files originated.
+
+Catalog matching is enrichment only. It must not silently fill missing Album membership.
+
+If the user later acquires additional Tracks from the same Album, those Tracks may be associated with the existing Album and matched independently or collectively without requiring a special transition from "partial" to "complete."
+
+Explicitly adding an Album from a catalog remains a different operation: catalog Add Album means adding the selected/default Release's complete Track set to library membership.
+
+### Matching policy and confidence boundaries
+
+Catalog matching should distinguish between whether a match attempt is worth making and whether a candidate is safe to accept automatically.
+
+These are separate decisions.
+
+#### Matching order
+
+The application should prefer matching against existing library entities before querying an external catalog.
+
+The intended order is:
+
+1. compare imported local Album/Track metadata against Albums and Tracks already present in the library;
+2. if no sufficiently strong existing-library match is found, and the metadata is suitable for catalog lookup, query the configured external catalog;
+3. if the catalog result is unambiguous and sufficiently supported by structured evidence, accept the association;
+4. otherwise leave the music unmatched and allow later manual matching.
+
+This ordering reduces unnecessary network traffic and helps source-less catalog Tracks acquire local PlayableSources without creating duplicate Tracks.
+
+Matching should operate on grouped Album context rather than issuing one external search per file or Track.
+
+#### Eligibility for automatic catalog lookup
+
+The initial automatic matcher should be conservative about which imports justify a catalog request.
+
+A local Album group should generally have:
+
+* a usable Album title;
+* usable Album artist information, or a sufficiently consistent artist credit across its Tracks;
+* at least one usable Track title.
+
+Track numbers, durations, dates, and multiple consistent Tracks strengthen the match but are not mandatory prerequisites for attempting a lookup.
+
+Music with severely incomplete, placeholder, contradictory, or obviously unusable tags should be imported normally and skipped by automatic catalog lookup.
+
+#### Automatic acceptance
+
+The initial implementation should not rely on a single opaque numeric confidence threshold as the sole basis for accepting matches.
+
+Candidate ranking may use transient scores internally, but automatic acceptance should be based on understandable structured evidence.
+
+Useful evidence includes:
+
+* Album title agreement;
+* Album artist-credit agreement;
+* original release year/date compatibility;
+* local Track titles matching catalog Tracks;
+* Track-position agreement;
+* duration compatibility;
+* multiple local Tracks consistently agreeing with the same candidate;
+* embedded external identifiers where available.
+
+A complete Album is not required.
+
+Several partial Tracks that consistently align with one catalog Album may provide stronger evidence than a single isolated Track.
+
+When multiple plausible Album candidates remain, the matcher must not silently choose one merely because it ranks slightly higher.
+
+Ambiguous candidates should remain unmatched until the user explicitly chooses a match or better evidence becomes available.
+
+#### Album, Release, and Track certainty
+
+Matching certainty may exist at different levels.
+
+The application may confidently establish:
+
+`local Album -> external Album identity`
+
+without knowing:
+
+`local Release -> exact external Release identity`
+
+This is expected for local files because ordinary tags often identify the friendly Album but do not identify a specific regional, physical, digital, or reissue edition.
+
+The application must not invent Release-level certainty merely because one representative external Release is available.
+
+Likewise, a release-specific external Track identifier must not be attached unless the corresponding external Release relationship is sufficiently established.
+
+Recording-level identity may be established independently where appropriate evidence exists, but the matcher should remain conservative about distinctions such as remixes, live versions, edits, remasters, or alternate recordings.
+
+The architecture must support partially enriched state, including:
+
+* Album identity known, Release identity unknown;
+* Recording identity known, exact release-specific Track identity unknown;
+* no external identity at all.
+
+These are normal states rather than errors.
+
+#### Existing-library matching
+
+Existing library entities should be preferred when imported metadata clearly corresponds to music already known to the application.
+
+For example, if a source-less catalog Track already exists and a local file can be confidently associated with it, the local file should be attached as a PlayableSource to that existing Track rather than creating a duplicate Track.
+
+Existing-library matching should use the same structured evidence principles as catalog matching, but can rely on already-persisted Album, Release, Track, and external-identity information.
+
+The first local-only implementation runs once per `ImportReleaseRequest` group,
+inside the import transaction, before creating entities. Eligibility requires a
+usable Album title, at least one tagged Track title (not a filename fallback),
+and usable Album credits or consistent Track artists across the group. Present
+Album titles and Album-artist observations must agree. Empty and obvious
+`Unknown Album`/`Unknown Artist`/`Unknown Track` placeholders decline matching.
+
+Comparison folds whitespace and Unicode lowercase only; punctuation, accents,
+join phrases and version qualifiers remain significant. Equal normalized Album
+title and artist-credit display generate candidates; library uniqueness alone is
+not acceptance evidence. For each candidate, compare tagged Track titles at known
+positive disc and Track numbers against effective Track titles within each stored
+Release. At least one exact normalized positional/title correspondence is required,
+and every overlapping position must agree unambiguously within that same Release.
+Absent positions provide no evidence; evidence is never assembled across editions.
+Exactly one supported Album is accepted. No supported Album or multiple supported
+Albums create a new local Album. Year, durations and total Track count are not used.
+A one-Track partial import can qualify; non-overlapping partial imports deliberately
+create another Album. Missing disc/Track numbers are not guessed.
+
+Migration `0005_album_matching.sql` adds reconstructible `match_title` and
+`match_artist_credit` columns to `album_application_metadata`, with covering
+index `album_matching_lookup(match_title, match_artist_credit, album_id)`.
+The bounded candidate query reads at most 65 IDs and declines groups larger than
+64 rather than accepting from a truncated set. Verification uses `release_album`,
+`track_release_order` and the effective Track metadata primary-key index, once per
+candidate Album; it stops after finding two supported Albums. Rust backfills the same
+Unicode normalization as new imports; schema changes, backfill and version bump
+share one transaction. Original metadata and IDs are unchanged. Creation and
+catalog credit installation maintain the keys; future Album/artist editing must
+also refresh them.
+
+An accepted Album still receives a **new local Release and new Tracks**: friendly
+metadata does not prove edition identity, even if only one Release is stored.
+No external identities are copied and source-less catalog Tracks/membership are
+untouched. The tag extractor now reads AlbumArtist through Lofty's existing
+accessor, but does not expose embedded MBIDs or ISRCs. Accordingly, cross-source
+Track reuse is deferred; rescans retain the existing durable source association.
+Repeated explicit import of an associated source still fails atomically, while
+normal scans omit it from discovery candidates.
+
+All source validation, matching, creation, source association and membership use
+one immediate SQLite transaction with no filesystem reads or network calls.
+The returned Release ID can resolve its Album via `album_for_release` for a
+future post-import matcher; no external matching queue is implemented here.
+
+#### Matching throughput
+
+Automatic matching must not serialize local import behind external catalog requests.
+
+For large imports, the library should become usable before catalog enrichment completes.
+
+Imported Tracks should first be grouped into local Album candidates and matching work should operate once per Album group where possible, rather than once per Track.
+
+External catalog matching may proceed through a bounded application-owned queue governed by the provider's request policy.
+
+The matching queue must not be embedded into filesystem scanning logic, and catalog failure must not invalidate already-imported local music.
+
 ### Match decisions and provenance
 
 Candidate scoring and match evidence may exist transiently while a match is being evaluated. The initial architecture does not require a durable generic numeric match-confidence field.
@@ -1067,7 +1273,6 @@ The diagnostic owns one catalog worker for HTTP/rate waits and uses a queued Qt
 callback to apply results and notify properties. SQLite import remains synchronous
 and short. Shutdown joins the worker and may wait for its bounded request timeout;
 cancellation is deferred. See the [adapter guide](../adapters/musicbrainz/README.md).
-
 
 Transient MusicBrainz 503 responses are handled inside the HTTP adapter: at most
 two additional attempts, with 2s/4s backoff or a valid Retry-After. Every attempt

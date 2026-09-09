@@ -4,6 +4,7 @@ pub mod application;
 pub mod catalog;
 pub mod domain;
 pub mod filesystem;
+pub mod matching;
 pub mod playback;
 pub mod storage;
 

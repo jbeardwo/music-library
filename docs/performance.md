@@ -582,3 +582,32 @@ Validation: `cargo fmt --all -- --check`, `cargo test`,
 `cargo clippy --all-targets --all-features -- -D warnings`, and `git diff --check` pass.
 The production patch and availability regression tests are byte-for-byte unchanged by the audit.
 No Git commit was made.
+
+## Local existing-library Album lookup
+
+Grouped local import uses equality on derived Album title/artist-credit keys for
+candidate generation only. It reads at most 65 IDs and declines groups larger
+than 64. Migration 0005 adds
+`album_matching_lookup(match_title, match_artist_credit, album_id)`; existing
+Album-ID indexes cannot narrow this predicate. Track corroboration then reads
+only Releases/Tracks under each candidate, using `release_album`,
+`track_release_order` and the effective Track metadata primary-key index.
+It requires an exact positioned/title overlap without contradictory overlapping
+positions within one edition; exactly one supported Album may be accepted.
+
+The deterministic 200k-Track / 20k-Album fixture includes the derived keys.
+The `database_performance` example measures candidate generation separately from
+Track verification using one live connection at a time, Store's PRAGMAs, one
+warmup and 1,000 repetitions. Measurements include statement preparation and
+result consumption; verification also includes title normalization, grouping by
+Release and the production comparison helper. These are warm lookup measurements,
+not whole-import or cold-storage budgets. No search/FTS query changed.
+
+After adding corroboration (Linux x86_64, bundled SQLite 3.53.2), candidate lookup
+measured median **6.14 µs**, p95 **6.44 µs**. Additional verification of one
+candidate containing one ten-Track edition measured median **14.39 µs**, p95
+**18.41 µs**, using a one-Track partial import. The sum of the separately measured
+medians is approximately **20.53 µs**; this is not an end-to-end import timing.
+Verification cost scales with candidate editions/Tracks and comparable local
+Tracks, rather than the entire library. The measured plans use indexed `SEARCH`
+for all three tables and no temporary sort. No extra schema/index was needed.

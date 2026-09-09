@@ -57,7 +57,13 @@ impl MetadataExtractor for LoftyMetadataExtractor {
             track_artists: tag
                 .and_then(|tag| tag.artist().map(|value| vec![value.into_owned()]))
                 .unwrap_or_default(),
-            release_artists: Vec::new(),
+            release_artists: tag
+                .map(|tag| {
+                    tag.get_strings(lofty::tag::ItemKey::AlbumArtist)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             disc_number: tag.and_then(|tag| tag.disk()),
             track_number: tag.and_then(|tag| tag.track()),
             year: tag

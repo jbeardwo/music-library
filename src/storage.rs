@@ -62,7 +62,7 @@ impl Store {
         Self::from_connection(Connection::open_in_memory()?)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self> {
+    fn from_connection(mut connection: Connection) -> Result<Self> {
         connection.execute_batch(
             "PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;",
         )?;
@@ -70,7 +70,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 4 {
+        } else if version > 5 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -85,6 +85,21 @@ impl Store {
         }
         if version < 4 {
             connection.execute_batch(include_str!("../migrations/0004_albums.sql"))?;
+        }
+        if version < 5 {
+            let tx =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch(include_str!("../migrations/0005_album_matching.sql"))?;
+            // One upgrade-only pass; close the reader before updating its table.
+            let ids = tx
+                .prepare("SELECT album_id FROM album_application_metadata")?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for id in ids {
+                refresh_album_match_key(&tx, &id)?;
+            }
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
         }
         Ok(Self { connection })
     }
@@ -440,10 +455,43 @@ impl Store {
                 "a Release import needs at least one Track".into(),
             ));
         }
-        let tx = self.connection.transaction()?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Validate and read each source once, before deciding which entities to create.
+        let observations = import_observations(&tx, request)?;
+        let credits = local_album_credit(request, &observations);
+        let album_id = if let Some(ref credits) = credits {
+            let artist_key = crate::matching::credit(
+                &credits.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
+            )
+            .expect("validated credit");
+            let candidates = tx.prepare(
+                "SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65"
+            )?.query_map(params![crate::matching::normalize(&request.release_title), artist_key], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // Bound pathological same-name groups; never accept from a truncated set.
+            let mut supported = Vec::new();
+            if candidates.len() <= 64 {
+                for id in candidates {
+                    if album_has_track_support(&tx, &id, request, &observations)? {
+                        supported.push(id);
+                        if supported.len() == 2 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if let [id] = supported.as_slice() {
+                crate::domain::AlbumId(id.clone())
+            } else {
+                create_album_tx(&tx, &request.release_title, None, credits)?
+            }
+        } else {
+            create_album_tx(&tx, &request.release_title, None, &request.release_artists)?
+        };
+        // Album agreement is never evidence of edition identity, even with one stored Release.
         let release_id = ReleaseId::new();
-        let album_id =
-            create_album_tx(&tx, &request.release_title, None, &request.release_artists)?;
         tx.execute(
             "INSERT INTO release(id, album_id) VALUES (?1, ?2)",
             params![release_id.as_ref(), album_id.as_ref()],
@@ -461,24 +509,6 @@ impl Store {
 
         let mut track_ids = Vec::with_capacity(request.tracks.len());
         for input in &request.tracks {
-            let eligible: bool = tx
-                .query_row(
-                    "SELECT l.available = 1 AND ts.source_id IS NULL
-                     FROM playable_source ps
-                     JOIN local_file_observation l ON l.source_id = ps.id
-                     LEFT JOIN track_source ts ON ts.source_id = ps.id
-                     WHERE ps.id = ?1",
-                    [input.source_id.as_ref()],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or(false);
-            if !eligible {
-                return Err(Error::Invalid(format!(
-                    "source {} is unavailable, unknown, or already associated",
-                    input.source_id.0
-                )));
-            }
             let track_id = TrackId::new();
             tx.execute(
                 "INSERT INTO track(id, release_id, disc_number, track_number)
@@ -632,6 +662,7 @@ impl Store {
             for (position, credit) in album.credits.iter().enumerate() {
                 tx.execute("UPDATE album_artist_credit SET join_phrase=?1 WHERE album_id=?2 AND position=?3", params![credit.join_phrase,id.as_ref(),position as i64])?;
             }
+            refresh_album_match_key(&tx, id.as_ref())?;
             id
         };
         let imported = if let Some(id) = existing.first() {
@@ -904,6 +935,208 @@ impl Store {
     }
 }
 
+struct ImportObservation {
+    album: Option<String>,
+    title: Option<String>,
+    album_artists: Vec<String>,
+    track_artists: Vec<String>,
+}
+
+fn import_observations(
+    tx: &Transaction<'_>,
+    request: &ImportReleaseRequest,
+) -> Result<Vec<ImportObservation>> {
+    let mut query = tx.prepare(
+        "SELECT l.available = 1 AND ts.source_id IS NULL, m.release_title, m.track_title,
+          COALESCE((SELECT group_concat(name, char(31)) FROM (SELECT name FROM file_artist_observation WHERE source_id=l.source_id AND scope='release' ORDER BY position)), ''),
+          COALESCE((SELECT group_concat(name, char(31)) FROM (SELECT name FROM file_artist_observation WHERE source_id=l.source_id AND scope='track' ORDER BY position)), '')
+         FROM local_file_observation l LEFT JOIN track_source ts ON ts.source_id=l.source_id
+         LEFT JOIN file_metadata_observation m ON m.source_id=l.source_id WHERE l.source_id=?1"
+    )?;
+    request
+        .tracks
+        .iter()
+        .map(|track| {
+            let result = query
+                .query_row([track.source_id.as_ref()], |r| {
+                    Ok((
+                        r.get::<_, bool>(0)?,
+                        ImportObservation {
+                            album: r.get(1)?,
+                            title: r.get(2)?,
+                            album_artists: split_artist_names(r.get(3)?),
+                            track_artists: split_artist_names(r.get(4)?),
+                        },
+                    ))
+                })
+                .optional()?;
+            match result {
+                Some((true, observation)) => Ok(observation),
+                _ => Err(Error::Invalid(format!(
+                    "source {} is unavailable, unknown, or already associated",
+                    track.source_id.0
+                ))),
+            }
+        })
+        .collect()
+}
+
+// Compare within one stored edition, never assemble evidence from incompatible editions.
+fn album_has_track_support(
+    tx: &Transaction<'_>,
+    album_id: &str,
+    request: &ImportReleaseRequest,
+    observations: &[ImportObservation],
+) -> Result<bool> {
+    let local = request
+        .tracks
+        .iter()
+        .zip(observations)
+        .filter_map(|(input, o)| {
+            let title = o
+                .title
+                .as_deref()
+                .filter(|title| crate::matching::usable(title))?;
+            Some(crate::matching::TrackEvidence {
+                disc: input.disc_number.filter(|n| *n > 0)?,
+                position: input.track_number.filter(|n| *n > 0)?,
+                title: crate::matching::normalize(title),
+            })
+        })
+        .collect::<Vec<_>>();
+    if local.is_empty() {
+        return Ok(false);
+    }
+    let mut query = tx.prepare(
+        "SELECT r.id,t.disc_number,t.track_number,e.title FROM release r
+         JOIN track t ON t.release_id=r.id
+         JOIN effective_track_metadata e ON e.track_id=t.id
+         WHERE r.album_id=?1",
+    )?;
+    let mut editions =
+        std::collections::BTreeMap::<String, Vec<crate::matching::TrackEvidence>>::new();
+    let rows = query.query_map([album_id], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<u32>>(1)?,
+            r.get::<_, Option<u32>>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (release, disc, position, title) = row?;
+        if let (Some(disc), Some(position)) = (disc, position) {
+            editions
+                .entry(release)
+                .or_default()
+                .push(crate::matching::TrackEvidence {
+                    disc,
+                    position,
+                    title: crate::matching::normalize(&title),
+                });
+        }
+    }
+    Ok(editions
+        .values()
+        .any(|tracks| crate::matching::tracks_support_album(&local, tracks)))
+}
+
+fn local_album_credit(
+    request: &ImportReleaseRequest,
+    observations: &[ImportObservation],
+) -> Option<Vec<ArtistCreditInput>> {
+    use crate::matching::{credit, normalize, usable};
+    if !usable(&request.release_title)
+        || !observations
+            .iter()
+            .any(|o| o.title.as_deref().is_some_and(usable))
+        || observations.iter().any(|o| {
+            o.album
+                .as_deref()
+                .is_some_and(|a| !usable(a) || normalize(a) != normalize(&request.release_title))
+        })
+    {
+        return None;
+    }
+    let explicit = request
+        .release_artists
+        .iter()
+        .map(|c| c.name.clone())
+        .collect::<Vec<_>>();
+    let tagged = observations
+        .iter()
+        .filter(|o| !o.album_artists.is_empty())
+        .map(|o| o.album_artists.clone())
+        .collect::<Vec<_>>();
+    let evidence = if !explicit.is_empty() {
+        let key = credit(&explicit)?;
+        if tagged
+            .iter()
+            .any(|names| credit(names).as_ref() != Some(&key))
+        {
+            return None;
+        }
+        return Some(request.release_artists.clone());
+    } else if !tagged.is_empty() {
+        tagged
+    } else {
+        request
+            .tracks
+            .iter()
+            .zip(observations)
+            .map(|(input, o)| {
+                if input.artists.is_empty() {
+                    o.track_artists.clone()
+                } else {
+                    input.artists.iter().map(|c| c.name.clone()).collect()
+                }
+            })
+            .collect()
+    };
+    let first = evidence.first()?;
+    let key = credit(first)?;
+    if evidence
+        .iter()
+        .any(|names| credit(names).as_ref() != Some(&key))
+    {
+        return None;
+    }
+    Some(
+        first
+            .iter()
+            .map(|name| ArtistCreditInput {
+                name: name.clone(),
+                role: None,
+            })
+            .collect(),
+    )
+}
+
+fn refresh_album_match_key(tx: &Transaction<'_>, album_id: &str) -> Result<()> {
+    let title: String = tx.query_row(
+        "SELECT title FROM album_application_metadata WHERE album_id=?1",
+        [album_id],
+        |r| r.get(0),
+    )?;
+    let mut query = tx.prepare("SELECT a.name, c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?;
+    let credits = query
+        .query_map([album_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut display = String::new();
+    for (index, (name, phrase)) in credits.iter().enumerate() {
+        display.push_str(name);
+        display.push_str(phrase.as_deref().unwrap_or(if index + 1 < credits.len() {
+            ", "
+        } else {
+            ""
+        }));
+    }
+    tx.execute("UPDATE album_application_metadata SET match_title=?1, match_artist_credit=?2 WHERE album_id=?3", params![crate::matching::normalize(&title), crate::matching::normalize(&display), album_id])?;
+    Ok(())
+}
+
 fn create_album_tx(
     tx: &Transaction<'_>,
     title: &str,
@@ -918,6 +1151,7 @@ fn create_album_tx(
         params![id.as_ref(), title, year],
     )?;
     insert_credits(tx, "album_artist_credit", id.as_ref(), credits)?;
+    refresh_album_match_key(tx, id.as_ref())?;
     Ok(id)
 }
 
