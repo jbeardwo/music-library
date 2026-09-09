@@ -52,7 +52,7 @@ Similar metadata must not automatically imply identical Release identity.
 
 External catalog identifiers may be associated with Releases but must not be the sole durable identity mechanism.
 
-A higher-level abstract Album concept may be introduced later if cross-Release grouping becomes useful.
+Each Release belongs to an application-owned Album, the normal user-facing grouping.
 
 ### Playable Source
 
@@ -127,11 +127,23 @@ The exact initial import workflow may be chosen later.
 
 The library must support music that has no currently playable source.
 
+### Album interaction model
+
+* Album is the normal user-facing grouping for album-oriented music.
+* Users should be able to search for, view, and add an Album without selecting a specific physical, regional, or digital edition.
+* Album identity must be provider-neutral and application-owned.
+* MusicBrainz Release Groups, Spotify Albums, Apple Music Albums, and compatible local album metadata may later be associated with the same application Album.
+* A specific Release represents an edition of an Album and should normally remain hidden from ordinary library interaction.
+* The application may select a suitable concrete Release internally when edition-specific information such as a tracklist is required.
+* Users must be able to inspect or choose a specific Release when edition differences are relevant, including alternate tracklists, deluxe editions, bonus tracks, reissues, or regional versions.
+* Normal catalog search results should prioritize friendly Album metadata such as title, primary artist credit, and original release year rather than edition-specific details such as country, barcode, label, or physical format.
+* Provider-specific edition metadata must not replace the Album metadata used for normal display.
+
 ### Catalog-backed additions
 
 * The user must be able to discover music through an external catalog and add it to the library without possessing a local file or other playable source.
 * MusicBrainz is the initial external catalog provider.
-* Adding a catalog Release creates normal application Releases and Tracks.
+* Adding a catalog Album creates/reuses its application Album, a representative or explicitly selected Release, and release-specific Tracks.
 * Library membership remains Track-level.
 * A catalog-added Track may have zero PlayableSources.
 * The absence of a PlayableSource must not make a Track incomplete, invalid, or unavailable for ordinary library organization.
@@ -194,7 +206,11 @@ A scan must not silently remove Track membership because a source cannot be foun
 
 If a source later reappears or is confidently relinked, the existing Track should regain that available source without losing library state or user edits.
 
-## Add Release Semantics
+## Album and Release Addition Semantics
+
+Normal "Add Album" selects a representative concrete Release for its tracklist.
+Advanced edition selection chooses that Release explicitly. Both use the same
+Track-level membership operation below; neither creates Album-level saved state.
 
 "Add Release" is a bulk Track-membership operation.
 
@@ -531,7 +547,7 @@ These budgets should be established from an early working prototype rather than 
 The following remain intentionally open unless implementation proves one must be decided earlier:
 
 * Abstract recording/work identity.
-* Higher-level abstract Album grouping.
+* Cross-source Album matching and reconciliation.
 * Exact file-tag versus external-provider precedence.
 * Which discovery sources ship initially.
 * Whether first-time filesystem discovery automatically imports/adds Tracks.

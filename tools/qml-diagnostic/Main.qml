@@ -16,6 +16,126 @@ ApplicationWindow {
     readonly property var bridge: diagnostic
     // qmllint enable unqualified
     readonly property var view: window.bridge.snapshot
+    readonly property var catalogView: window.bridge.catalog_snapshot
+
+    Dialog {
+        id: catalogDialog
+        title: "MusicBrainz catalog (diagnostic)"
+        width: Math.min(window.width - 40, 980)
+        height: 560
+        property bool showEditions: false
+        anchors.centerIn: parent
+        standardButtons: Dialog.Close
+        contentItem: ColumnLayout {
+            RowLayout {
+                TextField {
+                    id: catalogQuery
+                    placeholderText: "Album / artist search"
+                    Layout.fillWidth: true
+                    enabled: !window.catalogView.catalogPending
+                    onAccepted: {
+                        catalogDialog.showEditions = false;
+                        window.bridge.catalog_action("search", text);
+                    }
+                }
+                Button {
+                    text: "Search Albums"
+                    enabled: !window.catalogView.catalogPending
+                    onClicked: {
+                        catalogDialog.showEditions = false;
+                        window.bridge.catalog_action("search", catalogQuery.text);
+                    }
+                }
+            }
+            ListView {
+                id: albumResults
+                Layout.fillWidth: true
+                Layout.preferredHeight: 170
+                clip: true
+                model: window.catalogView.catalogGroups
+                delegate: RowLayout {
+                    id: albumRow
+                    required property var modelData
+                    required property int index
+                    width: albumResults.width
+                    Label {
+                        text: albumRow.modelData.label
+                        textFormat: Text.PlainText
+                        Layout.fillWidth: true
+                        elide: Text.ElideRight
+                    }
+                    Button {
+                        text: "Add Album"
+                        enabled: !window.catalogView.catalogPending
+                        onClicked: window.addAlbum(albumRow.index)
+                    }
+                    Button {
+                        text: "Editions…"
+                        enabled: !window.catalogView.catalogPending
+                        onClicked: window.chooseEditions(albumRow.index)
+                    }
+                }
+            }
+            Button {
+                text: "Next Album page"
+                enabled: !window.catalogView.catalogPending && window.catalogView.catalogMoreGroups
+                onClicked: {
+                    catalogDialog.showEditions = false;
+                    window.bridge.catalog_action("more_groups", "");
+                }
+            }
+            ColumnLayout {
+                id: editionSection
+                visible: catalogDialog.showEditions
+                Layout.fillWidth: true
+                ComboBox {
+                    id: editions
+                    Layout.fillWidth: true
+                    model: window.catalogView.catalogEditions
+                    textRole: "label"
+                    currentIndex: -1
+                    enabled: !window.catalogView.catalogPending
+                    onModelChanged: currentIndex = -1
+                }
+                Label {
+                    text: editions.currentIndex < 0 ? "Choose an edition explicitly." : editions.currentText
+                    Layout.fillWidth: true
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Button {
+                        text: "Add this edition"
+                        enabled: !window.catalogView.catalogPending && editions.currentIndex >= 0
+                        onClicked: window.bridge.catalog_action("add", String(editions.currentIndex))
+                    }
+                    Button {
+                        text: "Next edition page"
+                        enabled: !window.catalogView.catalogPending && window.catalogView.catalogMoreEditions
+                        onClicked: window.bridge.catalog_action("more_editions", "")
+                    }
+                }
+            }
+            BusyIndicator {
+                running: window.catalogView.catalogPending
+                implicitWidth: 30
+                implicitHeight: 30
+            }
+            Label {
+                text: window.catalogView.catalogStatus
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+            }
+        }
+    }
+
+    function addAlbum(index) {
+        catalogDialog.showEditions = false;
+        window.bridge.catalog_action("add_album", String(index));
+    }
+    function chooseEditions(index) {
+        catalogDialog.showEditions = true;
+        window.bridge.catalog_action("editions", String(index));
+    }
 
     function ready() {
         return true;
@@ -132,6 +252,10 @@ ApplicationWindow {
             wrapMode: Text.Wrap
         }
         RowLayout {
+            Button {
+                text: "Catalog…"
+                onClicked: catalogDialog.open()
+            }
             TextField {
                 id: query
                 Layout.fillWidth: true

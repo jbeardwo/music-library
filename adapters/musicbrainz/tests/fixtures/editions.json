@@ -1,0 +1,47 @@
+{
+  "release-count": 2,
+  "release-offset": 0,
+  "releases": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "title": "Album (Live)",
+      "artist-credit": [
+        {
+          "name": "Artist A",
+          "joinphrase": " feat. "
+        },
+        {
+          "name": "Artist B",
+          "joinphrase": ""
+        }
+      ],
+      "date": "2001-03-04",
+      "country": "US",
+      "status": "Official",
+      "disambiguation": "first edition",
+      "barcode": "12345",
+      "label-info": [
+        {
+          "label": {
+            "name": "Label"
+          },
+          "catalog-number": "CAT-1"
+        }
+      ],
+      "media": [
+        {
+          "format": "CD",
+          "track-count": 2
+        },
+        {
+          "format": "CD",
+          "track-count": 1
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "title": "Another edition"
+    }
+  ]
+}

@@ -53,7 +53,7 @@ Release identity uses application-generated opaque IDs.
 
 External-provider identifiers may be associated with Releases but do not define internal identity.
 
-An abstract cross-Release Album concept is intentionally not modeled yet.
+Each Release belongs to an application-owned Album, the normal user-facing grouping.
 
 ### Track
 
@@ -761,7 +761,7 @@ The filesystem-based slice is a validation tool for difficult durable boundaries
 
 It must not cause the architecture to assume local files are required for the final product.
 
-A later external-catalog slice must be able to create Tracks/Releases/library membership with no local PlayableSource.
+The explicit catalog import slice creates Tracks/Releases/library membership with no local PlayableSource.
 
 ## Performance
 
@@ -818,7 +818,7 @@ External identifiers must not be used as application primary keys.
 The initial MusicBrainz mapping is:
 
 * a MusicBrainz Release corresponds to an external identity for an application Release;
-* its MusicBrainz Release Group may also be retained as an external identity for that Release;
+* its MusicBrainz Release Group identifies the parent application Album;
 * a MusicBrainz Track corresponds to an external identity for an application Track;
 * the MusicBrainz Recording referenced by that track may also be retained as an external identity for the application Track;
 * ISRCs associated with the recording may be retained as additional recording-level external identifiers for that Track.
@@ -839,7 +839,7 @@ supports ordered entity-local listing and prevents only exact duplicate
 associations. Multiple different IDs of the same provider/kind are allowed on
 an entity, and the same external identity may be shared by multiple entities.
 For example, Tracks on different Releases can share a Recording MBID or ISRC,
-and multiple Releases can share a Release Group MBID. No provider-specific
+and multiple Albums can share a Release Group MBID. No provider-specific
 cardinality rules are imposed by this generic storage layer.
 
 `ExternalIdentity` contains three opaque strings, persisted without case folding
@@ -852,8 +852,8 @@ insertion and false for an identical existing association. Sharing an identity
 with another entity is valid. Listing is in binary provider/kind/ID order;
 reverse lookup returns all associated IDs in unspecified order, including an
 empty vector for no matches. Attachment requires an existing entity through
-foreign-key enforcement. No provider client, matching policy, metadata update,
-membership change, or playable source is introduced.
+foreign-key enforcement. These identity operations do not perform matching,
+metadata updates, membership changes, or source creation.
 
 ### Metadata and matching
 
@@ -906,6 +906,33 @@ Catalog integration should convert provider responses into application-owned dat
 
 Use of the public MusicBrainz service must account for its API identification and rate-limiting requirements. Catalog access should therefore be explicit, cacheable where appropriate, and avoid unnecessary repeated requests.
 
+### Album and Release model
+
+Album is the user-facing, provider-neutral grouping identity.
+
+An Album represents the musical release concept a user normally thinks of and searches for, such as "Demon Days" by Gorillaz, without requiring the user to choose a particular physical, regional, or digital edition.
+
+External provider concepts may be associated with an Album, including:
+
+* MusicBrainz Release Group;
+* Spotify Album;
+* Apple Music Album;
+* album-level metadata derived from local files.
+
+A Release represents a specific edition or manifestation of an Album, such as a particular MusicBrainz Release with a country, date, format, barcode, or edition-specific tracklist.
+
+Release specificity is normally an implementation detail and should not be required for ordinary library interaction. The application may select a suitable concrete Release internally when edition-specific information such as a tracklist is required.
+
+Users may explicitly choose or inspect a specific Release when edition differences matter, such as deluxe editions, bonus tracks, regional variants, reissues, or alternate tracklists.
+
+The expected relationship is:
+
+`Album -> one or more Releases -> release-specific Tracks`
+
+Album identity must remain application-owned and provider-neutral. A MusicBrainz Release Group ID, Spotify Album ID, Apple Music Album ID, or other external identifier may identify the corresponding concept in a particular provider but must not become the application's primary identity.
+
+Album metadata used for ordinary display should likewise be application-owned. Provider and local-file metadata remain observations that may contribute to effective Album metadata rather than forcing provider-specific edition names into the normal user interface.
+
 ## Durable Versus Reconstructible State
 
 Distinguish:
@@ -940,7 +967,7 @@ Backup and restore must preserve irreplaceable state even if machine-specific so
 The first durable schema should not accidentally commit to:
 
 * Abstract recording identity.
-* Abstract Album grouping.
+* Deliberate cross-source Album reconciliation.
 * Automatic duplicate identity.
 * Automatic move identity.
 * External-provider authority.
@@ -951,3 +978,101 @@ The first durable schema should not accidentally commit to:
 * A mandatory local-file workflow.
 
 If implementation begins to depend on one of these decisions, surface the assumption before encoding it.
+
+### Album persistence and catalog import
+
+Migration `0004_albums.sql` adds `album`, `album_application_metadata`, ordered
+`album_artist_credit` and `album_external_identity`. Album IDs are random opaque
+application IDs. Release has a non-null Album foreign key and an `(album_id, id)`
+index. Album deletion is restricted while Releases reference it; deleting a Release
+does not delete its Album or sibling editions. Membership remains Track-level.
+
+Backfill gives every existing Release its own Album, copying available friendly
+Release metadata and credits without matching or merging. The parent-table rebuild
+preserves Release IDs/timestamps and all child data, verifies foreign keys before
+commit, and reenables enforcement afterward. Release Group identities from the
+unshipped prototype move to their respective Albums. Shared legacy identities
+remain shared rather than triggering an implicit merge.
+
+Album identities follow the existing generic cardinality: composite primary key
+`(album_id, provider, kind, external_id)` prevents duplicate associations; a non-unique
+`(provider, kind, external_id)` index supports plural reverse resolution. Library/Store
+expose attach/list/resolve Album identity operations and `album_for_release` for
+friendly metadata. Generic identity storage imposes no provider-specific uniqueness.
+
+`catalog::AlbumCandidate` represents provider-neutral discovery. `CatalogProvider`
+searches Albums, browses concrete editions and looks up a complete Release carrying
+its parent Album metadata. Private MusicBrainz JSON becomes these application values.
+MusicBrainz Release Group maps to Album, Release to Release, and Track/Recording/ISRC
+identities to release-specific Tracks. No durable Recording or provider-specific
+Release Group entity is added.
+
+`CatalogSession::add_album` lazily requests representative candidates and selects a provisional
+representative for its tracklist. Among candidates with nonzero media/track counts,
+the pure ranking prefers Official status, the smallest year distance from the
+Album's first date, absence of obvious deluxe/expanded/anniversary/bonus wording,
+fewer discs, then date and external ID. Unknown dates rank last within status.
+It does not infer a canonical edition or automatically skip failed lookups.
+
+Album search returns ten results per page, with existing explicit next-page access.
+The [search/detail audit](catalog-endpoint-audit.md) supports bounding initial
+payloads; it does not establish consistently lower public-service latency. Eager
+ISRCs and the returned Release Group identity check remain in detailed lookup.
+
+The normal MusicBrainz search-and-add path uses three requests: Album search,
+one candidate browse (`status=official&inc=media&limit=100`), and the unchanged
+full Release lookup. Media summaries preserve nonempty-track checks and disc-count
+ranking; labels and release credits are only requested for explicit Editions.
+An empty Official page triggers one unfiltered media-only browse; HTTP failures
+are errors, not evidence that no Official edition exists. The request-shape
+[measurements](catalog-latency-audit.md#request-shape-follow-up) support smaller
+payloads but still show unpredictable service latency.
+
+Only Add Album or Editions triggers browse; selecting a result does not. Ranking
+remains bounded to the first page, not a guarantee about every edition. MusicBrainz
+supports [status filtering and paging](https://musicbrainz.org/doc/MusicBrainz_API#Browse)
+with a limit up to 100, but may shorten Release pages under its Track-count cap.
+Next offsets use actual returned counts. Release Group lookup with `inc=releases`
+is not a replacement: linked subqueries are limited to 25 entities.
+
+Editions retains unfiltered rich metadata and explicit pagination. A session caches
+four rich edition pages, one default candidate page and one complete Release.
+Default candidates never masquerade as rich edition data. A complete all-Official
+rich page can also serve Add Album; incomplete or mixed-status rich pages do not
+replace the provider's filtered first page. There is no persistent cache or
+background refresh.
+
+`Library::add_catalog_release` atomically resolves/creates Album and the selected
+Release, ordered Tracks, credits, identities and Track memberships. It creates no
+sources. Another edition with the same Album identity shares the Album. Re-adding
+an existing edition restores membership without replacing metadata or Tracks.
+An exact existing Release can supply its parent Album when that Album has not yet
+received the catalog identity. Ambiguous identity owners or conflicting Album/
+Release associations produce an error instead of silent merging or reassignment.
+All persistence, including Album creation and search materialization, rolls back
+on failure. HTTP completes before the transaction starts.
+
+Migration `0003_artist_credit_join_phrases.sql` preserves exact ordered join phrases;
+NULL retains legacy comma-separated display. Initial Album metadata stores title,
+year and credited names independently of edition metadata. Ordinary Track result
+materialization uses the Album title (the existing `release_title` result/FTS column
+name is retained for compatibility); the search execution strategy is unchanged.
+Full dates, labels/barcodes and printed track-number strings remain discovery data.
+Provider metadata refresh, sparse Album overrides and artist reconciliation are
+not implemented in this slice.
+
+The MusicBrainz adapter retains its identifying User-Agent and process-wide
+one-request-per-second gate under the [service rules](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
+The diagnostic owns one catalog worker for HTTP/rate waits and uses a queued Qt
+callback to apply results and notify properties. SQLite import remains synchronous
+and short. Shutdown joins the worker and may wait for its bounded request timeout;
+cancellation is deferred. See the [adapter guide](../adapters/musicbrainz/README.md).
+
+
+Transient MusicBrainz 503 responses are handled inside the HTTP adapter: at most
+two additional attempts, with 2s/4s backoff or a valid Retry-After. Every attempt
+uses the same process-wide rate gate and retains its 30-second HTTP timeout.
+Server delays over one minute stop automatic retry rather than being shortened.
+Other failures are not retried. The catalog worker still emits only one final
+result, so the diagnostic remains pending during retries; no new application or
+Qt notification boundary is needed. See the [retry policy](../adapters/musicbrainz/README.md#bounded-503-retry).

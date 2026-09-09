@@ -1,6 +1,7 @@
 //! Frontend-independent backend for the music library.
 
 pub mod application;
+pub mod catalog;
 pub mod domain;
 pub mod filesystem;
 pub mod playback;

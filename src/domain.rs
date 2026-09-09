@@ -19,6 +19,7 @@ macro_rules! id_type {
     };
 }
 
+id_type!(AlbumId);
 id_type!(ReleaseId);
 id_type!(TrackId);
 id_type!(ArtistId);
@@ -145,4 +146,13 @@ pub struct ScanReport {
     pub parsed: u64,
     pub unchanged: u64,
     pub unavailable: u64,
+}
+
+/// Friendly application-owned grouping; Releases retain edition-specific identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Album {
+    pub album_id: AlbumId,
+    pub title: String,
+    pub artist_names: String,
+    pub year: Option<i32>,
 }

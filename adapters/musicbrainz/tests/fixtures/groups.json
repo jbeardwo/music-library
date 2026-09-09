@@ -1,0 +1,27 @@
+{
+  "count": 26,
+  "offset": 0,
+  "release-groups": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "title": "Album (Live)",
+      "artist-credit": [
+        {
+          "name": "Artist A",
+          "joinphrase": " feat. "
+        },
+        {
+          "name": "Artist B",
+          "joinphrase": ""
+        }
+      ],
+      "first-release-date": "2001-03",
+      "primary-type": "Album",
+      "secondary-types": [
+        "Live"
+      ],
+      "disambiguation": "concert",
+      "score": 100
+    }
+  ]
+}

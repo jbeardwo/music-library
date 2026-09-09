@@ -71,6 +71,32 @@ impl Library {
         self.store.resolve_releases_external_identity(identity)
     }
 
+    pub fn attach_album_external_identity(
+        &mut self,
+        id: &crate::domain::AlbumId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        self.store.attach_album_external_identity(id, identity)
+    }
+
+    pub fn list_album_external_identities(
+        &self,
+        id: &crate::domain::AlbumId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        self.store.list_album_external_identities(id)
+    }
+
+    pub fn resolve_albums_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<crate::domain::AlbumId>> {
+        self.store.resolve_albums_external_identity(identity)
+    }
+
+    pub fn album_for_release(&self, release_id: &ReleaseId) -> Result<crate::domain::Album> {
+        self.store.album_for_release(release_id)
+    }
+
     pub fn register_local_root(&mut self, path: impl AsRef<Path>) -> Result<RootId> {
         self.store.register_local_root(path)
     }
@@ -102,6 +128,13 @@ impl Library {
         input: &CatalogReleaseInput,
     ) -> Result<ImportedRelease> {
         self.store.create_catalog_release(input)
+    }
+
+    pub fn add_catalog_release(
+        &mut self,
+        release: &crate::catalog::Release,
+    ) -> Result<ImportedRelease> {
+        self.store.add_catalog_release(release)
     }
 
     pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {

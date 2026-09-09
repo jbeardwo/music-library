@@ -177,3 +177,53 @@ session setting. Invalid/non-finite values are rejected without changing it.
 Volume defaults to 100%, survives Stop/queue changes, and is never persisted.
 The direct linear gain mapping is intentional for this probe; a perceptual
 slider curve remains deferred (see the GStreamer guide).
+
+
+## Catalog diagnostic
+
+Launch the fake-mode sample library (no collection required):
+
+```sh
+cargo run --manifest-path tools/qml-diagnostic/Cargo.toml
+```
+
+1. Open **Catalog…**, enter an Album/artist query and click **Search Albums**.
+   Friendly results show title, artist, original date and type. Search makes one
+   request for up to ten results and does not fetch editions. **Next Album page**
+   retrieves further matches.
+2. Click **Add Album** on a result. The worker loads a bounded Official candidate
+   page with media summaries (without labels or release credits),
+   provisionally selects a representative Release and fetches its complete Tracks.
+   Expect pending feedback, then success and unavailable Tracks in local search.
+   No playback begins. This normally uses two additional requests; no Official
+   candidates triggers one extra unfiltered media-only browse.
+3. Use **Editions…** only when edition choice matters. Country, format, label,
+   barcode, date and comments appear here. Choose an edition and **Add this edition**.
+   Further pages remain explicit. Editions of the same catalog Album share its
+   application Album but retain separate Tracks.
+4. Re-add an Album/edition: entities are reused and membership restored. Recent
+   compatible candidate/edition pages and details are reused in memory. Opening
+   Editions after Add still fetches rich display metadata. Errors stay visible and no partially
+   imported Album is left behind. Try queueing an imported Track to exercise the
+   existing no-source playback error.
+
+This also works in real-engine mode; catalog import does not match scanned files.
+The diagnostic database remains temporary and disappears on exit.
+
+One owned worker performs explicit network requests and rate waits off the Qt
+thread. Pending controls and an adapter guard reject duplicate submissions. Queued
+callbacks apply results before property notifications. Catalog properties remain
+separate from playback so timing updates cannot reset edition selection. There is
+no polling or startup network activity. Import is a short atomic SQLite transaction
+on the application thread. Closing during HTTP waits for the bounded request before
+joining the worker; cancellation is deferred.
+
+The all-feature Qt test uses a gated fake provider to verify responsiveness while
+pending, Add Album, advanced selection, cache reuse, source-less results, unchanged
+playback, re-add idempotency and visible HTTP errors. See the
+[MusicBrainz guide](../../adapters/musicbrainz/README.md) for HTTP fixtures and a
+read-only live probe.
+
+For opt-in Add Album phase logging and the ignored live Qt timing probe, see the
+[catalog latency audit](../../docs/catalog-latency-audit.md). Normal launches emit
+no timing logs and perform no extra requests.

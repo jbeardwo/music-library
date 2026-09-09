@@ -70,13 +70,21 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 2 {
+        } else if version > 4 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
         }
         if version < 2 {
             connection.execute_batch(EXTERNAL_IDENTITIES_MIGRATION)?;
+        }
+        if version < 3 {
+            connection.execute_batch(include_str!(
+                "../migrations/0003_artist_credit_join_phrases.sql"
+            ))?;
+        }
+        if version < 4 {
+            connection.execute_batch(include_str!("../migrations/0004_albums.sql"))?;
         }
         Ok(Self { connection })
     }
@@ -172,6 +180,67 @@ impl Store {
                 |row| row.get::<_, String>(0).map(ReleaseId),
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn attach_album_external_identity(
+        &mut self,
+        id: &crate::domain::AlbumId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO album_external_identity(album_id, provider, kind, external_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(album_id, provider, kind, external_id) DO NOTHING",
+            params![id.as_ref(), identity.provider, identity.kind, identity.external_id],
+        )? != 0)
+    }
+
+    /// Lists in binary provider/kind/ID order; an unknown entity returns an empty list.
+    pub fn list_album_external_identities(
+        &self,
+        id: &crate::domain::AlbumId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider, kind, external_id FROM album_external_identity WHERE album_id = ?1 ORDER BY provider, kind, external_id",
+        )?;
+        Ok(statement
+            .query_map([id.as_ref()], |row| {
+                Ok(ExternalIdentity {
+                    provider: row.get(0)?,
+                    kind: row.get(1)?,
+                    external_id: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns every associated entity; result order is unspecified.
+    pub fn resolve_albums_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<crate::domain::AlbumId>> {
+        let mut statement = self.connection.prepare(
+            "SELECT album_id FROM album_external_identity WHERE provider = ?1 AND kind = ?2 AND external_id = ?3",
+        )?;
+        Ok(statement
+            .query_map(
+                params![identity.provider, identity.kind, identity.external_id],
+                |row| row.get::<_, String>(0).map(crate::domain::AlbumId),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn album_for_release(&self, release_id: &ReleaseId) -> Result<crate::domain::Album> {
+        self.connection.query_row(
+            "SELECT a.album_id, a.title, a.year, COALESCE((SELECT group_concat(name, '') FROM (
+                SELECT ar.name || COALESCE(c.join_phrase, CASE WHEN EXISTS (
+                    SELECT 1 FROM album_artist_credit n WHERE n.album_id=c.album_id AND n.position>c.position
+                ) THEN ', ' ELSE '' END) AS name
+                FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id
+                WHERE c.album_id=a.album_id ORDER BY c.position)), '')
+             FROM release r JOIN album_application_metadata a ON a.album_id=r.album_id WHERE r.id=?1",
+            [release_id.as_ref()], |r| Ok(crate::domain::Album {
+                album_id: crate::domain::AlbumId(r.get(0)?), title:r.get(1)?, year:r.get(2)?, artist_names:r.get(3)?
+            })).map_err(Into::into)
     }
 
     pub fn register_local_root(&mut self, path: impl AsRef<Path>) -> Result<RootId> {
@@ -373,7 +442,12 @@ impl Store {
         }
         let tx = self.connection.transaction()?;
         let release_id = ReleaseId::new();
-        tx.execute("INSERT INTO release(id) VALUES (?1)", [release_id.as_ref()])?;
+        let album_id =
+            create_album_tx(&tx, &request.release_title, None, &request.release_artists)?;
+        tx.execute(
+            "INSERT INTO release(id, album_id) VALUES (?1, ?2)",
+            params![release_id.as_ref(), album_id.as_ref()],
+        )?;
         tx.execute(
             "INSERT INTO release_application_metadata(release_id, title) VALUES (?1, ?2)",
             params![release_id.as_ref(), request.release_title],
@@ -457,52 +531,210 @@ impl Store {
         }
 
         let tx = self.connection.transaction()?;
-        let release_id = ReleaseId::new();
-        tx.execute("INSERT INTO release(id) VALUES (?1)", [release_id.as_ref()])?;
-        tx.execute(
-            "INSERT INTO release_application_metadata(release_id, title, year)
-             VALUES (?1, ?2, ?3)",
-            params![release_id.as_ref(), input.title, input.year],
-        )?;
-        insert_credits(
-            &tx,
-            "release_artist_credit",
-            release_id.as_ref(),
-            &input.artists,
-        )?;
-
-        let mut track_ids = Vec::with_capacity(input.tracks.len());
-        for track in &input.tracks {
-            let track_id = TrackId::new();
-            tx.execute(
-                "INSERT INTO track(id, release_id, disc_number, track_number)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![
-                    track_id.as_ref(),
-                    release_id.as_ref(),
-                    track.disc_number,
-                    track.track_number
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO track_application_metadata(track_id, title) VALUES (?1, ?2)",
-                params![track_id.as_ref(), track.title],
-            )?;
-            insert_credits(
-                &tx,
-                "track_artist_credit",
-                track_id.as_ref(),
-                &track.artists,
-            )?;
-            refresh_effective_track_tx(&tx, &track_id)?;
-            track_ids.push(track_id);
-        }
+        let result = create_catalog_release_tx(&tx, input, None)?;
         tx.commit()?;
+        Ok(result)
+    }
 
-        Ok(ImportedRelease {
-            release_id,
-            track_ids,
-        })
+    /// Atomic Album + selected edition import. Ambiguous existing primary identity
+    /// is an error, never an arbitrary choice among multiple application editions.
+    pub fn add_catalog_release(
+        &mut self,
+        release: &crate::catalog::Release,
+    ) -> Result<ImportedRelease> {
+        let _total = crate::catalog::Timing::new("persistence.total");
+        crate::catalog::Timing::event(format_args!(
+            "import_begin tracks={} media={} identities={}",
+            release.media.iter().map(|m| m.tracks.len()).sum::<usize>(),
+            release.media.len(),
+            2 + release.identities.len()
+                + release
+                    .media
+                    .iter()
+                    .flat_map(|m| &m.tracks)
+                    .map(|t| t.identities.len())
+                    .sum::<usize>()
+        ));
+        let begin = crate::catalog::Timing::detail("persistence.transaction_begin");
+        let mut inserted_identities = 0;
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        drop(begin);
+        let resolve = crate::catalog::Timing::detail("persistence.release_resolve");
+        let identity = &release.identity;
+        let existing = {
+            let mut q = tx.prepare("SELECT release_id FROM release_external_identity WHERE provider=?1 AND kind=?2 AND external_id=?3")?;
+            q.query_map(
+                params![identity.provider, identity.kind, identity.external_id],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if existing.len() > 1 {
+            return Err(Error::Invalid("catalog Release identity has multiple existing associations; resolve ambiguity before adding".into()));
+        }
+        drop(resolve);
+        let resolve = crate::catalog::Timing::detail("persistence.album_resolve");
+        let album = &release.album;
+        let album_ids = {
+            let mut q = tx.prepare("SELECT album_id FROM album_external_identity WHERE provider=?1 AND kind=?2 AND external_id=?3")?;
+            q.query_map(
+                params![
+                    album.identity.provider,
+                    album.identity.kind,
+                    album.identity.external_id
+                ],
+                |r| r.get::<_, String>(0),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        if album_ids.len() > 1 {
+            return Err(Error::Invalid(
+                "catalog Album identity has multiple associations; resolve ambiguity before adding"
+                    .into(),
+            ));
+        }
+        drop(resolve);
+        let album_id = if let Some(id) = album_ids.first() {
+            crate::domain::AlbumId(id.clone())
+        } else if let Some(release_id) = existing.first() {
+            // An exact edition identity already anchors an Album; do not manufacture another.
+            let id = crate::domain::AlbumId(tx.query_row(
+                "SELECT album_id FROM release WHERE id=?1",
+                [release_id],
+                |r| r.get(0),
+            )?);
+            {
+                let _identity = crate::catalog::Timing::detail("persistence.album_identities");
+                inserted_identities += tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4)", params![id.as_ref(),album.identity.provider,album.identity.kind,album.identity.external_id])?;
+            }
+            id
+        } else {
+            let credits = album
+                .credits
+                .iter()
+                .map(|c| ArtistCreditInput {
+                    name: c.name.clone(),
+                    role: None,
+                })
+                .collect::<Vec<_>>();
+            let id = create_album_tx(
+                &tx,
+                &album.title,
+                album.date.get(..4).and_then(|v| v.parse().ok()),
+                &credits,
+            )?;
+            {
+                let _identity = crate::catalog::Timing::detail("persistence.album_identities");
+                inserted_identities += tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4)", params![id.as_ref(),album.identity.provider,album.identity.kind,album.identity.external_id])?;
+            }
+            for (position, credit) in album.credits.iter().enumerate() {
+                tx.execute("UPDATE album_artist_credit SET join_phrase=?1 WHERE album_id=?2 AND position=?3", params![credit.join_phrase,id.as_ref(),position as i64])?;
+            }
+            id
+        };
+        let imported = if let Some(id) = existing.first() {
+            let owner: String =
+                tx.query_row("SELECT album_id FROM release WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })?;
+            if owner != album_id.as_ref() {
+                return Err(Error::Invalid(
+                    "existing Release belongs to another Album; reconcile explicitly".into(),
+                ));
+            }
+            let release_id = ReleaseId(id.clone());
+            let track_ids = {
+                let mut q = tx.prepare("SELECT id FROM track WHERE release_id=?1 ORDER BY disc_number, track_number, id")?;
+                q.query_map([id], |r| r.get::<_, String>(0).map(TrackId))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            ImportedRelease {
+                release_id,
+                track_ids,
+            }
+        } else {
+            let tracks: Vec<_> = release
+                .media
+                .iter()
+                .flat_map(|m| m.tracks.iter().map(move |t| (m.position, t)))
+                .collect();
+            if tracks.is_empty() {
+                return Err(Error::Invalid("catalog Release has no Tracks".into()));
+            }
+            let credits = |values: &[crate::catalog::Credit]| {
+                values
+                    .iter()
+                    .map(|c| ArtistCreditInput {
+                        name: c.name.clone(),
+                        role: None,
+                    })
+                    .collect()
+            };
+            let input = crate::domain::CatalogReleaseInput {
+                title: release.title.clone(),
+                year: release.date.get(..4).and_then(|v| v.parse().ok()),
+                artists: credits(&release.credits),
+                tracks: tracks
+                    .iter()
+                    .map(|(disc, t)| crate::domain::CatalogTrackInput {
+                        title: t.title.clone(),
+                        artists: credits(&t.credits),
+                        disc_number: Some(*disc),
+                        track_number: Some(t.position),
+                    })
+                    .collect(),
+            };
+            let imported = create_catalog_release_tx(&tx, &input, Some(&album_id))?;
+            for id in std::iter::once(&release.identity).chain(&release.identities) {
+                {
+                    let _identity =
+                        crate::catalog::Timing::detail("persistence.release_identities");
+                    inserted_identities += tx.execute("INSERT INTO release_external_identity(release_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
+                    params![imported.release_id.as_ref(),id.provider,id.kind,id.external_id])?;
+                }
+            }
+            let credits_timer =
+                crate::catalog::Timing::detail("persistence.release_credit_phrases");
+            for (position, credit) in release.credits.iter().enumerate() {
+                tx.execute("UPDATE release_artist_credit SET join_phrase=?1 WHERE release_id=?2 AND position=?3",
+                    params![credit.join_phrase,imported.release_id.as_ref(),position as i64])?;
+            }
+            drop(credits_timer);
+            for (track_id, (_, track)) in imported.track_ids.iter().zip(tracks) {
+                for id in &track.identities {
+                    {
+                        let _identity =
+                            crate::catalog::Timing::detail("persistence.track_identities");
+                        inserted_identities += tx.execute("INSERT INTO track_external_identity(track_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",
+                        params![track_id.as_ref(),id.provider,id.kind,id.external_id])?;
+                    }
+                }
+                let credits_timer =
+                    crate::catalog::Timing::detail("persistence.track_credit_phrases");
+                for (position, credit) in track.credits.iter().enumerate() {
+                    tx.execute("UPDATE track_artist_credit SET join_phrase=?1 WHERE track_id=?2 AND position=?3",
+                        params![credit.join_phrase,track_id.as_ref(),position as i64])?;
+                }
+                drop(credits_timer);
+                refresh_effective_track_tx(&tx, track_id)?;
+            }
+            imported
+        };
+        let membership = crate::catalog::Timing::detail("persistence.membership");
+        for id in &imported.track_ids {
+            tx.execute(
+                "INSERT INTO library_membership(track_id) VALUES (?1) ON CONFLICT DO NOTHING",
+                [id.as_ref()],
+            )?;
+        }
+        drop(membership);
+        let commit = crate::catalog::Timing::detail("persistence.commit");
+        tx.commit()?;
+        drop(commit);
+        crate::catalog::Timing::event(format_args!("identities_inserted={inserted_identities}"));
+        Ok(imported)
     }
 
     pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {
@@ -672,6 +904,84 @@ impl Store {
     }
 }
 
+fn create_album_tx(
+    tx: &Transaction<'_>,
+    title: &str,
+    year: Option<i32>,
+    credits: &[ArtistCreditInput],
+) -> Result<crate::domain::AlbumId> {
+    let _create = crate::catalog::Timing::detail("persistence.album_create_metadata_credits");
+    let id = crate::domain::AlbumId::new();
+    tx.execute("INSERT INTO album(id) VALUES (?1)", [id.as_ref()])?;
+    tx.execute(
+        "INSERT INTO album_application_metadata(album_id,title,year) VALUES (?1,?2,?3)",
+        params![id.as_ref(), title, year],
+    )?;
+    insert_credits(tx, "album_artist_credit", id.as_ref(), credits)?;
+    Ok(id)
+}
+
+fn create_catalog_release_tx(
+    tx: &Transaction<'_>,
+    input: &CatalogReleaseInput,
+    album_id: Option<&crate::domain::AlbumId>,
+) -> Result<ImportedRelease> {
+    let create = crate::catalog::Timing::detail("persistence.release_create");
+    let release_id = ReleaseId::new();
+    let album_id = match album_id {
+        Some(id) => id.clone(),
+        None => create_album_tx(tx, &input.title, input.year, &input.artists)?,
+    };
+    tx.execute(
+        "INSERT INTO release(id, album_id) VALUES (?1, ?2)",
+        params![release_id.as_ref(), album_id.as_ref()],
+    )?;
+    drop(create);
+    let metadata = crate::catalog::Timing::detail("persistence.release_metadata_credits");
+    tx.execute(
+        "INSERT INTO release_application_metadata(release_id, title, year)
+             VALUES (?1, ?2, ?3)",
+        params![release_id.as_ref(), input.title, input.year],
+    )?;
+    insert_credits(
+        tx,
+        "release_artist_credit",
+        release_id.as_ref(),
+        &input.artists,
+    )?;
+
+    drop(metadata);
+    let mut track_ids = Vec::with_capacity(input.tracks.len());
+    for track in &input.tracks {
+        let create = crate::catalog::Timing::detail("persistence.track_create");
+        let track_id = TrackId::new();
+        tx.execute(
+            "INSERT INTO track(id, release_id, disc_number, track_number)
+                 VALUES (?1, ?2, ?3, ?4)",
+            params![
+                track_id.as_ref(),
+                release_id.as_ref(),
+                track.disc_number,
+                track.track_number
+            ],
+        )?;
+        drop(create);
+        let metadata = crate::catalog::Timing::detail("persistence.track_metadata_credits");
+        tx.execute(
+            "INSERT INTO track_application_metadata(track_id, title) VALUES (?1, ?2)",
+            params![track_id.as_ref(), track.title],
+        )?;
+        insert_credits(tx, "track_artist_credit", track_id.as_ref(), &track.artists)?;
+        drop(metadata);
+        refresh_effective_track_tx(tx, &track_id)?;
+        track_ids.push(track_id);
+    }
+    Ok(ImportedRelease {
+        release_id,
+        track_ids,
+    })
+}
+
 fn map_search_result(row: &rusqlite::Row<'_>) -> rusqlite::Result<TrackSearchResult> {
     Ok(TrackSearchResult {
         track_id: TrackId(row.get(0)?),
@@ -763,6 +1073,7 @@ fn insert_credits(
     let entity_column = match table {
         "track_artist_credit" => "track_id",
         "release_artist_credit" => "release_id",
+        "album_artist_credit" => "album_id",
         _ => return Err(Error::Invalid("unsupported credit table".into())),
     };
     let sql = format!(
@@ -834,6 +1145,7 @@ fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
 }
 
 fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> Result<()> {
+    let _refresh = crate::catalog::Timing::detail("persistence.effective_fts");
     let changed = connection.execute(
         "INSERT INTO effective_track_metadata(
             track_id, title, release_title, artist_names, year, duration_ms, format
@@ -842,8 +1154,11 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
                 COALESCE(o.value, f.track_title, app.title, ''),
                 r.title,
                 COALESCE((
-                    SELECT group_concat(name, ', ') FROM (
-                        SELECT a.name AS name
+                    SELECT group_concat(name, '') FROM (
+                        SELECT a.name || COALESCE(c.join_phrase,
+                            CASE WHEN EXISTS (SELECT 1 FROM track_artist_credit next
+                                WHERE next.track_id=c.track_id AND next.position>c.position)
+                            THEN ', ' ELSE '' END) AS name
                         FROM track_artist_credit c
                         JOIN artist a ON a.id = c.artist_id
                         WHERE c.track_id = t.id ORDER BY c.position
@@ -851,7 +1166,8 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
                 ), ''),
                 COALESCE(f.year, r.year), f.duration_ms, f.format
          FROM track t
-         JOIN release_application_metadata r ON r.release_id = t.release_id
+         JOIN release edition ON edition.id = t.release_id
+         JOIN album_application_metadata r ON r.album_id = edition.album_id
          LEFT JOIN track_application_metadata app ON app.track_id = t.id
          LEFT JOIN track_title_override o ON o.track_id = t.id
          LEFT JOIN track_source ts ON ts.track_id = t.id
