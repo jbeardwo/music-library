@@ -1,15 +1,25 @@
 //! Benchmark-only access to the unchanged Store implementation and its connection.
-use music_library::matching;
-use std::hint::black_box;
-use std::time::Instant;
+use domain::{SearchRequest, TrackSearchResult};
+#[allow(dead_code)]
+#[path = "../src/album_matching.rs"]
+mod album_matching;
 #[allow(dead_code)]
 #[path = "../src/catalog.rs"]
 mod catalog;
 #[allow(dead_code)]
 #[path = "../src/domain.rs"]
 mod domain;
-use domain::{SearchRequest, TrackSearchResult};
+use music_library::matching;
+#[allow(dead_code)]
+#[path = "../src/application.rs"]
+mod application;
+#[allow(dead_code)]
+#[path = "../src/filesystem.rs"]
+mod filesystem;
+use application::Library;
 use rusqlite::{Connection, StatementStatus, params};
+use std::hint::black_box;
+use std::time::Instant;
 
 #[allow(dead_code)]
 mod storage {
