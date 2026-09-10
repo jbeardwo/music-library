@@ -527,3 +527,745 @@ fn oversized_candidate_group_is_declined_instead_of_accepting_a_truncated_set() 
     f.library.import_release(&request).unwrap();
     assert_eq!(f.count("album"), 66);
 }
+
+mod external {
+    use super::*;
+    use music_library::album_matching::{AlbumMatcher, AutoMatchPolicy, MatchOutcome, MatchReply};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+    struct Provider {
+        pages: VecDeque<
+            std::result::Result<catalog::Page<catalog::AlbumCandidate>, catalog::CatalogError>,
+        >,
+        calls: Arc<AtomicUsize>,
+        gate: Option<mpsc::Receiver<()>>,
+    }
+    impl catalog::CatalogProvider for Provider {
+        fn search_artists(
+            &mut self,
+            name: &str,
+        ) -> std::result::Result<catalog::Page<catalog::ArtistCandidate>, catalog::CatalogError>
+        {
+            Ok(catalog::Page {
+                next_offset: None,
+                items: vec![catalog::ArtistCandidate {
+                    identity: identity("artist", "artist-id"),
+                    name: name.into(),
+                    comment: String::new(),
+                    country: String::new(),
+                    artist_type: String::new(),
+                    score: None,
+                }],
+            })
+        }
+        fn artist_albums(
+            &mut self,
+            artist: &ExternalIdentity,
+            title: &str,
+        ) -> std::result::Result<catalog::Page<catalog::ArtistAlbumCandidate>, catalog::CatalogError>
+        {
+            assert_eq!(title, "album");
+            assert_eq!(artist.kind, "artist");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.gate {
+                gate.recv().unwrap();
+            }
+            self.pages.pop_front().unwrap().map(|page| catalog::Page {
+                next_offset: page.next_offset,
+                items: page
+                    .items
+                    .into_iter()
+                    .map(|c| catalog::ArtistAlbumCandidate {
+                        identity: c.identity,
+                        title: c.title,
+                        artist_ids: vec![artist.clone()],
+                        date: c.date,
+                        comment: c.comment,
+                    })
+                    .collect(),
+            })
+        }
+        fn search_albums(
+            &mut self,
+            _: &str,
+            _: u32,
+        ) -> std::result::Result<catalog::Page<catalog::AlbumCandidate>, catalog::CatalogError>
+        {
+            panic!("use structured boundary")
+        }
+        fn releases(
+            &mut self,
+            _: &ExternalIdentity,
+            _: u32,
+        ) -> std::result::Result<catalog::Page<catalog::ReleaseCandidate>, catalog::CatalogError>
+        {
+            panic!("no edition requests")
+        }
+        fn release(
+            &mut self,
+            _: &ExternalIdentity,
+        ) -> std::result::Result<catalog::Release, catalog::CatalogError> {
+            panic!("no track requests")
+        }
+    }
+    fn page(ids: &[&str]) -> catalog::Page<catalog::AlbumCandidate> {
+        catalog::Page {
+            next_offset: None,
+            items: ids
+                .iter()
+                .enumerate()
+                .map(|(n, id)| catalog::AlbumCandidate {
+                    credits: vec![credit("Artist")],
+                    identity: identity("release_group", id),
+                    title: " ALBUM ".into(),
+                    artist: " Artist ".into(),
+                    date: "2000".into(),
+                    primary_type: "Album".into(),
+                    secondary_types: vec![],
+                    comment: String::new(),
+                    score: Some(100 - n as u32),
+                })
+                .collect(),
+        }
+    }
+    fn worker(
+        pages: Vec<
+            std::result::Result<catalog::Page<catalog::AlbumCandidate>, catalog::CatalogError>,
+        >,
+        gate: Option<mpsc::Receiver<()>>,
+    ) -> (AlbumMatcher, mpsc::Receiver<MatchReply>, Arc<AtomicUsize>) {
+        let (send, recv) = mpsc::channel();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let worker = AlbumMatcher::new(
+            Provider {
+                pages: pages.into(),
+                calls: calls.clone(),
+                gate,
+            },
+            move |r| send.send(r).unwrap(),
+        )
+        .unwrap();
+        (worker, recv, calls)
+    }
+    #[test]
+    fn committed_partial_import_is_usable_while_matching_is_pending_and_only_album_identity_changes()
+     {
+        for count in [1, 3, 15] {
+            let mut f = Fixture::new();
+            let request = f.files("Album", "Artist", &(1..=count).collect::<Vec<_>>());
+            let imported = f.library.import_release(&request).unwrap();
+            let album = f.library.album_for_release(&imported.release_id).unwrap();
+            let (gate, wait) = mpsc::channel();
+            let (mut matcher, results, calls) = worker(vec![Ok(page(&["group"]))], Some(wait));
+            let updates = matcher
+                .after_import(
+                    &f.library,
+                    std::slice::from_ref(&imported),
+                    AutoMatchPolicy::default(),
+                )
+                .unwrap();
+            assert_eq!(updates[0].1, MatchOutcome::Pending);
+            assert_eq!(f.count("library_membership"), count as i64); // separate connection sees committed import
+            for track in &imported.track_ids {
+                assert!(
+                    f.library
+                        .available_playback_source(track)
+                        .unwrap()
+                        .is_some()
+                );
+            }
+            assert!(results.try_recv().is_err());
+            gate.send(()).unwrap();
+            assert!(matches!(
+                matcher.complete(
+                    &mut f.library,
+                    results.recv_timeout(Duration::from_secs(5)).unwrap()
+                ),
+                MatchOutcome::Matched(_)
+            ));
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                f.library.album_for_release(&imported.release_id).unwrap(),
+                album
+            );
+            assert_eq!(
+                f.library
+                    .list_album_external_identities(&album.album_id)
+                    .unwrap(),
+                vec![identity("release_group", "group")]
+            );
+            assert_eq!(f.count("release_external_identity"), 0);
+            assert_eq!(f.count("track_external_identity"), 0);
+            assert_eq!(
+                matcher.match_album(&f.library, &album.album_id).unwrap(),
+                MatchOutcome::AlreadyMatched
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        }
+    }
+    #[test]
+    fn errors_retry_ambiguity_truncation_and_scores_never_damage_local_music() {
+        let mut f = Fixture::new();
+        let request = f.files("Album", "Artist", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let id = f
+            .library
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        let mut truncated = page(&["group"]);
+        truncated.next_offset = Some(10);
+        let mut unrelated = page(&["wrong"]);
+        unrelated.items[0].title = "Album (Live)".into();
+        let (mut matcher, results, calls) = worker(
+            vec![
+                Err(catalog::CatalogError("HTTP 503".into())),
+                Ok(page(&["first", "second"])),
+                Ok(truncated),
+                Ok(unrelated),
+                Ok(page(&["group"])),
+            ],
+            None,
+        );
+        for expected in ["error", "no", "no", "no", "matched"] {
+            assert_eq!(
+                matcher.match_album(&f.library, &id).unwrap(),
+                MatchOutcome::Pending
+            );
+            let result = matcher.complete(
+                &mut f.library,
+                results.recv_timeout(Duration::from_secs(5)).unwrap(),
+            );
+            match expected {
+                "error" => assert!(matches!(result, MatchOutcome::Error(_))),
+                "no" => assert!(matches!(
+                    result,
+                    MatchOutcome::NoConfidentMatch | MatchOutcome::AlbumAmbiguous(_)
+                )),
+                _ => assert!(matches!(result, MatchOutcome::Matched(_))),
+            }
+            assert_eq!(f.count("album"), 1);
+            assert_eq!(f.count("track_source"), 1);
+            assert_eq!(f.count("library_membership"), 1);
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+    }
+    #[test]
+    fn policy_deduplication_poor_metadata_and_existing_library_matching_avoid_requests() {
+        let mut f = Fixture::new();
+        let (mut matcher, results, calls) =
+            worker(vec![Ok(page(&["group"])), Ok(page(&["group"]))], None);
+        let request = f.files("Album", "Artist", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        assert!(
+            matcher
+                .after_import(
+                    &f.library,
+                    std::slice::from_ref(&imported),
+                    AutoMatchPolicy { enabled: false }
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        let id = f
+            .library
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        matcher.match_album(&f.library, &id).unwrap(); // manual works when auto disabled
+        matcher.complete(
+            &mut f.library,
+            results.recv_timeout(Duration::from_secs(5)).unwrap(),
+        );
+        let request = f.files("Album", "Artist", &[1, 2]);
+        let reused = f.library.import_release(&request).unwrap();
+        assert_eq!(
+            f.library
+                .album_for_release(&reused.release_id)
+                .unwrap()
+                .album_id,
+            id
+        );
+        matcher
+            .after_import(&f.library, &[imported, reused], AutoMatchPolicy::default())
+            .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let request = f.files("Unknown Album", "Unknown Artist", &[1]);
+        let poor = f.library.import_release(&request).unwrap();
+        assert_eq!(
+            matcher
+                .after_import(&f.library, &[poor], AutoMatchPolicy::default())
+                .unwrap()[0]
+                .1,
+            MatchOutcome::Skipped
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let request = f.files("Album", "Artist", &[20]);
+        let second = f.library.import_release(&request).unwrap();
+        let request = f.files("Album", "Artist", &[20]);
+        let same = f.library.import_release(&request).unwrap();
+        let outcomes = matcher
+            .after_import(&f.library, &[second, same], AutoMatchPolicy::default())
+            .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        matcher.complete(
+            &mut f.library,
+            results.recv_timeout(Duration::from_secs(5)).unwrap(),
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+    #[test]
+    fn stale_metadata_and_concurrent_identity_are_rechecked_before_attachment() {
+        let mut f = Fixture::new();
+        let request = f.files("Album", "Artist", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let id = f
+            .library
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        let (mut matcher, results, _) = worker(vec![Ok(page(&["group"]))], None);
+        matcher.match_album(&f.library, &id).unwrap();
+        let reply = results.recv_timeout(Duration::from_secs(5)).unwrap();
+        f.library
+            .attach_album_external_identity(&id, &identity("release_group", "other"))
+            .unwrap();
+        assert_eq!(
+            matcher.complete(&mut f.library, reply),
+            MatchOutcome::AlreadyMatched
+        );
+        assert_eq!(
+            f.library.list_album_external_identities(&id).unwrap(),
+            vec![identity("release_group", "other")]
+        );
+    }
+    #[test]
+    fn absent_local_track_titles_skip_and_changed_metadata_rejects_a_late_reply() {
+        let mut f = Fixture::new();
+        let request = f.files("Album", "Artist", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let id = f
+            .library
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        let (mut matcher, results, calls) = worker(vec![Ok(page(&["group"]))], None);
+        f.db()
+            .execute("UPDATE file_metadata_observation SET track_title=NULL", [])
+            .unwrap();
+        assert_eq!(
+            matcher.match_album(&f.library, &id).unwrap(),
+            MatchOutcome::Skipped
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        f.db()
+            .execute(
+                "UPDATE file_metadata_observation SET track_title='Song 1'",
+                [],
+            )
+            .unwrap();
+        matcher.match_album(&f.library, &id).unwrap();
+        let reply = results.recv_timeout(Duration::from_secs(5)).unwrap();
+        // Simulate a future metadata edit while the request is in flight.
+        f.db().execute("UPDATE album_application_metadata SET title='Changed',match_title='changed' WHERE album_id=?1",[id.as_ref()]).unwrap();
+        assert_eq!(
+            matcher.complete(&mut f.library, reply),
+            MatchOutcome::Skipped
+        );
+        assert!(
+            f.library
+                .list_album_external_identities(&id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn multi_album_dispatch_coalesces_repeated_submissions() {
+        let mut f = Fixture::new();
+        let request = f.files("Album", "Artist", &[1]);
+        let first = f.library.import_release(&request).unwrap();
+        let request = f.files("Album", "Artist", &[20]);
+        let second = f.library.import_release(&request).unwrap();
+        let imports = [first, second];
+        let (gate, wait) = mpsc::channel();
+        let (mut matcher, results, calls) =
+            worker(vec![Ok(page(&["one"])), Ok(page(&["two"]))], Some(wait));
+        assert_eq!(
+            matcher
+                .after_import(&f.library, &imports, AutoMatchPolicy::default())
+                .unwrap()
+                .len(),
+            2
+        );
+        matcher
+            .after_import(&f.library, &imports, AutoMatchPolicy::default())
+            .unwrap();
+        for _ in 0..2 {
+            gate.send(()).unwrap();
+            let reply = results.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert!(matches!(
+                matcher.complete(&mut f.library, reply),
+                MatchOutcome::Matched(_)
+            ));
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+}
+
+mod artist_first {
+    use super::*;
+    use music_library::album_matching::{
+        AlbumMatcher, AutoMatchPolicy, MatchOutcome, Preparation, accepted_album,
+        close_album_title, resolve_artist,
+    };
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex, mpsc},
+        time::Duration,
+    };
+    fn artist(name: &str, id: &str) -> catalog::ArtistCandidate {
+        catalog::ArtistCandidate {
+            identity: identity("artist", id),
+            name: name.into(),
+            comment: "diagnostic".into(),
+            country: String::new(),
+            artist_type: "Group".into(),
+            score: Some(100),
+        }
+    }
+    fn artists(names: &[(&str, &str)]) -> catalog::Page<catalog::ArtistCandidate> {
+        catalog::Page {
+            items: names.iter().map(|(n, id)| artist(n, id)).collect(),
+            next_offset: None,
+        }
+    }
+    fn albums(titles: &[&str]) -> catalog::Page<catalog::ArtistAlbumCandidate> {
+        catalog::Page {
+            items: titles
+                .iter()
+                .enumerate()
+                .map(|(n, title)| catalog::ArtistAlbumCandidate {
+                    identity: identity("release_group", &format!("group-{n}")),
+                    title: (*title).into(),
+                    artist_ids: vec![identity("artist", "hella")],
+                    comment: String::new(),
+                    date: "2004".into(),
+                })
+                .collect(),
+            next_offset: None,
+        }
+    }
+    #[test]
+    fn artist_names_are_exact_and_scores_do_not_resolve_duplicate_names() {
+        assert!(resolve_artist(" Hella ", &artists(&[("HELLA", "hella")])).is_ok());
+        assert_eq!(
+            resolve_artist("Hella", &artists(&[("Hellä", "other"), ("Hell", "close")]))
+                .unwrap_err(),
+            MatchOutcome::NoConfidentMatch
+        );
+        let mut page = artists(&[("Hella", "one"), ("hella", "two")]);
+        page.items[1].score = Some(1);
+        assert!(
+            matches!(resolve_artist("Hella",&page),Err(MatchOutcome::ArtistAmbiguous(c)) if c.len()==2)
+        );
+        let mut page = artists(&[("Hella", "one")]);
+        page.next_offset = Some(10);
+        assert!(matches!(
+            resolve_artist("Hella", &page),
+            Err(MatchOutcome::ArtistAmbiguous(_))
+        ));
+    }
+    #[test]
+    fn close_titles_require_artist_scope_exact_precedes_close_and_ambiguity_is_retained() {
+        let id = identity("artist", "hella");
+        assert!(matches!(
+            accepted_album("Acoustic", &id, &albums(&["Acoustics"])),
+            MatchOutcome::MatchedClose(_)
+        ));
+        assert!(matches!(
+            accepted_album("Acoustic", &id, &albums(&["Acoustic", "Acoustics"])),
+            MatchOutcome::Matched(_)
+        ));
+        assert!(
+            matches!(accepted_album("Acoustic",&id,&albums(&["Acoustics","Acousti"])),MatchOutcome::AlbumAmbiguous(c) if c.len()==2)
+        );
+        assert_eq!(
+            accepted_album(
+                "Acoustic",
+                &identity("artist", "another"),
+                &albums(&["Acoustics"])
+            ),
+            MatchOutcome::NoConfidentMatch
+        );
+        assert_eq!(
+            accepted_album("Acoustic", &identity("artist", ""), &albums(&["Acoustics"])),
+            MatchOutcome::NoConfidentMatch
+        );
+        for (a, b) in [
+            ("Art", "Arts"),
+            ("Acoustic", "Electric"),
+            ("Album", "Album (Live)"),
+            ("Album Remix", "Album"),
+            ("Album Deluxe", "Album"),
+            ("Album Remaster", "Album"),
+            ("Album Edit", "Album"),
+        ] {
+            assert!(!close_album_title(a, b), "{a} / {b}");
+        }
+        assert!(close_album_title("  Échoes ", "Échoe"));
+    }
+    struct Provider {
+        artists: VecDeque<
+            std::result::Result<catalog::Page<catalog::ArtistCandidate>, catalog::CatalogError>,
+        >,
+        albums: VecDeque<
+            std::result::Result<
+                catalog::Page<catalog::ArtistAlbumCandidate>,
+                catalog::CatalogError,
+            >,
+        >,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+    impl catalog::CatalogProvider for Provider {
+        fn search_artists(
+            &mut self,
+            name: &str,
+        ) -> std::result::Result<catalog::Page<catalog::ArtistCandidate>, catalog::CatalogError>
+        {
+            self.calls.lock().unwrap().push(format!("artist:{name}"));
+            self.artists.pop_front().expect("unexpected Artist request")
+        }
+        fn artist_albums(
+            &mut self,
+            id: &ExternalIdentity,
+            title: &str,
+        ) -> std::result::Result<catalog::Page<catalog::ArtistAlbumCandidate>, catalog::CatalogError>
+        {
+            assert_eq!(id, &identity("artist", "hella"));
+            self.calls.lock().unwrap().push(format!("album:{title}"));
+            self.albums.pop_front().expect("unexpected Album request")
+        }
+        fn search_albums(
+            &mut self,
+            _: &str,
+            _: u32,
+        ) -> std::result::Result<catalog::Page<catalog::AlbumCandidate>, catalog::CatalogError>
+        {
+            panic!("no broad search")
+        }
+        fn releases(
+            &mut self,
+            _: &ExternalIdentity,
+            _: u32,
+        ) -> std::result::Result<catalog::Page<catalog::ReleaseCandidate>, catalog::CatalogError>
+        {
+            unreachable!()
+        }
+        fn release(
+            &mut self,
+            _: &ExternalIdentity,
+        ) -> std::result::Result<catalog::Release, catalog::CatalogError> {
+            unreachable!()
+        }
+    }
+    fn input(f: &Fixture, imported: &ImportedRelease) -> music_library::album_matching::MatchInput {
+        let id = f
+            .library
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        match f.library.prepare_album_match(&id).unwrap() {
+            Preparation::Ready(input) => input,
+            other => panic!("{other:?}"),
+        }
+    }
+    #[test]
+    fn artist_persists_after_album_error_fresh_worker_reuses_it_and_metadata_is_preserved() {
+        let mut f = Fixture::new();
+        let request = f.files("Acoustic", "Hella", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let input = input(&f, &imported);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        for (n, response) in [
+            Err(catalog::CatalogError("HTTP 503 timeout".into())),
+            Ok(albums(&["Acoustics"])),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (send, recv) = mpsc::channel();
+            let provider = Provider {
+                artists: if n == 0 {
+                    vec![Ok(artists(&[("Hella", "hella")]))].into()
+                } else {
+                    VecDeque::new()
+                },
+                albums: vec![response].into(),
+                calls: calls.clone(),
+            };
+            let mut matcher = AlbumMatcher::new(provider, move |r| send.send(r).unwrap()).unwrap();
+            matcher.match_album(&f.library, &input.album_id).unwrap();
+            let outcome = matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap(),
+            );
+            if n == 0 {
+                assert!(matches!(outcome, MatchOutcome::Error(_)));
+                assert_eq!(f.count("album_external_identity"), 0);
+            } else {
+                assert!(matches!(outcome, MatchOutcome::MatchedClose(_)));
+            }
+            assert_eq!(
+                f.library
+                    .list_artist_external_identities(&input.artist_id)
+                    .unwrap(),
+                vec![identity("artist", "hella")]
+            );
+        }
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["artist:hella", "album:acoustic", "album:acoustic"]
+        );
+        assert_eq!(
+            f.library
+                .album_for_release(&imported.release_id)
+                .unwrap()
+                .title,
+            "Acoustic"
+        );
+        assert_eq!(f.count("release_external_identity"), 0);
+        assert_eq!(f.count("track_external_identity"), 0);
+        assert_eq!(f.count("track_source"), 1);
+    }
+    #[test]
+    fn ambiguous_artist_never_triggers_album_search_and_complex_credits_are_not_flattened() {
+        let mut f = Fixture::new();
+        let request = f.files("Acoustic", "Hella", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let input = input(&f, &imported);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (send, recv) = mpsc::channel();
+        let provider = Provider {
+            artists: vec![Ok(artists(&[("Hella", "one"), ("Hella", "two")]))].into(),
+            albums: VecDeque::new(),
+            calls: calls.clone(),
+        };
+        let mut matcher = AlbumMatcher::new(provider, move |r| send.send(r).unwrap()).unwrap();
+        matcher.match_album(&f.library, &input.album_id).unwrap();
+        assert!(matches!(
+            matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap()
+            ),
+            MatchOutcome::ArtistAmbiguous(_)
+        ));
+        assert_eq!(f.count("artist_external_identity"), 0);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        f.db()
+            .execute_batch("INSERT INTO artist(id,name) VALUES ('other','Someone');")
+            .unwrap();
+        f.db().execute("INSERT INTO album_artist_credit(album_id,position,artist_id) VALUES (?1,1,'other')",[input.album_id.as_ref()]).unwrap();
+        assert!(matches!(
+            matcher.match_album(&f.library, &input.album_id).unwrap(),
+            MatchOutcome::ArtistAmbiguous(_)
+        ));
+        assert_eq!(calls.lock().unwrap().len(), 1);
+    }
+    #[test]
+    fn queued_album_failure_does_not_stall_next_and_exact_artist_resolution_is_cached() {
+        let mut f = Fixture::new();
+        let request = f.files("Acoustic", "Hella", &[1]);
+        let first = f.library.import_release(&request).unwrap();
+        let request = f.files("Control", "Hella", &[1]);
+        let second = f.library.import_release(&request).unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (send, recv) = mpsc::channel();
+        let provider = Provider {
+            artists: vec![Ok(artists(&[("Hella", "hella")]))].into(),
+            albums: vec![
+                Err(catalog::CatalogError("HTTP 503".into())),
+                Ok(albums(&["Control"])),
+            ]
+            .into(),
+            calls: calls.clone(),
+        };
+        let mut matcher = AlbumMatcher::new(provider, move |r| send.send(r).unwrap()).unwrap();
+        matcher
+            .after_import(&f.library, &[first, second], AutoMatchPolicy::default())
+            .unwrap();
+        assert!(matches!(
+            matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap()
+            ),
+            MatchOutcome::Error(_)
+        ));
+        assert!(matches!(
+            matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap()
+            ),
+            MatchOutcome::Matched(_)
+        ));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["artist:hella", "album:acoustic", "album:control"]
+        );
+        assert_eq!(f.count("artist_external_identity"), 2);
+        assert_eq!(f.count("album_external_identity"), 1);
+    }
+    #[test]
+    fn manual_artist_choice_retries_scoped_album_without_name_guessing() {
+        let mut f = Fixture::new();
+        let request = f.files("Acoustic", "Hella", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let input = input(&f, &imported);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (send, recv) = mpsc::channel();
+        let provider = Provider {
+            artists: vec![Ok(artists(&[("Hella", "hella"), ("Hella", "other")]))].into(),
+            albums: vec![Ok(albums(&["Acoustics"]))].into(),
+            calls: calls.clone(),
+        };
+        let mut matcher = AlbumMatcher::new(provider, move |r| send.send(r).unwrap()).unwrap();
+        matcher.match_album(&f.library, &input.album_id).unwrap();
+        assert!(matches!(
+            matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap()
+            ),
+            MatchOutcome::ArtistAmbiguous(_)
+        ));
+        assert_eq!(
+            matcher
+                .select_artist(&mut f.library, &input.album_id, 0)
+                .unwrap(),
+            MatchOutcome::Pending
+        );
+        assert_eq!(
+            f.library
+                .list_artist_external_identities(&input.artist_id)
+                .unwrap(),
+            vec![identity("artist", "hella")]
+        );
+        assert!(matches!(
+            matcher.complete(
+                &mut f.library,
+                recv.recv_timeout(Duration::from_secs(5)).unwrap()
+            ),
+            MatchOutcome::MatchedClose(_)
+        ));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["artist:hella", "album:acoustic"]
+        );
+    }
+}

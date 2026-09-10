@@ -53,6 +53,74 @@ pub(crate) struct ScannedLocalSource {
 }
 
 impl Store {
+    pub fn prepare_album_match(
+        &self,
+        id: &crate::domain::AlbumId,
+    ) -> Result<crate::album_matching::Preparation> {
+        prepare_album_match(&self.connection, id)
+    }
+    pub fn complete_album_match(
+        &mut self,
+        reply: crate::album_matching::MatchReply,
+    ) -> Result<crate::album_matching::MatchOutcome> {
+        use crate::album_matching::{MatchOutcome, Preparation};
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Artist resolution stands independently of Album success. Persist it even
+        // when the following Album request failed, without changing the local name.
+        if let Some(identity) = &reply.artist {
+            if identity.provider != "musicbrainz"
+                || identity.kind != "artist"
+                || identity.external_id.is_empty()
+            {
+                return Err(Error::Invalid("invalid Artist matching identity".into()));
+            }
+            let name: Option<String> = tx
+                .query_row(
+                    "SELECT name FROM artist WHERE id=?1",
+                    [reply.input.artist_id.as_ref()],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if name.as_deref().map(crate::matching::normalize).as_deref()
+                != Some(&reply.input.artist)
+            {
+                return Ok(MatchOutcome::Skipped);
+            }
+            let existing = artist_matching_identities(&tx, &reply.input.artist_id)?;
+            if existing.iter().any(|id| id != identity) {
+                return Ok(MatchOutcome::ArtistAmbiguous(vec![]));
+            }
+            tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![reply.input.artist_id.as_ref(),identity.provider,identity.kind,identity.external_id])?;
+        }
+        let outcome = match prepare_album_match(&tx, &reply.input.album_id)? {
+            Preparation::Done(outcome) => outcome,
+            Preparation::Ready(current)
+                if current.title != reply.input.title
+                    || current.artist != reply.input.artist
+                    || current.artist_id != reply.input.artist_id =>
+            {
+                MatchOutcome::Skipped
+            }
+            Preparation::Ready(_) => match &reply.outcome {
+                MatchOutcome::Matched(identity) | MatchOutcome::MatchedClose(identity) => {
+                    if reply.artist.is_none()
+                        || identity.provider != "musicbrainz"
+                        || identity.kind != "release_group"
+                        || identity.external_id.is_empty()
+                    {
+                        return Err(Error::Invalid("invalid Album matching identity".into()));
+                    }
+                    tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING", params![reply.input.album_id.as_ref(), identity.provider, identity.kind, identity.external_id])?;
+                    reply.outcome
+                }
+                _ => reply.outcome,
+            },
+        };
+        tx.commit()?;
+        Ok(outcome)
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
         Self::from_connection(connection)
@@ -70,7 +138,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 5 {
+        } else if version > 6 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -101,7 +169,57 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        if version < 6 {
+            connection.execute_batch(include_str!(
+                "../migrations/0006_artist_external_identities.sql"
+            ))?;
+        }
         Ok(Self { connection })
+    }
+
+    /// Returns true for a new association, false for an identical existing association.
+    pub fn attach_artist_external_identity(
+        &mut self,
+        id: &ArtistId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        Ok(self.connection.execute(
+            "INSERT INTO artist_external_identity(artist_id, provider, kind, external_id) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(artist_id, provider, kind, external_id) DO NOTHING",
+            params![id.as_ref(), identity.provider, identity.kind, identity.external_id],
+        )? != 0)
+    }
+
+    /// Lists in binary provider/kind/ID order; an unknown entity returns an empty list.
+    pub fn list_artist_external_identities(&self, id: &ArtistId) -> Result<Vec<ExternalIdentity>> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider, kind, external_id FROM artist_external_identity WHERE artist_id = ?1 ORDER BY provider, kind, external_id",
+        )?;
+        Ok(statement
+            .query_map([id.as_ref()], |row| {
+                Ok(ExternalIdentity {
+                    provider: row.get(0)?,
+                    kind: row.get(1)?,
+                    external_id: row.get(2)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Returns every associated entity; result order is unspecified.
+    pub fn resolve_artists_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<ArtistId>> {
+        let mut statement = self.connection.prepare(
+            "SELECT artist_id FROM artist_external_identity WHERE provider = ?1 AND kind = ?2 AND external_id = ?3",
+        )?;
+        Ok(statement
+            .query_map(
+                params![identity.provider, identity.kind, identity.external_id],
+                |row| row.get::<_, String>(0).map(ArtistId),
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     /// Returns true for a new association, false for an identical existing association.
@@ -1435,4 +1553,73 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
         [track_id.as_ref()],
     )?;
     Ok(())
+}
+
+fn prepare_album_match(
+    db: &Connection,
+    id: &crate::domain::AlbumId,
+) -> Result<crate::album_matching::Preparation> {
+    use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
+    let (title, artist): (String, String) = db.query_row(
+        "SELECT match_title,match_artist_credit FROM album_application_metadata WHERE album_id=?1",
+        [id.as_ref()],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider='musicbrainz' AND kind='release_group')", [id.as_ref()], |r|r.get::<_,bool>(0))? {
+        return Ok(Preparation::Done(MatchOutcome::AlreadyMatched));
+    }
+    if !crate::album_matching::eligible_text(&title, &artist) {
+        return Ok(Preparation::Done(MatchOutcome::Skipped));
+    }
+    let credits = db.prepare("SELECT c.artist_id,a.name,c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?.query_map([id.as_ref()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let [(artist_id, name, phrase)] = credits.as_slice() else {
+        return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
+    };
+    if phrase.as_deref().is_some_and(|s| !s.trim().is_empty())
+        || crate::matching::normalize(name) != artist
+    {
+        return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
+    }
+    let artist_id = ArtistId(artist_id.clone());
+    let mut known = artist_matching_identities(db, &artist_id)?;
+    if known.len() > 1 {
+        return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(
+            known
+                .into_iter()
+                .map(|identity| crate::catalog::ArtistCandidate {
+                    identity,
+                    name: name.clone(),
+                    comment: "Multiple stored identities".into(),
+                    country: String::new(),
+                    artist_type: String::new(),
+                    score: None,
+                })
+                .collect(),
+        )));
+    }
+    let known_artist = known.pop();
+    let mut query = db.prepare("SELECT m.track_title FROM release r JOIN track t ON t.release_id=r.id JOIN track_source ts ON ts.track_id=t.id JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id=?1")?;
+    let mut titles = query.query_map([id.as_ref()], |r| r.get::<_, Option<String>>(0))?;
+    let mut usable = false;
+    for title in &mut titles {
+        if title?.as_deref().is_some_and(crate::matching::usable) {
+            usable = true;
+            break;
+        }
+    }
+    Ok(if usable {
+        Preparation::Ready(MatchInput {
+            album_id: id.clone(),
+            title,
+            artist,
+            artist_id,
+            known_artist,
+        })
+    } else {
+        Preparation::Done(MatchOutcome::Skipped)
+    })
+}
+
+fn artist_matching_identities(db: &Connection, id: &ArtistId) -> Result<Vec<ExternalIdentity>> {
+    Ok(db.prepare("SELECT external_id FROM artist_external_identity WHERE artist_id=?1 AND provider='musicbrainz' AND kind='artist'")?.query_map([id.as_ref()], |r|Ok(ExternalIdentity { provider:"musicbrainz".into(),kind:"artist".into(),external_id:r.get(0)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }

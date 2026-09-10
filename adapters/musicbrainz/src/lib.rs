@@ -260,6 +260,98 @@ fn next_offset(offset: u32, len: usize, count: u32) -> Option<u32> {
     (len > 0 && next < count).then_some(next)
 }
 impl CatalogProvider for MusicBrainz {
+    fn search_artists(
+        &mut self,
+        name: &str,
+    ) -> Result<catalog::Page<catalog::ArtistCandidate>, CatalogError> {
+        let page: Artists = self.request(
+            "artist",
+            &[
+                ("query", format!("artist:{}", quoted(name))),
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        let next_offset = next_offset(0, page.artists.len(), page.count);
+        let items = page
+            .artists
+            .into_iter()
+            .map(|a| {
+                mbid(&a.id)?;
+                Ok(catalog::ArtistCandidate {
+                    identity: identity("artist", &a.id),
+                    name: a.name,
+                    comment: a.disambiguation.unwrap_or_default(),
+                    country: a.country.unwrap_or_default(),
+                    artist_type: a.artist_type.unwrap_or_default(),
+                    score: a.score,
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        Ok(catalog::Page { items, next_offset })
+    }
+    fn artist_albums(
+        &mut self,
+        artist: &ExternalIdentity,
+        title: &str,
+    ) -> Result<catalog::Page<catalog::ArtistAlbumCandidate>, CatalogError> {
+        mbid(&artist.external_id)?;
+        if artist.provider != "musicbrainz" || artist.kind != "artist" {
+            return Err(CatalogError("Expected MusicBrainz Artist identity".into()));
+        }
+        // Candidate retrieval permits single-edit tokens only inside this Artist.
+        // Full-title Unicode edit distance and ambiguity checks belong to the application.
+        let fuzzy = title
+            .split_whitespace()
+            .map(|word| format!("releasegroup:{}~1", escaped(word)))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let terms = if title.chars().count() >= 5 {
+            format!("(releasegroup:{} OR ({fuzzy}))", quoted(title))
+        } else {
+            format!("releasegroup:{}", quoted(title))
+        };
+        let query = format!("arid:{} AND {terms}", artist.external_id);
+        let page: Groups = self.request(
+            "release-group",
+            &[
+                ("query", query),
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        let next_offset = next_offset(0, page.groups.len(), page.count);
+        let items = page
+            .groups
+            .into_iter()
+            .map(|g| {
+                mbid(&g.id)?;
+                let ids = g
+                    .credits
+                    .iter()
+                    .map(|c| {
+                        let id = &c
+                            .artist
+                            .as_ref()
+                            .ok_or_else(|| {
+                                CatalogError("Release Group lacks Artist identity".into())
+                            })?
+                            .id;
+                        mbid(id)?;
+                        Ok(identity("artist", id))
+                    })
+                    .collect::<Result<Vec<_>, CatalogError>>()?;
+                Ok(catalog::ArtistAlbumCandidate {
+                    identity: identity("release_group", &g.id),
+                    title: g.title,
+                    artist_ids: ids,
+                    comment: g.disambiguation.unwrap_or_default(),
+                    date: g.date.unwrap_or_default(),
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        Ok(catalog::Page { items, next_offset })
+    }
     fn search_albums(
         &mut self,
         query: &str,
@@ -340,6 +432,39 @@ impl CatalogProvider for MusicBrainz {
     }
 }
 
+fn escaped(value: &str) -> String {
+    let mut result = String::new();
+    for c in value.chars() {
+        if "+-!():^[]\"{}~*?|&/\\".contains(c) {
+            result.push('\\');
+        }
+        result.push(c);
+    }
+    result
+}
+fn quoted(value: &str) -> String {
+    format!("\"{}\"", escaped(value))
+}
+#[derive(Deserialize)]
+struct Artists {
+    count: u32,
+    artists: Vec<ArtistSearch>,
+}
+#[derive(Deserialize)]
+struct ArtistSearch {
+    id: String,
+    name: String,
+    disambiguation: Option<String>,
+    country: Option<String>,
+    #[serde(rename = "type")]
+    artist_type: Option<String>,
+    score: Option<u32>,
+}
+#[derive(Clone, Deserialize)]
+struct ArtistRef {
+    id: String,
+}
+
 #[derive(Deserialize)]
 struct Groups {
     count: u32,
@@ -364,6 +489,7 @@ struct Group {
 #[derive(Clone, Deserialize)]
 struct Credit {
     name: String,
+    artist: Option<ArtistRef>,
     #[serde(default)]
     joinphrase: String,
 }
@@ -607,6 +733,32 @@ mod tests {
         });
         (MusicBrainz::at(base), recv, worker)
     }
+    #[test]
+    fn structured_artist_and_scoped_album_search_preserve_rate_and_escape_tags() {
+        let artists = r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000002","name":"Hella","score":100}]}"#;
+        let groups = r#"{"count":1,"release-groups":[{"id":"00000000-0000-4000-8000-000000000001","title":"Acoustics","artist-credit":[{"name":"Hella","artist":{"id":"00000000-0000-4000-8000-000000000002"}}]}]}"#;
+        let (mut client, requests, server) = mock(vec![(200, artists), (200, groups)]);
+        let page = client.search_artists("Hella").unwrap();
+        let artist = &page.items[0].identity;
+        let page = client.artist_albums(artist, "Acoustic").unwrap();
+        assert_eq!(page.items[0].artist_ids, vec![artist.clone()]);
+        assert_eq!(page.items[0].title, "Acoustics");
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
+        let first = request_params(&calls[0].1);
+        assert_eq!(first["query"], r#"artist:"Hella""#);
+        assert_eq!(first["limit"], "10");
+        let second = request_params(&calls[1].1);
+        assert_eq!(second["limit"], "10");
+        assert_eq!(
+            second["query"],
+            r#"arid:00000000-0000-4000-8000-000000000002 AND (releasegroup:"Acoustic" OR (releasegroup:Acoustic~1))"#
+        );
+        assert_eq!(quoted(r#"A" OR *"#), r#""A\" OR \*""#);
+    }
+
     #[test]
     fn retry_after_policy_uses_seconds_or_dates_without_sleeping() {
         let now = httpdate::parse_http_date("Tue, 08 Sep 2026 12:00:00 GMT").unwrap();

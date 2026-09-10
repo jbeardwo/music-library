@@ -52,7 +52,7 @@ fn matching_upgrade_backfills_unicode_credit_display_without_changing_entities()
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        5
+        6
     );
     let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65", ["écho (live)","ärtist a feat. artist b"], |r|r.get(3)).unwrap();
     assert!(
@@ -96,4 +96,28 @@ fn candidate_track_verification_uses_album_release_and_track_indexes() {
         "{plan}"
     );
     assert!(!plan.contains("SCAN"), "{plan}");
+}
+
+#[test]
+fn external_matching_eligibility_uses_only_entity_scoped_indexed_reads() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    drop(Library::open(&path).unwrap());
+    let db = Connection::open(path).unwrap();
+    for sql in [
+        "SELECT match_title,match_artist_credit FROM album_application_metadata WHERE album_id=?1",
+        "SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider='musicbrainz' AND kind='release_group'",
+        "SELECT m.track_title FROM release r JOIN track t ON t.release_id=r.id JOIN track_source ts ON ts.track_id=t.id JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id=?1",
+    ] {
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(["album"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n");
+        assert!(!plan.contains("SCAN"), "{plan}");
+        assert!(plan.contains("SEARCH"), "{plan}");
+    }
 }

@@ -14,6 +14,18 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn prepare_album_match(
+        &self,
+        id: &crate::domain::AlbumId,
+    ) -> Result<crate::album_matching::Preparation> {
+        self.store.prepare_album_match(id)
+    }
+    pub fn complete_album_match(
+        &mut self,
+        reply: crate::album_matching::MatchReply,
+    ) -> Result<crate::album_matching::MatchOutcome> {
+        self.store.complete_album_match(reply)
+    }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             store: Store::open(path)?,
@@ -24,6 +36,30 @@ impl Library {
         Ok(Self {
             store: Store::open_in_memory()?,
         })
+    }
+
+    /// Attach without changing internal identity, metadata, sources, or membership.
+    /// Returns false if this exact association already exists.
+    pub fn attach_artist_external_identity(
+        &mut self,
+        id: &crate::domain::ArtistId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        self.store.attach_artist_external_identity(id, identity)
+    }
+
+    pub fn list_artist_external_identities(
+        &self,
+        id: &crate::domain::ArtistId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        self.store.list_artist_external_identities(id)
+    }
+
+    pub fn resolve_artists_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<crate::domain::ArtistId>> {
+        self.store.resolve_artists_external_identity(identity)
     }
 
     /// Attach without changing internal identity, metadata, sources, or membership.

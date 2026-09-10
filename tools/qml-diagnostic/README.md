@@ -214,7 +214,8 @@ One owned worker performs explicit network requests and rate waits off the Qt
 thread. Pending controls and an adapter guard reject duplicate submissions. Queued
 callbacks apply results before property notifications. Catalog properties remain
 separate from playback so timing updates cannot reset edition selection. There is
-no polling or startup network activity. Import is a short atomic SQLite transaction
+no polling or sample-mode startup network activity. Real folder import can dispatch
+post-import matching as described below. Catalog import is a short atomic SQLite transaction
 on the application thread. Closing during HTTP waits for the bounded request before
 joining the worker; cancellation is deferred.
 
@@ -227,3 +228,75 @@ read-only live probe.
 For opt-in Add Album phase logging and the ignored live Qt timing probe, see the
 [catalog latency audit](../../docs/catalog-latency-audit.md). Normal launches emit
 no timing logs and perform no extra requests.
+
+## Post-import local Album matching
+
+Build and launch with an actual local Album folder (WSLg audio must already work):
+
+```sh
+cargo run --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- \
+  --gstreamer '/mnt/f/music/Gorillaz/Demon Days'
+```
+
+Replace that example with an existing directory; `/mnt/f/music` itself also works,
+but scanning the whole collection still occurs before window creation. The tool
+now groups files by directory, normalized tagged Album title and artist evidence.
+It does not infer editions across disc subdirectories. The database is disposable;
+no source files are changed. Import commits before any matching request is sent.
+
+1. Search/queue/play local Tracks as soon as the window appears. Open **Local Album
+   matches…** to see each imported Album's pending, matched (with MBID), skipped,
+   ambiguous/no-match or error state. Playback and search remain usable while HTTP
+   and rate/retry waits run on the worker.
+2. For a partial/one-Track test, copy one or several well-tagged files into a small
+   scratch folder and launch against that folder. No complete tracklist is required.
+3. Launch against weakly tagged files: missing/placeholder Album, artist or Track
+   title is skipped without HTTP. Filename fallback is not matching evidence.
+4. **Retry Match** repeats a failed/no-match attempt; already matched Albums require
+   no request. The button is disabled only while that Album is pending.
+5. To test manual-only operation, add `--no-auto-match` to the command. Local import
+   is identical, and Retry Match remains available. For a network-failure test,
+   launch a fresh instance with `HTTPS_PROXY=http://127.0.0.1:9` before `cargo run`.
+   Local playback must still work while matching reports a recoverable connection
+   error. Remove that environment variable and relaunch for real-service testing.
+   Deterministic tests additionally cover failure followed by successful retry in
+   the same session, without using the public service.
+
+Artist identity is established first, then Album search is restricted by its MBID.
+Local Release/Track identity and friendly metadata remain unchanged. The first
+unknown Artist normally requires two logical requests; a stored Artist MBID needs
+only the scoped Album request. Scores never resolve ambiguity. Artist names are
+exact-only; Album titles of at least five characters allow one edit only within
+the established Artist, after exact titles. Incomplete pages remain ambiguous.
+An Artist identity survives later Album errors. Retry does not repeat that Artist
+search. Existing 503 retries may add HTTP attempts. Closing cancels queued work but
+may wait for the in-flight bounded request/retry operation.
+
+### Hella / Acoustic diagnostic
+
+Launch against a local folder tagged Artist `Hella`, Album `Acoustic` using the
+command above, then open **Local Album matches…**. Live MusicBrainz testing found
+several exact-name Hella artists, so the correct automatic result is
+**Artist ambiguous**, not a guess based on the top score. Select **Hella — American
+band — US — Group** in the candidate dropdown and click **Use Artist**. This stores
+`1ecbc7e5-6e33-4062-997d-abc550dd63e6`, then retries only Album discovery. The live
+probe found unique `Acoustics` (`546b457a-b7f7-3591-a88b-7ed7916f74b6`), reported as
+**Matched close title**. The library still displays the original `Acoustic` tags.
+Use correctly tagged `Acoustics` files as an exact-title control. No manual Album
+selection, tag editing or edition identity is added.
+
+The opt-in read-only probe is independent of local files and automated tests. A
+close match also triggers an exact-title control request through the same rate gate:
+
+```sh
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Hella Acoustic
+# Explicitly identify the American band after inspecting the Artist ambiguity:
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe --   Hella Acoustic 1ecbc7e5-6e33-4062-997d-abc550dd63e6
+```
+
+Artists are currently created per credit. Stored MBIDs save requests for the same
+Artist ID; independently resolved name searches are also reused in this session.
+Different newly created Artist IDs may need discovery again in a later session.
+Multi-artist/complex credits are left unresolved; **Use Artist** handles search
+ambiguity for one Artist credit, not restructuring credits or replacing conflicting
+stored identities.

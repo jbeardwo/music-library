@@ -72,8 +72,41 @@ pub struct Track {
     pub identities: Vec<ExternalIdentity>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtistCandidate {
+    pub identity: ExternalIdentity,
+    pub name: String,
+    pub comment: String,
+    pub country: String,
+    pub artist_type: String,
+    pub score: Option<u32>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtistAlbumCandidate {
+    pub identity: ExternalIdentity,
+    pub title: String,
+    pub artist_ids: Vec<ExternalIdentity>,
+    pub comment: String,
+    pub date: String,
+}
+
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    fn search_artists(&mut self, _name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
+        Err(CatalogError(
+            "Artist discovery is not supported by this provider".into(),
+        ))
+    }
+    /// Must constrain discovery to the supplied Artist identity, not its display name.
+    fn artist_albums(
+        &mut self,
+        _artist: &ExternalIdentity,
+        _title: &str,
+    ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+        Err(CatalogError(
+            "Artist-scoped Album discovery is not supported by this provider".into(),
+        ))
+    }
     fn search_albums(
         &mut self,
         query: &str,

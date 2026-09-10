@@ -1,5 +1,6 @@
 //! Frontend-independent backend for the music library.
 
+pub mod album_matching;
 pub mod application;
 pub mod catalog;
 pub mod domain;

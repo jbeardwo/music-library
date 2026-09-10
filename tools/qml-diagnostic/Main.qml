@@ -16,7 +16,61 @@ ApplicationWindow {
     readonly property var bridge: diagnostic
     // qmllint enable unqualified
     readonly property var view: window.bridge.snapshot
+    readonly property var matchingView: window.bridge.matching_snapshot
     readonly property var catalogView: window.bridge.catalog_snapshot
+
+    header: ToolBar {
+        RowLayout {
+            Button {
+                text: "Local Album matches…"
+                onClicked: matchingDialog.open()
+            }
+            Label {
+                text: "Local music is usable while matching runs. " + window.matchingView.length + " imported Albums"
+            }
+        }
+    }
+    Dialog {
+        id: matchingDialog
+        title: "Local Album matching"
+        width: Math.min(window.width - 40, 900)
+        height: 400
+        anchors.centerIn: parent
+        standardButtons: Dialog.Close
+        contentItem: ListView {
+            model: window.matchingView
+            clip: true
+            delegate: RowLayout {
+                id: matchRow
+                required property var modelData
+                required property int index
+                width: ListView.view.width
+                Label {
+                    text: matchRow.modelData.title + " — " + matchRow.modelData.status
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
+                ComboBox {
+                    id: artistChoice
+                    Layout.preferredWidth: 260
+                    visible: matchRow.modelData.artists.length > 0
+                    model: matchRow.modelData.artists
+                    textRole: "label"
+                }
+                Button {
+                    text: "Use Artist"
+                    visible: matchRow.modelData.artists.length > 0
+                    enabled: !matchRow.modelData.pending && artistChoice.currentIndex >= 0
+                    onClicked: window.bridge.choose_artist(matchRow.index, artistChoice.currentIndex)
+                }
+                Button {
+                    text: "Retry Match"
+                    enabled: !matchRow.modelData.pending
+                    onClicked: window.bridge.retry_match(matchRow.index)
+                }
+            }
+        }
+    }
 
     Dialog {
         id: catalogDialog

@@ -15,6 +15,50 @@ struct Bridge {
     changed: qt_signal!(),
     catalog_snapshot: qt_property!(QVariantMap; READ catalog_snapshot_value NOTIFY catalog_changed),
     catalog_changed: qt_signal!(),
+    matching_snapshot: qt_property!(QVariantList; READ matching_snapshot_value NOTIFY matching_changed),
+    matching_changed: qt_signal!(),
+    retry_match: qt_method!(
+        fn retry_match(&mut self, index: i32) {
+            if let Some((id, _, _)) = self.matching_rows.get(index as usize) {
+                let id = id.clone();
+                let outcome = self.ensure_matcher().and_then(|()| {
+                    self.matcher
+                        .as_mut()
+                        .unwrap()
+                        .match_album(&self.session.library, &id)
+                        .map_err(|e| e.to_string())
+                });
+                self.matching_rows[index as usize].2 =
+                    outcome.unwrap_or_else(music_library::album_matching::MatchOutcome::Error);
+                self.matching_changed();
+            }
+        }
+    ),
+    choose_artist: qt_method!(
+        fn choose_artist(&mut self, row: i32, choice: i32) {
+            if row < 0 || choice < 0 {
+                return;
+            }
+            if let Some((id, _, _)) = self.matching_rows.get(row as usize) {
+                let id = id.clone();
+                if let Some(matcher) = self.matcher.as_mut() {
+                    let outcome = matcher
+                        .select_artist(&mut self.session.library, &id, choice as usize)
+                        .unwrap_or_else(|e| {
+                            music_library::album_matching::MatchOutcome::Error(e.to_string())
+                        });
+                    self.matching_rows[row as usize].2 = outcome;
+                    self.matching_changed();
+                }
+            }
+        }
+    ),
+    matcher: Option<music_library::album_matching::AlbumMatcher>,
+    matching_rows: Vec<(
+        music_library::domain::AlbumId,
+        String,
+        music_library::album_matching::MatchOutcome,
+    )>,
     set_volume: qt_method!(
         fn set_volume(&mut self, value: f64) {
             self.session.set_volume(value);
@@ -118,6 +162,12 @@ impl Bridge {
             changed: Default::default(),
             catalog_snapshot: Default::default(),
             catalog_changed: Default::default(),
+            matching_snapshot: Default::default(),
+            matching_changed: Default::default(),
+            retry_match: Default::default(),
+            choose_artist: Default::default(),
+            matcher: None,
+            matching_rows: Vec::new(),
             set_volume: Default::default(),
             search: Default::default(),
             page_next: Default::default(),
@@ -133,6 +183,127 @@ impl Bridge {
             session,
             real_audio: false,
         }
+    }
+
+    fn ensure_matcher(&mut self) -> Result<(), String> {
+        if self.matcher.is_none() {
+            let weak = qmetaobject::QPointer::from(&*self);
+            let callback = matching_callback(weak);
+            self.matcher = Some(
+                music_library::album_matching::AlbumMatcher::new(
+                    music_library_musicbrainz::MusicBrainz::new(),
+                    callback,
+                )
+                .map_err(|e| e.to_string())?,
+            );
+        }
+        Ok(())
+    }
+    fn post_import(
+        &mut self,
+        imports: &[music_library::domain::ImportedRelease],
+        enabled: bool,
+    ) -> Result<(), String> {
+        use music_library::album_matching::{AutoMatchPolicy, MatchOutcome};
+        for import in imports {
+            let album = self
+                .session
+                .library
+                .album_for_release(&import.release_id)
+                .map_err(|e| e.to_string())?;
+            if !self.matching_rows.iter().any(|r| r.0 == album.album_id) {
+                self.matching_rows
+                    .push((album.album_id, album.title, MatchOutcome::Disabled));
+            }
+        }
+        if enabled && !imports.is_empty() {
+            self.ensure_matcher()?;
+            let outcomes = self
+                .matcher
+                .as_mut()
+                .unwrap()
+                .after_import(&self.session.library, imports, AutoMatchPolicy::default())
+                .map_err(|e| e.to_string())?;
+            for (id, outcome) in outcomes {
+                if let Some(row) = self.matching_rows.iter_mut().find(|r| r.0 == id) {
+                    row.2 = outcome;
+                }
+            }
+        }
+        self.matching_changed();
+        Ok(())
+    }
+    fn matching_snapshot_value(&self) -> QVariantList {
+        use music_library::album_matching::MatchOutcome;
+        self.matching_rows
+            .iter()
+            .map(|(id, title, outcome)| -> QVariant {
+                let status = match outcome {
+                    MatchOutcome::Pending => "Pending MusicBrainz matching…".into(),
+                    MatchOutcome::Matched(identity) => format!("Matched: {}", identity.external_id),
+                    MatchOutcome::MatchedClose(identity) => {
+                        format!("Matched close title: {}", identity.external_id)
+                    }
+                    MatchOutcome::ArtistAmbiguous(candidates) => format!(
+                        "Artist ambiguous / complex credit: {}",
+                        candidates
+                            .iter()
+                            .map(|c| format!(
+                                "{} [{}] {}",
+                                c.name, c.identity.external_id, c.comment
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                    MatchOutcome::AlbumAmbiguous(candidates) => format!(
+                        "Album ambiguous / incomplete results: {}",
+                        candidates
+                            .iter()
+                            .map(|c| format!(
+                                "{} [{}] {}",
+                                c.title, c.identity.external_id, c.comment
+                            ))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    ),
+                    MatchOutcome::AlreadyMatched => "Already matched".into(),
+                    MatchOutcome::Disabled => "Automatic matching disabled; Retry available".into(),
+                    MatchOutcome::Skipped => {
+                        "Skipped: insufficient or changed local metadata".into()
+                    }
+                    MatchOutcome::NoConfidentMatch => "No confident match".into(),
+                    MatchOutcome::Error(error) => format!("Error: {error}"),
+                };
+                let artists: QVariantList = match outcome {
+                    MatchOutcome::ArtistAmbiguous(candidates) => candidates
+                        .iter()
+                        .map(|c| -> QVariant {
+                            QVariantMap::from_iter([(
+                                "label",
+                                string(format!(
+                                    "{} — {} {} {} [{}]",
+                                    c.name,
+                                    c.comment,
+                                    c.country,
+                                    c.artist_type,
+                                    c.identity.external_id
+                                )),
+                            )])
+                            .into()
+                        })
+                        .collect(),
+                    _ => QVariantList::default(),
+                };
+                QVariantMap::from_iter([
+                    ("albumId", string(id.as_ref())),
+                    ("artists", artists.into()),
+                    ("title", string(title)),
+                    ("status", string(&status)),
+                    ("pending", matches!(outcome, MatchOutcome::Pending).into()),
+                ])
+                .into()
+            })
+            .collect()
     }
 
     fn start_catalog(&mut self, action: &str, value: &str) -> Result<(), String> {
@@ -351,6 +522,26 @@ fn time_label(ms: Option<u64>) -> String {
     )
 }
 
+fn matching_callback(
+    weak: qmetaobject::QPointer<Bridge>,
+) -> impl Fn(music_library::album_matching::MatchReply) + Send + Sync + 'static {
+    qmetaobject::queued_callback(move |reply: music_library::album_matching::MatchReply| {
+        if let Some(pinned) = weak.as_pinned() {
+            let mut bridge = pinned.borrow_mut();
+            let id = reply.input.album_id.clone();
+            let Some(mut matcher) = bridge.matcher.take() else {
+                return;
+            };
+            let outcome = matcher.complete(&mut bridge.session.library, reply);
+            bridge.matcher = Some(matcher);
+            if let Some(row) = bridge.matching_rows.iter_mut().find(|r| r.0 == id) {
+                row.2 = outcome;
+            }
+            bridge.matching_changed();
+        }
+    })
+}
+
 fn catalog_callback(
     weak: qmetaobject::QPointer<Bridge>,
 ) -> impl Fn(Result<catalog::Reply, music_library::catalog::CatalogError>) + Send + Sync + 'static {
@@ -385,7 +576,9 @@ fn engine_callback(
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    let auto_match = !args.iter().any(|a| a == "--no-auto-match");
+    args.retain(|a| a != "--no-auto-match");
     let (smoke, folder) = match args.as_slice() {
         [] => (false, None),
         [arg] if arg == "--smoke-test" => (true, None),
@@ -395,7 +588,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: qml-diagnostic [--smoke-test | --gstreamer FOLDER [--smoke-test]]".into(),
+                "usage: qml-diagnostic [--no-auto-match] [--smoke-test | --gstreamer FOLDER [--smoke-test]]".into(),
             );
         }
     };
@@ -404,13 +597,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("rebuild with --features gstreamer to use real audio".into());
     }
     #[cfg(feature = "gstreamer")]
-    let (_temp, library) = if let Some(folder) = &folder {
+    let (_temp, library, imports) = if let Some(folder) = &folder {
         local::load(folder)?
     } else {
-        sample::create()?
+        let (temp, library) = sample::create()?;
+        (temp, library, vec![])
     };
     #[cfg(not(feature = "gstreamer"))]
-    let (_temp, library) = sample::create()?;
+    let (_temp, library, imports) = {
+        let (temp, library) = sample::create()?;
+        (temp, library, vec![])
+    };
     // Pin before exposing to QML, and keep the QObject alive until QML destruction.
     let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
     let mut engine = QmlEngine::new();
@@ -445,10 +642,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             println!("QML integration smoke test passed");
         } else {
+            bridge
+                .pinned()
+                .borrow_mut()
+                .post_import(&imports, auto_match)?;
             engine.exec();
         }
         Ok(())
     })();
+    bridge.pinned().borrow_mut().matcher.take();
     bridge.pinned().borrow_mut().catalog.worker.take();
     // Join the audio worker while Qt and its callback target still exist, even on QML load failure.
     #[cfg(feature = "gstreamer")]
@@ -540,6 +742,187 @@ mod event_delivery_tests {
         });
         engine.borrow().exec();
         worker.join().unwrap();
+    }
+
+    fn matching_flow(engine: &Rc<RefCell<QmlEngine>>, bridge: &QObjectBox<Bridge>) {
+        use music_library::{
+            album_matching::AlbumMatcher, catalog::*, domain::*, filesystem::MetadataExtractor,
+        };
+        use std::sync::mpsc;
+        struct Tags;
+        impl MetadataExtractor for Tags {
+            fn supports(&self, _: &std::path::Path) -> bool {
+                true
+            }
+            fn read(&mut self, _: &std::path::Path) -> music_library::Result<ObservedMetadata> {
+                Ok(ObservedMetadata {
+                    track_title: Some("Song".into()),
+                    release_title: Some("Local Album".into()),
+                    release_artists: vec!["Artist".into()],
+                    ..Default::default()
+                })
+            }
+        }
+        struct Provider(mpsc::Receiver<()>, bool);
+        impl CatalogProvider for Provider {
+            fn search_artists(
+                &mut self,
+                name: &str,
+            ) -> Result<Page<ArtistCandidate>, CatalogError> {
+                let candidate = ArtistCandidate {
+                    identity: ExternalIdentity {
+                        provider: "musicbrainz".into(),
+                        kind: "artist".into(),
+                        external_id: "00000000-0000-4000-8000-000000000002".into(),
+                    },
+                    name: name.into(),
+                    comment: "First band".into(),
+                    country: String::new(),
+                    artist_type: String::new(),
+                    score: Some(100),
+                };
+                let mut other = candidate.clone();
+                other.identity.external_id = "00000000-0000-4000-8000-000000000003".into();
+                other.comment = "Another artist".into();
+                other.score = Some(80);
+                Ok(Page {
+                    items: vec![candidate, other],
+                    next_offset: None,
+                })
+            }
+            fn artist_albums(
+                &mut self,
+                artist: &ExternalIdentity,
+                title: &str,
+            ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+                self.0.recv().unwrap();
+                if !self.1 {
+                    self.1 = true;
+                    return Err(CatalogError("HTTP 503".into()));
+                }
+                Ok(Page {
+                    next_offset: None,
+                    items: vec![ArtistAlbumCandidate {
+                        title: format!("{title}s"),
+                        artist_ids: vec![artist.clone()],
+                        identity: ExternalIdentity {
+                            provider: "musicbrainz".into(),
+                            kind: "release_group".into(),
+                            external_id: "test-group".into(),
+                        },
+
+                        date: String::new(),
+
+                        comment: String::new(),
+                    }],
+                })
+            }
+            fn search_albums(
+                &mut self,
+                _: &str,
+                _: u32,
+            ) -> Result<Page<AlbumCandidate>, CatalogError> {
+                unreachable!()
+            }
+            fn releases(
+                &mut self,
+                _: &ExternalIdentity,
+                _: u32,
+            ) -> Result<Page<ReleaseCandidate>, CatalogError> {
+                unreachable!()
+            }
+            fn release(&mut self, _: &ExternalIdentity) -> Result<Release, CatalogError> {
+                unreachable!()
+            }
+        }
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("song"), b"fixture").unwrap();
+        let imported = {
+            let pinned = bridge.pinned();
+            let mut bridge = pinned.borrow_mut();
+            let library = &mut bridge.session.library;
+            let root = library.register_local_root(temp.path()).unwrap();
+            library.scan_local_root(&root, &mut Tags).unwrap();
+            let source = library
+                .list_discovery_candidates(None, 10)
+                .unwrap()
+                .remove(0);
+            library
+                .import_release(&ImportReleaseRequest {
+                    release_title: "Local Album".into(),
+                    release_artists: vec![],
+                    tracks: vec![ImportTrackInput {
+                        source_id: source.source_id,
+                        title_fallback: None,
+                        artists: vec![],
+                        disc_number: None,
+                        track_number: None,
+                    }],
+                })
+                .unwrap()
+        };
+        let (gate, wait) = mpsc::channel();
+        let deliver = matching_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
+        let quit = engine.clone();
+        let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
+        bridge.pinned().borrow_mut().matcher = Some(
+            AlbumMatcher::new(Provider(wait, false), move |reply| {
+                deliver(reply);
+                done(());
+            })
+            .unwrap(),
+        );
+        bridge
+            .pinned()
+            .borrow_mut()
+            .post_import(std::slice::from_ref(&imported), true)
+            .unwrap();
+        let view = || {
+            engine
+                .borrow_mut()
+                .invoke_method("matchingViewText".into(), &[])
+                .to_qstring()
+                .to_string()
+        };
+        assert!(view().contains("Pending MusicBrainz"));
+        assert!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .available_playback_source(&imported.track_ids[0])
+                .unwrap()
+                .is_some()
+        );
+        // QML methods and library search remain available while the fake network is gated.
+        bridge.pinned().borrow_mut().session.search("Song".into());
+        engine.borrow().exec();
+        assert!(view().contains("Artist ambiguous"));
+        assert!(view().contains("First band"));
+        bridge.pinned().borrow_mut().choose_artist(0, 0);
+        assert!(view().contains("Pending MusicBrainz"));
+        gate.send(()).unwrap();
+        engine.borrow().exec();
+        assert!(view().contains("Error: HTTP 503"));
+        assert!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .available_playback_source(&imported.track_ids[0])
+                .unwrap()
+                .is_some()
+        );
+        bridge.pinned().borrow_mut().retry_match(0);
+        assert!(view().contains("Pending MusicBrainz"));
+        gate.send(()).unwrap();
+        engine.borrow().exec();
+        assert!(view().contains("Matched close title: test-group"));
+        bridge.pinned().borrow_mut().retry_match(0);
+        assert!(view().contains("Already matched"));
+        bridge.pinned().borrow_mut().matcher.take();
     }
 
     fn catalog_flow(engine: &Rc<RefCell<QmlEngine>>, bridge: &QObjectBox<Bridge>) {
@@ -791,6 +1174,7 @@ mod event_delivery_tests {
             .replace(
                 "    function ready() {",
                 r#"
+    function matchingViewText() { return JSON.stringify(window.matchingView); }
     function testView() {
         return view.status + "|" + view.pending + "|" + view.outcome
             + "|" + playbackLabel.text + "|" + outcomeLabel.text;
@@ -894,6 +1278,7 @@ mod event_delivery_tests {
         );
         assert_eq!(report(&engine), failed);
         catalog_flow(&engine, &bridge);
+        matching_flow(&engine, &bridge);
         drop(engine); // Destroy QML bindings while their QObject still exists.
     }
 }

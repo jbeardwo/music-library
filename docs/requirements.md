@@ -242,7 +242,18 @@ must decline ambiguity among supported Albums. A confident Album match must not 
 when Release identity is unknown, create a local Release under that Album rather
 than attaching files to arbitrary catalog Tracks. Ambiguous or unusable metadata
 falls through to normal local creation. External catalog matching remains a
-separate, deferred post-import operation and must never delay this transaction.
+separate post-import operation and must never delay this transaction.
+
+Post-import matching enriches Artist and Album identities without rewriting local
+metadata. Artist identity must be established first through a stored MBID, one
+exact normalized Artist-name candidate, or explicit manual selection. Similar
+Artist names and search scores must not establish identity. Complex credits must
+not be flattened. Only within the established Artist may Album titles use a
+single-edit comparison (both titles at least five characters), after exact matches
+are considered. Qualifiers remain significant. Ambiguity at either stage remains
+explicit; a confidently resolved Artist may be retained even if Album matching
+fails. Automatic dispatch remains default-on and independently disableable;
+manual retry remains available. Local-only matching stays conservative and unchanged.
 
 #### Matching execution
 

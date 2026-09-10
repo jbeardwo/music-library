@@ -611,3 +611,39 @@ medians is approximately **20.53 µs**; this is not an end-to-end import timing.
 Verification cost scales with candidate editions/Tracks and comparable local
 Tracks, rather than the entire library. The measured plans use indexed `SEARCH`
 for all three tables and no temporary sort. No extra schema/index was needed.
+
+## Post-import matching local overhead
+
+`cargo run --release --example post_import_matching_timing -- PATH_TO_CLOSED_200K_DB`
+copies the deterministic fixture to a temporary database and uses a fake provider
+(no HTTP). One warmup and 20 samples per group measure these phases separately:
+
+| Imported Tracks | Import + commit | Eligibility | Dispatch including eligibility | Identity revalidation + attachment + commit |
+|---|---:|---:|---:|---:|
+| 1 | 463 µs | 38 µs | 84 µs | 74 µs |
+| 3 | 707 µs | 39 µs | 84 µs | 69 µs |
+| 15 | 2.265 ms | 42 µs | 91 µs | 74 µs |
+
+These are medians on Linux x86_64 / bundled SQLite 3.53.2, starting with 20k Albums
+and 200k Tracks. Scanning is outside the import span. Import returns before dispatch
+and the network/fake-provider wait is outside all four measurements. No import SQL
+or transaction behavior changed. Eligibility uses Album-ID lookup plus indexed
+Release → Track → source → tag reads, stopping on the first usable local title;
+query-plan tests reject library-wide scans. Identity attachment uses the existing
+Album identity primary key. No migration or additional index was needed.
+
+
+Artist-first refinement (same copied 20k-Album / 200k-Track fixture, fake provider,
+20 samples) adds Artist credit/identity checks and a second identity write:
+
+| Tracks | Import + commit | Eligibility | Dispatch incl. eligibility | Artist/Album attachment + revalidation + commit |
+|---|---:|---:|---:|---:|
+| 1 | 487 µs | 60 µs | 104 µs | 124 µs |
+| 3 | 733 µs | 62 µs | 105 µs | 109 µs |
+| 15 | 2.388 ms | 64 µs | 110 µs | 121 µs |
+
+These supersede the preceding local matcher overhead figures for the current
+Artist-first implementation. Network waits remain outside import/commit and these
+local spans. The existing Artist credit key and new Artist identity indexes keep
+these reads entity-local. Unknown Artist discovery adds one logical HTTP request;
+stored identities/session reuse avoid it. No timeout or rate-limit changes were made.

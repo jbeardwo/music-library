@@ -1079,8 +1079,9 @@ normal scans omit it from discovery candidates.
 
 All source validation, matching, creation, source association and membership use
 one immediate SQLite transaction with no filesystem reads or network calls.
-The returned Release ID can resolve its Album via `album_for_release` for a
-future post-import matcher; no external matching queue is implemented here.
+The returned Release ID resolves its Album via `album_for_release` for the
+post-import matcher described below. The filesystem importer does not dispatch
+external work.
 
 #### Matching throughput
 
@@ -1281,3 +1282,62 @@ Server delays over one minute stop automatic retry rather than being shortened.
 Other failures are not retried. The catalog worker still emits only one final
 result, so the diagnostic remains pending during retries; no new application or
 Qt notification boundary is needed. See the [retry policy](../adapters/musicbrainz/README.md#bounded-503-retry).
+
+### Implemented post-import Album identity enrichment
+
+`AlbumMatcher::after_import` accepts committed import results, resolves/deduplicates
+Album IDs and prepares local eligibility on the application owner thread. It is
+separate from `Library::import_release` and filesystem scanning. One owned worker
+per matcher serializes searches; session-local outcomes coalesce automatic attempts
+and pending manual requests. `AutoMatchPolicy` defaults on; disabling dispatch does
+not affect import or `match_album` manual retries. No match-state tables or jobs are
+persisted. Dropping the matcher cancels queued work and joins the bounded in-flight
+provider request; cancellation of an active HTTP call remains deferred.
+
+Eligibility requires an unidentified Album with usable title/artist evidence and
+at least one usable tagged local Track title. The first automatic Artist path
+requires exactly one Album Artist credit with no trailing join phrase; complex
+credits remain ArtistAmbiguous rather than being flattened. Local-first matching
+and its Track corroboration rule are unchanged.
+
+Migration 0006 adds `artist_external_identity(artist_id, provider, kind, external_id)`
+with an entity-local primary key, cascading Artist foreign key and non-unique
+reverse-lookup index, like the other external identity tables. Opaque Artist IDs
+remain authoritative; attach/list/reverse-resolve APIs permit shared identities.
+
+The matcher first reuses one stored `musicbrainz | artist` identity or requests an
+Artist search. Automatic resolution requires exactly one distinct, conservatively
+normalized exact Artist name on a complete page. Similar names, aliases, scores,
+countries and types do not establish automatic identity. Multiple stored MBIDs or
+plausible exact names remain ArtistAmbiguous. Candidate names, MBIDs and comments
+are retained for session-only diagnostics/manual Artist selection.
+
+Only after Artist resolution does the adapter query Release Groups using `arid`
+plus local title. Candidate retrieval includes single-edit title tokens **within
+that Artist**, and returned credit MBIDs are checked again. The application first
+accepts one exact normalized full title. If none is exact, both titles must have
+at least five Unicode scalars and full-title edit distance at most one. Punctuation
+and live/remix/edit/acoustic/remaster/deluxe qualifiers are never removed. Multiple
+plausible titles or an incomplete page remain AlbumAmbiguous. No fuzzy Artist-name
+acceptance, fuzzy scores, extra pages or edition/Track requests are introduced.
+See [MusicBrainz indexed search fields and syntax](https://musicbrainz.org/doc/Indexed_Search_Syntax)
+for `artist`, `arid` and scoped fuzzy candidate retrieval. Existing ten-result
+limits, process-wide rate gate, bounded retries and timeouts are unchanged.
+
+The completion transaction revalidates Artist name/identity and Album metadata.
+It stores the independently resolved Artist MBID even if the later Album request
+failed or was ambiguous, then attaches an accepted Release Group identity to Album.
+Neither local names nor Release/Track identities, sources or membership change.
+States distinguish Pending, Matched, MatchedClose, AlreadyMatched, Skipped,
+ArtistAmbiguous, AlbumAmbiguous, NoConfidentMatch and Error. Provider errors do not
+stop later queued Albums. Explicit `select_artist` chooses a retained candidate,
+stores its identity and retries within that Artist; it does not merge entities or
+replace conflicting stored Artist identities. There is no manual Album selector.
+
+An existing model limitation is now visible: creation allocates separate Artist
+rows per credit, even for the same name. This slice does not deduplicate those rows
+by name. A stored identity avoids Artist search for that Artist ID. A bounded
+session cache of independently resolved exact-name Artist searches also avoids
+repeat discovery across queued Albums with separate Artist rows. New Artist rows
+in a later session may still require discovery; deliberate shared Artist identity
+and credit creation/reconciliation need resolution before broader matching work.
