@@ -287,7 +287,7 @@ fn migration_upgrades_v1_preserves_entities_and_is_atomic_on_failure() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        6
+        7
     );
     let additional = catalog(&mut library);
     library
@@ -333,7 +333,7 @@ fn migration_upgrades_v1_preserves_entities_and_is_atomic_on_failure() {
         .unwrap(),
         0
     );
-    db.execute_batch("PRAGMA user_version = 7;").unwrap();
+    db.execute_batch("PRAGMA user_version = 8;").unwrap();
     assert!(matches!(Library::open(&broken), Err(Error::Invalid(_))));
 }
 
@@ -354,7 +354,7 @@ fn external_resolution_and_entity_listing_use_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, u32>(0))
             .unwrap(),
-        6
+        7
     );
     for (table, column, owner) in [
         (

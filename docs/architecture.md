@@ -1265,8 +1265,8 @@ year and credited names independently of edition metadata. Ordinary Track result
 materialization uses the Album title (the existing `release_title` result/FTS column
 name is retained for compatibility); the search execution strategy is unchanged.
 Full dates, labels/barcodes and printed track-number strings remain discovery data.
-Provider metadata refresh, sparse Album overrides and artist reconciliation are
-not implemented in this slice.
+Provider metadata refresh and sparse Album overrides remain deferred. Strong
+Artist-identity consolidation is described below.
 
 The MusicBrainz adapter retains its identifying User-Agent and process-wide
 one-request-per-second gate under the [service rules](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting).
@@ -1331,13 +1331,38 @@ Neither local names nor Release/Track identities, sources or membership change.
 States distinguish Pending, Matched, MatchedClose, AlreadyMatched, Skipped,
 ArtistAmbiguous, AlbumAmbiguous, NoConfidentMatch and Error. Provider errors do not
 stop later queued Albums. Explicit `select_artist` chooses a retained candidate,
-stores its identity and retries within that Artist; it does not merge entities or
-replace conflicting stored Artist identities. There is no manual Album selector.
+stores its identity and retries within that Artist, using the same canonical
+identity resolution as automatic completion. Conflicting stored MusicBrainz
+Artist identities are rejected. There is no manual Album selector.
 
-An existing model limitation is now visible: creation allocates separate Artist
-rows per credit, even for the same name. This slice does not deduplicate those rows
-by name. A stored identity avoids Artist search for that Artist ID. A bounded
-session cache of independently resolved exact-name Artist searches also avoids
-repeat discovery across queued Albums with separate Artist rows. New Artist rows
-in a later session may still require discovery; deliberate shared Artist identity
-and credit creation/reconciliation need resolution before broader matching work.
+### Canonical Artist identity and credited presentation
+
+Artist names are not identity. Text-only creation still allocates distinct Artists;
+no name lookup or fuzzy comparison merges them. An independently established exact
+`musicbrainz | artist | MBID` permits canonical reuse. Catalog credits retain an
+optional opaque external Artist identity; MusicBrainz credits use it before creating
+Artists across Album, Release and Track credits. Other identity namespaces remain
+opaque and do not trigger automatic consolidation.
+
+An existing MBID owner is preferred. If multiple owners already exist, binary
+internal-ID ordering chooses the canonical owner deterministically. Matcher
+completion atomically consolidates its resolved Artist into that owner. Queued
+replies revalidate the current Album credit and require the same established MBID
+when an earlier completion has replaced their Artist ID. Newly created text-only
+Artists still require independent resolution; a matching name is never a reuse key.
+
+`Library::merge_artist(source, canonical)` is an explicit atomic reassignment
+primitive whose caller must establish identity. It rewrites all Album, Release and
+Track Artist-credit foreign keys, unions external identities idempotently, then
+deletes the source Artist. Positions, roles, repeated Artist positions and join
+phrases remain intact. Different MusicBrainz Artist MBIDs across the participants
+produce `ArtistIdentityConflict` and roll back; other opaque identities are retained
+without assuming their kinds are exclusive. Missing source is an idempotent no-op
+provided the canonical Artist exists.
+
+Migration 0007 backfills each credit's `credited_name` from its former Artist name.
+New credits store their own presentation; legacy NULL falls back to Artist name
+and is frozen before reassignment. Canonical names never replace credited display
+text. Consequently consolidation needs no effective-metadata/FTS rebuild or Album
+matching-key refresh. Reverse identity lookup and all three credit reassignments
+use existing indexes; no migration changes their cardinality or adds indexes.

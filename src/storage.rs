@@ -26,6 +26,8 @@ pub enum Error {
     },
     #[error("metadata could not be read from {path}: {message}")]
     Metadata { path: PathBuf, message: String },
+    #[error("Artist consolidation conflicts with different MusicBrainz Artist identities")]
+    ArtistIdentityConflict,
     #[error("invalid operation: {0}")]
     Invalid(String),
 }
@@ -67,8 +69,7 @@ impl Store {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        // Artist resolution stands independently of Album success. Persist it even
-        // when the following Album request failed, without changing the local name.
+        let mut canonical = reply.input.artist_id.clone();
         if let Some(identity) = &reply.artist {
             if identity.provider != "musicbrainz"
                 || identity.kind != "artist"
@@ -76,30 +77,33 @@ impl Store {
             {
                 return Err(Error::Invalid("invalid Artist matching identity".into()));
             }
-            let name: Option<String> = tx
-                .query_row(
-                    "SELECT name FROM artist WHERE id=?1",
-                    [reply.input.artist_id.as_ref()],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            if name.as_deref().map(crate::matching::normalize).as_deref()
-                != Some(&reply.input.artist)
+            let current = match prepare_album_match(&tx, &reply.input.album_id)? {
+                Preparation::Ready(current) => current,
+                Preparation::Done(outcome) => return Ok(outcome),
+            };
+            if current.title != reply.input.title || current.artist != reply.input.artist {
+                return Ok(MatchOutcome::Skipped);
+            }
+            // A prior completion may already have reassigned this queued input's
+            // Artist. Only accept that change when the current credit has the same MBID.
+            if current.artist_id != reply.input.artist_id
+                && current.known_artist.as_ref() != Some(identity)
             {
                 return Ok(MatchOutcome::Skipped);
             }
-            let existing = artist_matching_identities(&tx, &reply.input.artist_id)?;
-            if existing.iter().any(|id| id != identity) {
-                return Ok(MatchOutcome::ArtistAmbiguous(vec![]));
-            }
-            tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![reply.input.artist_id.as_ref(),identity.provider,identity.kind,identity.external_id])?;
+            canonical = canonical_musicbrainz_artist(
+                &tx,
+                Some(&current.artist_id),
+                &current.artist,
+                identity,
+            )?;
         }
         let outcome = match prepare_album_match(&tx, &reply.input.album_id)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(current)
                 if current.title != reply.input.title
                     || current.artist != reply.input.artist
-                    || current.artist_id != reply.input.artist_id =>
+                    || current.artist_id != canonical =>
             {
                 MatchOutcome::Skipped
             }
@@ -121,6 +125,17 @@ impl Store {
         tx.commit()?;
         Ok(outcome)
     }
+    /// Explicit reassignment; callers must establish identity independently of names.
+    /// Returns false when source is already absent (canonical must still exist).
+    pub fn merge_artist(&mut self, source: &ArtistId, canonical: &ArtistId) -> Result<bool> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = merge_artist_tx(&tx, source, canonical)?;
+        tx.commit()?;
+        Ok(changed)
+    }
+
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open(path)?;
         Self::from_connection(connection)
@@ -138,7 +153,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 6 {
+        } else if version > 7 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -164,7 +179,7 @@ impl Store {
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for id in ids {
-                refresh_album_match_key(&tx, &id)?;
+                refresh_album_match_key_impl(&tx, &id, false)?;
             }
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
@@ -174,6 +189,11 @@ impl Store {
                 "../migrations/0006_artist_external_identities.sql"
             ))?;
         }
+        if version < 7 {
+            connection
+                .execute_batch(include_str!("../migrations/0007_credited_artist_names.sql"))?;
+        }
+
         Ok(Self { connection })
     }
 
@@ -365,7 +385,7 @@ impl Store {
     pub fn album_for_release(&self, release_id: &ReleaseId) -> Result<crate::domain::Album> {
         self.connection.query_row(
             "SELECT a.album_id, a.title, a.year, COALESCE((SELECT group_concat(name, '') FROM (
-                SELECT ar.name || COALESCE(c.join_phrase, CASE WHEN EXISTS (
+                SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS (
                     SELECT 1 FROM album_artist_credit n WHERE n.album_id=c.album_id AND n.position>c.position
                 ) THEN ', ' ELSE '' END) AS name
                 FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id
@@ -759,26 +779,16 @@ impl Store {
             }
             id
         } else {
-            let credits = album
-                .credits
-                .iter()
-                .map(|c| ArtistCreditInput {
-                    name: c.name.clone(),
-                    role: None,
-                })
-                .collect::<Vec<_>>();
             let id = create_album_tx(
                 &tx,
                 &album.title,
                 album.date.get(..4).and_then(|v| v.parse().ok()),
-                &credits,
+                &[],
             )?;
+            insert_catalog_credits(&tx, "album_artist_credit", id.as_ref(), &album.credits)?;
             {
                 let _identity = crate::catalog::Timing::detail("persistence.album_identities");
                 inserted_identities += tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4)", params![id.as_ref(),album.identity.provider,album.identity.kind,album.identity.external_id])?;
-            }
-            for (position, credit) in album.credits.iter().enumerate() {
-                tx.execute("UPDATE album_artist_credit SET join_phrase=?1 WHERE album_id=?2 AND position=?3", params![credit.join_phrase,id.as_ref(),position as i64])?;
             }
             refresh_album_match_key(&tx, id.as_ref())?;
             id
@@ -812,24 +822,15 @@ impl Store {
             if tracks.is_empty() {
                 return Err(Error::Invalid("catalog Release has no Tracks".into()));
             }
-            let credits = |values: &[crate::catalog::Credit]| {
-                values
-                    .iter()
-                    .map(|c| ArtistCreditInput {
-                        name: c.name.clone(),
-                        role: None,
-                    })
-                    .collect()
-            };
             let input = crate::domain::CatalogReleaseInput {
                 title: release.title.clone(),
                 year: release.date.get(..4).and_then(|v| v.parse().ok()),
-                artists: credits(&release.credits),
+                artists: vec![],
                 tracks: tracks
                     .iter()
                     .map(|(disc, t)| crate::domain::CatalogTrackInput {
                         title: t.title.clone(),
-                        artists: credits(&t.credits),
+                        artists: vec![],
                         disc_number: Some(*disc),
                         track_number: Some(t.position),
                     })
@@ -846,10 +847,12 @@ impl Store {
             }
             let credits_timer =
                 crate::catalog::Timing::detail("persistence.release_credit_phrases");
-            for (position, credit) in release.credits.iter().enumerate() {
-                tx.execute("UPDATE release_artist_credit SET join_phrase=?1 WHERE release_id=?2 AND position=?3",
-                    params![credit.join_phrase,imported.release_id.as_ref(),position as i64])?;
-            }
+            insert_catalog_credits(
+                &tx,
+                "release_artist_credit",
+                imported.release_id.as_ref(),
+                &release.credits,
+            )?;
             drop(credits_timer);
             for (track_id, (_, track)) in imported.track_ids.iter().zip(tracks) {
                 for id in &track.identities {
@@ -862,10 +865,12 @@ impl Store {
                 }
                 let credits_timer =
                     crate::catalog::Timing::detail("persistence.track_credit_phrases");
-                for (position, credit) in track.credits.iter().enumerate() {
-                    tx.execute("UPDATE track_artist_credit SET join_phrase=?1 WHERE track_id=?2 AND position=?3",
-                        params![credit.join_phrase,track_id.as_ref(),position as i64])?;
-                }
+                insert_catalog_credits(
+                    &tx,
+                    "track_artist_credit",
+                    track_id.as_ref(),
+                    &track.credits,
+                )?;
                 drop(credits_timer);
                 refresh_effective_track_tx(&tx, track_id)?;
             }
@@ -1231,12 +1236,24 @@ fn local_album_credit(
 }
 
 fn refresh_album_match_key(tx: &Transaction<'_>, album_id: &str) -> Result<()> {
+    refresh_album_match_key_impl(tx, album_id, true)
+}
+fn refresh_album_match_key_impl(
+    tx: &Transaction<'_>,
+    album_id: &str,
+    credited: bool,
+) -> Result<()> {
     let title: String = tx.query_row(
         "SELECT title FROM album_application_metadata WHERE album_id=?1",
         [album_id],
         |r| r.get(0),
     )?;
-    let mut query = tx.prepare("SELECT a.name, c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?;
+    let name = if credited {
+        "COALESCE(c.credited_name, a.name)"
+    } else {
+        "a.name"
+    };
+    let mut query = tx.prepare(&format!("SELECT {name}, c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position"))?;
     let credits = query
         .query_map([album_id], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
@@ -1429,7 +1446,7 @@ fn insert_credits(
         _ => return Err(Error::Invalid("unsupported credit table".into())),
     };
     let sql = format!(
-        "INSERT INTO {table}({entity_column}, position, artist_id, role) VALUES (?1, ?2, ?3, ?4)"
+        "INSERT INTO {table}({entity_column}, position, artist_id, role, credited_name) VALUES (?1, ?2, ?3, ?4, ?5)"
     );
     for (position, credit) in credits.iter().enumerate() {
         let artist_id = ArtistId::new();
@@ -1439,7 +1456,13 @@ fn insert_credits(
         )?;
         tx.execute(
             &sql,
-            params![entity_id, position as i64, artist_id.as_ref(), credit.role],
+            params![
+                entity_id,
+                position as i64,
+                artist_id.as_ref(),
+                credit.role,
+                credit.name
+            ],
         )?;
     }
     Ok(())
@@ -1507,7 +1530,7 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
                 r.title,
                 COALESCE((
                     SELECT group_concat(name, '') FROM (
-                        SELECT a.name || COALESCE(c.join_phrase,
+                        SELECT COALESCE(c.credited_name, a.name) || COALESCE(c.join_phrase,
                             CASE WHEN EXISTS (SELECT 1 FROM track_artist_credit next
                                 WHERE next.track_id=c.track_id AND next.position>c.position)
                             THEN ', ' ELSE '' END) AS name
@@ -1571,7 +1594,7 @@ fn prepare_album_match(
     if !crate::album_matching::eligible_text(&title, &artist) {
         return Ok(Preparation::Done(MatchOutcome::Skipped));
     }
-    let credits = db.prepare("SELECT c.artist_id,a.name,c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?.query_map([id.as_ref()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let credits = db.prepare("SELECT c.artist_id,COALESCE(c.credited_name,a.name),c.join_phrase FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?.query_map([id.as_ref()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let [(artist_id, name, phrase)] = credits.as_slice() else {
         return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
     };
@@ -1622,4 +1645,120 @@ fn prepare_album_match(
 
 fn artist_matching_identities(db: &Connection, id: &ArtistId) -> Result<Vec<ExternalIdentity>> {
     Ok(db.prepare("SELECT external_id FROM artist_external_identity WHERE artist_id=?1 AND provider='musicbrainz' AND kind='artist'")?.query_map([id.as_ref()], |r|Ok(ExternalIdentity { provider:"musicbrainz".into(),kind:"artist".into(),external_id:r.get(0)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+// Generic explicit reassignment. Only the known exclusive MB Artist namespace
+// has a conflict rule; opaque identities of other kinds are preserved in full.
+fn merge_artist_tx(tx: &Transaction<'_>, source: &ArtistId, canonical: &ArtistId) -> Result<bool> {
+    let exists = |id: &ArtistId| -> Result<bool> {
+        Ok(tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM artist WHERE id=?1)",
+            [id.as_ref()],
+            |r| r.get(0),
+        )?)
+    };
+    if !exists(canonical)? {
+        return Err(Error::Invalid("canonical Artist does not exist".into()));
+    }
+    if source == canonical || !exists(source)? {
+        return Ok(false);
+    }
+    let mut identities = artist_matching_identities(tx, source)?;
+    identities.extend(artist_matching_identities(tx, canonical)?);
+    identities.sort_by(|a, b| a.external_id.cmp(&b.external_id));
+    identities.dedup();
+    if identities.len() > 1 {
+        return Err(Error::ArtistIdentityConflict);
+    }
+    for table in [
+        "album_artist_credit",
+        "release_artist_credit",
+        "track_artist_credit",
+    ] {
+        // FK indexes target only affected credits. Freeze legacy presentation
+        // before changing identity; positions, roles and join phrases stay intact.
+        tx.execute(&format!("UPDATE {table} SET credited_name=COALESCE(credited_name,(SELECT name FROM artist WHERE id=?1)), artist_id=?2 WHERE artist_id=?1"), params![source.as_ref(),canonical.as_ref()])?;
+    }
+    tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) SELECT ?2,provider,kind,external_id FROM artist_external_identity WHERE artist_id=?1 ON CONFLICT DO NOTHING", params![source.as_ref(),canonical.as_ref()])?;
+    tx.execute("DELETE FROM artist WHERE id=?1", [source.as_ref()])?;
+    // Display is unchanged, so effective metadata, FTS and Album keys stay valid.
+    Ok(true)
+}
+
+fn canonical_musicbrainz_artist(
+    tx: &Transaction<'_>,
+    current: Option<&ArtistId>,
+    name: &str,
+    identity: &ExternalIdentity,
+) -> Result<ArtistId> {
+    let owners = tx.prepare("SELECT artist_id FROM artist_external_identity WHERE provider=?1 AND kind=?2 AND external_id=?3 ORDER BY artist_id")?.query_map(params![identity.provider,identity.kind,identity.external_id], |r| r.get::<_,String>(0).map(ArtistId))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let canonical = if let Some(owner) = owners.first() {
+        owner.clone()
+    } else if let Some(current) = current {
+        current.clone()
+    } else {
+        let id = ArtistId::new();
+        tx.execute(
+            "INSERT INTO artist(id,name) VALUES (?1,?2)",
+            params![id.as_ref(), name],
+        )?;
+        id
+    };
+    // Check every participant before mutation. The outer transaction also rolls
+    // back earlier catalog work if a conflicting identity is discovered later.
+    for id in owners
+        .iter()
+        .chain(current)
+        .chain(std::iter::once(&canonical))
+    {
+        if artist_matching_identities(tx, id)?
+            .iter()
+            .any(|i| i != identity)
+        {
+            return Err(Error::ArtistIdentityConflict);
+        }
+    }
+    for source in owners.iter().chain(current) {
+        merge_artist_tx(tx, source, &canonical)?;
+    }
+    tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![canonical.as_ref(),identity.provider,identity.kind,identity.external_id])?;
+    Ok(canonical)
+}
+
+fn insert_catalog_credits(
+    tx: &Transaction<'_>,
+    table: &str,
+    entity: &str,
+    credits: &[crate::catalog::Credit],
+) -> Result<()> {
+    let column = match table {
+        "album_artist_credit" => "album_id",
+        "release_artist_credit" => "release_id",
+        "track_artist_credit" => "track_id",
+        _ => return Err(Error::Invalid("unsupported credit table".into())),
+    };
+    for (position, credit) in credits.iter().enumerate() {
+        let artist = match &credit.identity {
+            Some(identity)
+                if identity.provider == "musicbrainz"
+                    && identity.kind == "artist"
+                    && !identity.external_id.is_empty() =>
+            {
+                canonical_musicbrainz_artist(tx, None, &credit.name, identity)?
+            }
+            _ => {
+                let id = ArtistId::new();
+                tx.execute(
+                    "INSERT INTO artist(id,name) VALUES (?1,?2)",
+                    params![id.as_ref(), credit.name],
+                )?;
+                if let Some(identity) = &credit.identity {
+                    tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) VALUES (?1,?2,?3,?4)",params![id.as_ref(),identity.provider,identity.kind,identity.external_id])?;
+                }
+                id
+            }
+        };
+        tx.execute(&format!("INSERT INTO {table}({column},position,artist_id,credited_name,join_phrase) VALUES (?1,?2,?3,?4,?5)"),params![entity,position as i64,artist.as_ref(),credit.name,credit.join_phrase])?;
+    }
+    Ok(())
 }

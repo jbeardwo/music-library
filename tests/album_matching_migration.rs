@@ -52,7 +52,7 @@ fn matching_upgrade_backfills_unicode_credit_display_without_changing_entities()
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        6
+        7
     );
     let plan: String = db.query_row("EXPLAIN QUERY PLAN SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65", ["écho (live)","ärtist a feat. artist b"], |r|r.get(3)).unwrap();
     assert!(

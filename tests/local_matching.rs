@@ -23,6 +23,7 @@ struct Fixture {
 }
 fn credit(name: &str) -> catalog::Credit {
     catalog::Credit {
+        identity: None,
         name: name.into(),
         join_phrase: String::new(),
     }
@@ -364,6 +365,7 @@ fn album_artist_display_matches_catalog_join_phrases_despite_different_track_art
                 date: "2005".into(),
                 credits: vec![
                     catalog::Credit {
+                        identity: None,
                         name: "Artist A".into(),
                         join_phrase: " feat. ".into(),
                     },
@@ -1088,6 +1090,79 @@ mod artist_first {
         }
     }
     #[test]
+    fn matcher_canonicalizes_existing_identity_and_accepts_queued_reassigned_credit() {
+        use music_library::album_matching::MatchReply;
+        use music_library::domain::ArtistId;
+        let mut f = Fixture::new();
+        let request = f.files("Acoustic", "Hella", &[1]);
+        let imported = f.library.import_release(&request).unwrap();
+        let first = input(&f, &imported);
+        let request = f.files("Control", "Hella", &[1]);
+        let second = f.library.import_release(&request).unwrap();
+        let second = input(&f, &second);
+        // Existing strong identity wins even when its canonical name differs.
+        f.db()
+            .execute_batch("INSERT INTO artist(id,name) VALUES ('existing','Canonical alias')")
+            .unwrap();
+        let canonical = ArtistId("existing".into());
+        let identity = ExternalIdentity {
+            provider: "musicbrainz".into(),
+            kind: "artist".into(),
+            external_id: "hella".into(),
+        };
+        f.library
+            .attach_artist_external_identity(&canonical, &identity)
+            .unwrap();
+        let reply = |input| MatchReply {
+            input,
+            artist: Some(identity.clone()),
+            outcome: MatchOutcome::NoConfidentMatch,
+        };
+        assert_eq!(
+            f.library
+                .complete_album_match(reply(first.clone()))
+                .unwrap(),
+            MatchOutcome::NoConfidentMatch
+        );
+        assert_eq!(
+            f.library
+                .complete_album_match(reply(second.clone()))
+                .unwrap(),
+            MatchOutcome::NoConfidentMatch
+        );
+        // The old Artist IDs are gone, but a previously queued matching reply is
+        // still valid because its current credit now carries the same strong ID.
+        assert_eq!(
+            f.library
+                .complete_album_match(reply(first.clone()))
+                .unwrap(),
+            MatchOutcome::NoConfidentMatch
+        );
+        for old in [&first, &second] {
+            let current = match f.library.prepare_album_match(&old.album_id).unwrap() {
+                Preparation::Ready(i) => i,
+                _ => panic!(),
+            };
+            assert_eq!(current.artist_id, canonical);
+            assert_eq!(current.artist, "hella");
+            assert_eq!(current.known_artist, Some(identity.clone()));
+            assert!(
+                f.library
+                    .list_artist_external_identities(&old.artist_id)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        assert_eq!(
+            f.library
+                .resolve_artists_external_identity(&identity)
+                .unwrap(),
+            vec![canonical]
+        );
+        assert_eq!(f.count("release_external_identity"), 0);
+        assert_eq!(f.count("track_external_identity"), 0);
+    }
+    #[test]
     fn artist_persists_after_album_error_fresh_worker_reuses_it_and_metadata_is_preserved() {
         let mut f = Fixture::new();
         let request = f.files("Acoustic", "Hella", &[1]);
@@ -1219,7 +1294,17 @@ mod artist_first {
             *calls.lock().unwrap(),
             vec!["artist:hella", "album:acoustic", "album:control"]
         );
-        assert_eq!(f.count("artist_external_identity"), 2);
+        assert_eq!(f.count("artist_external_identity"), 1);
+        assert_eq!(
+            f.db()
+                .query_row(
+                    "SELECT count(DISTINCT artist_id) FROM album_artist_credit",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1
+        );
         assert_eq!(f.count("album_external_identity"), 1);
     }
     #[test]

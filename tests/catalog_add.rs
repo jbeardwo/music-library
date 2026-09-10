@@ -15,10 +15,12 @@ fn id(provider: &str, kind: &str, value: &str) -> ExternalIdentity {
 fn release(key: &str) -> Release {
     let credits = vec![
         Credit {
+            identity: None,
             name: "Artist A".into(),
             join_phrase: " feat. ".into(),
         },
         Credit {
+            identity: None,
             name: "Artist B".into(),
             join_phrase: "".into(),
         },
@@ -293,7 +295,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        6
+        7
     );
 }
 
@@ -341,4 +343,210 @@ fn exact_existing_edition_anchors_album_and_conflicting_owners_roll_back() {
         .attach_album_external_identity(&other_album.album_id, &input.album.identity)
         .unwrap();
     assert!(library.add_catalog_release(&input).is_err()); // generic sharing is valid, implicit selection is not
+}
+
+#[test]
+fn catalog_reuses_strong_artist_identity_without_changing_credited_presentation() {
+    use music_library::domain::ArtistId;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = Library::open(&path).unwrap();
+    let db = Connection::open(path).unwrap();
+    db.execute_batch("INSERT INTO artist(id,name) VALUES ('a-existing','Canonical name'),('z-duplicate','Alternate name')").unwrap();
+    for key in ["a-existing", "z-duplicate"] {
+        lib.attach_artist_external_identity(
+            &ArtistId(key.into()),
+            &id("musicbrainz", "artist", "strong"),
+        )
+        .unwrap();
+    }
+    for key in ["first", "second"] {
+        let mut data = release(key);
+        data.album.identity.external_id = key.into();
+        for credits in std::iter::once(&mut data.album.credits)
+            .chain(std::iter::once(&mut data.credits))
+            .chain(
+                data.media
+                    .iter_mut()
+                    .flat_map(|m| m.tracks.iter_mut().map(|t| &mut t.credits)),
+            )
+        {
+            // Same canonical Artist can legitimately occupy two distinct positions.
+            for credit in credits {
+                credit.identity = Some(id("musicbrainz", "artist", "strong"));
+            }
+        }
+        lib.add_catalog_release(&data).unwrap();
+        lib.add_catalog_release(&data).unwrap();
+    }
+    assert_eq!(
+        lib.resolve_artists_external_identity(&id("musicbrainz", "artist", "strong"))
+            .unwrap(),
+        vec![ArtistId("a-existing".into())]
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artist", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    for table in [
+        "album_artist_credit",
+        "release_artist_credit",
+        "track_artist_credit",
+    ] {
+        assert_eq!(
+            db.query_row(
+                &format!("SELECT count(*) FROM {table} WHERE artist_id!='a-existing'"),
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row(
+                &format!(
+                    "SELECT credited_name || join_phrase FROM {table} WHERE position=0 LIMIT 1"
+                ),
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "Artist A feat. "
+        );
+    }
+    for row in lib
+        .search(&SearchRequest {
+            limit: 10,
+            ..Default::default()
+        })
+        .unwrap()
+    {
+        assert_eq!(row.artist_names, "Artist A feat. Artist B");
+    }
+}
+
+#[test]
+fn catalog_text_only_same_and_similar_names_remain_separate() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = Library::open(&path).unwrap();
+    let mut data = release("first");
+    for credit in &mut data.album.credits {
+        credit.name = "Same".into();
+    }
+    lib.add_catalog_release(&data).unwrap();
+    data.identity.external_id = "second".into();
+    data.album.identity.external_id = "second".into();
+    data.album.credits[1].name = "Samee".into();
+    lib.add_catalog_release(&data).unwrap();
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT count(DISTINCT artist_id) FROM album_artist_credit",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        4
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artist_external_identity", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn catalog_conflicting_artist_identity_rolls_back_prior_catalog_writes() {
+    use music_library::{domain::ArtistId, storage::Error};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = Library::open(&path).unwrap();
+    let db = Connection::open(path).unwrap();
+    db.execute_batch("INSERT INTO artist(id,name) VALUES ('conflict','Artist')")
+        .unwrap();
+    for value in ["one", "two"] {
+        lib.attach_artist_external_identity(
+            &ArtistId("conflict".into()),
+            &id("musicbrainz", "artist", value),
+        )
+        .unwrap();
+    }
+    let mut data = release("new");
+    // Album and Release creation precede this late Track-credit conflict.
+    data.media[1].tracks[0].credits[0].identity = Some(id("musicbrainz", "artist", "one"));
+    assert!(matches!(
+        lib.add_catalog_release(&data),
+        Err(Error::ArtistIdentityConflict)
+    ));
+    for table in [
+        "album",
+        "release",
+        "track",
+        "library_membership",
+        "album_external_identity",
+        "release_external_identity",
+        "track_external_identity",
+    ] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artist", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artist_external_identity", [], |r| r
+            .get::<_, i64>(
+            0
+        ))
+        .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn same_name_with_distinct_musicbrainz_artists_stays_distinct() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = Library::open(&path).unwrap();
+    let mut data = release("distinct");
+    for credits in std::iter::once(&mut data.album.credits)
+        .chain(std::iter::once(&mut data.credits))
+        .chain(
+            data.media
+                .iter_mut()
+                .flat_map(|m| m.tracks.iter_mut().map(|t| &mut t.credits)),
+        )
+    {
+        for (position, credit) in credits.iter_mut().enumerate() {
+            credit.name = "Same name".into();
+            credit.identity = Some(id("musicbrainz", "artist", &position.to_string()));
+        }
+    }
+    lib.add_catalog_release(&data).unwrap();
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM artist", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(DISTINCT artist_id) FROM album_artist_credit",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
 }

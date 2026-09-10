@@ -647,3 +647,23 @@ Artist-first implementation. Network waits remain outside import/commit and thes
 local spans. The existing Artist credit key and new Artist identity indexes keep
 these reads entity-local. Unknown Artist discovery adds one logical HTTP request;
 stored identities/session reuse avoid it. No timeout or rate-limit changes were made.
+
+Canonical Artist reuse (migration 0007; same 20k-Album / 200k-Track fixture and
+20-sample `post_import_matching_timing` run) preserves local-import cost:
+
+| Tracks | Import + commit | Eligibility | Dispatch incl. eligibility | Identity completion incl. canonical reassignment |
+|---|---:|---:|---:|---:|
+| 1 | 439 µs | 60 µs | 104 µs | 255 µs |
+| 3 | 747 µs | 63 µs | 107 µs | 251 µs |
+| 15 | 2.418 ms | 66 µs | 112 µs | 292 µs |
+
+The fake provider independently establishes the same Artist identity across imported
+Albums, so later completions now consolidate their Artist rows. Completion adds
+roughly 0.13–0.17 ms compared with the preceding attachment-only measurements;
+HTTP remains outside these spans. The 200k harness also measured indexed Album
+candidate generation at 6.18 µs and targeted 10-Track verification at 14.66 µs.
+Consolidation tests confirm the existing Artist reverse-identity index and all
+three `*_artist_credit_artist` indexes serve lookup/reassignment. Credited text is
+unchanged, so no effective-metadata or FTS rebuild is required. The one-time
+credited-name migration contributed to a 450 ms first open in this run; subsequent
+opens had a 193 µs median. These are local observations, not performance budgets.

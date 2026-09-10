@@ -7,6 +7,8 @@ pub struct CatalogError(pub String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Credit {
+    /// Optional strong provider Artist identity, separate from credited presentation.
+    pub identity: Option<ExternalIdentity>,
     pub name: String,
     pub join_phrase: String,
 }

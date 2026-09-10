@@ -497,6 +497,7 @@ fn credits(values: Vec<Credit>) -> Vec<catalog::Credit> {
     values
         .into_iter()
         .map(|c| catalog::Credit {
+            identity: c.artist.map(|a| identity("artist", &a.id)),
             name: c.name,
             join_phrase: c.joinphrase,
         })
@@ -672,6 +673,25 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn credits_retain_artist_identity_separately_from_printed_name() {
+        let values: Vec<super::Credit> = serde_json::from_str(
+            r#"[
+          {"name":"Printed alias","joinphrase":" feat. ","artist":{"id":"artist-mbid"}},
+          {"name":"Text only"}
+        ]"#,
+        )
+        .unwrap();
+        let converted = super::credits(values);
+        assert_eq!(
+            converted[0].identity,
+            Some(super::identity("artist", "artist-mbid"))
+        );
+        assert_eq!(converted[0].name, "Printed alias");
+        assert_eq!(converted[0].join_phrase, " feat. ");
+        assert_eq!(converted[1].identity, None);
+    }
+
     use super::*;
     use std::{
         io::{Read, Write},

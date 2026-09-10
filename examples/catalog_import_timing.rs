@@ -15,10 +15,12 @@ fn id(kind: &str, value: String) -> ExternalIdentity {
 fn fixture(n: usize, run: usize) -> Release {
     let credits = vec![
         Credit {
+            identity: None,
             name: "Artist A".into(),
             join_phrase: " feat. ".into(),
         },
         Credit {
+            identity: None,
             name: "Artist B".into(),
             join_phrase: "".into(),
         },

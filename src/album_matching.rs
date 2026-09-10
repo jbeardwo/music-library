@@ -274,7 +274,7 @@ impl AlbumMatcher {
         Ok(outcome)
     }
     /// Explicit diagnostic/manual choice from the retained Artist candidates.
-    /// No entity merging or local-name rewrite; the following Album request stays scoped.
+    /// Strong identity may consolidate Artists; credited names and Album scope stay intact.
     pub fn select_artist(
         &mut self,
         library: &mut Library,

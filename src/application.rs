@@ -40,6 +40,14 @@ impl Library {
 
     /// Attach without changing internal identity, metadata, sources, or membership.
     /// Returns false if this exact association already exists.
+    pub fn merge_artist(
+        &mut self,
+        source: &crate::domain::ArtistId,
+        canonical: &crate::domain::ArtistId,
+    ) -> Result<bool> {
+        self.store.merge_artist(source, canonical)
+    }
+
     pub fn attach_artist_external_identity(
         &mut self,
         id: &crate::domain::ArtistId,
