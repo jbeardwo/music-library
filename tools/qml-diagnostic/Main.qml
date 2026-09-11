@@ -19,11 +19,56 @@ ApplicationWindow {
     readonly property var matchingView: window.bridge.matching_snapshot
     readonly property var catalogView: window.bridge.catalog_snapshot
 
+    // Keep delegate identity and display order independent from queue completion.
+    ListModel {
+        id: matchingModel
+        dynamicRoles: true
+    }
+    onMatchingViewChanged: syncMatchingRows(matchingView)
+    function syncMatchingRows(rows) {
+        const positions = Object.create(null);
+        for (let i = 0; i < matchingModel.count; ++i)
+            positions[matchingModel.get(i).albumKey] = i;
+        for (let sourceIndex = 0; sourceIndex < rows.length; ++sourceIndex) {
+            const row = rows[sourceIndex];
+            const index = positions[row.albumId];
+            const encoded = JSON.stringify(row);
+            if (index === undefined) {
+                positions[row.albumId] = matchingModel.count;
+                matchingModel.append({
+                    albumKey: row.albumId,
+                    rowData: row,
+                    encoded: encoded,
+                    sourceIndex: sourceIndex
+                });
+            } else {
+                if (matchingModel.get(index).encoded !== encoded) {
+                    matchingModel.setProperty(index, "rowData", row);
+                    matchingModel.setProperty(index, "encoded", encoded);
+                }
+                if (matchingModel.get(index).sourceIndex !== sourceIndex)
+                    matchingModel.setProperty(index, "sourceIndex", sourceIndex);
+            }
+        }
+    }
+
     header: ToolBar {
         RowLayout {
             Button {
                 text: "Local Album matches…"
                 onClicked: matchingDialog.open()
+            }
+            Button {
+                text: window.bridge.matching_provider.probe ? "Retrying…" : "Retry Matching"
+                visible: window.bridge.matching_provider.paused
+                enabled: !window.bridge.matching_provider.probe
+                onClicked: window.bridge.retry_matching()
+            }
+            Label {
+                visible: window.bridge.matching_provider.paused
+                text: window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)"
+                Layout.maximumWidth: 550
+                wrapMode: Text.Wrap
             }
             Label {
                 text: "Local music is usable while matching runs. " + window.matchingView.length + " imported Albums"
@@ -38,38 +83,50 @@ ApplicationWindow {
         anchors.centerIn: parent
         standardButtons: Dialog.Close
         contentItem: ListView {
-            model: window.matchingView
+            id: matchingList
+            model: matchingModel
             clip: true
             delegate: RowLayout {
                 id: matchRow
-                required property var modelData
+                required property var rowData
+                required property int sourceIndex
                 required property int index
                 width: ListView.view.width
                 Label {
-                    text: matchRow.modelData.title + " — " + matchRow.modelData.status
+                    text: window.matchingLabel(matchRow.rowData)
+                    textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
                 }
                 ComboBox {
                     id: artistChoice
                     Layout.preferredWidth: 260
-                    visible: matchRow.modelData.artists.length > 0
-                    model: matchRow.modelData.artists
+                    visible: matchRow.rowData.artists.length > 0
+                    model: matchRow.rowData.artists
                     textRole: "label"
                 }
                 Button {
                     text: "Use Artist"
-                    visible: matchRow.modelData.artists.length > 0
-                    enabled: !matchRow.modelData.pending && artistChoice.currentIndex >= 0
-                    onClicked: window.bridge.choose_artist(matchRow.index, artistChoice.currentIndex)
+                    visible: matchRow.rowData.artists.length > 0
+                    enabled: !matchRow.rowData.pending && artistChoice.currentIndex >= 0
+                    onClicked: window.bridge.choose_artist(matchRow.sourceIndex, artistChoice.currentIndex)
                 }
                 Button {
                     text: "Retry Match"
-                    enabled: !matchRow.modelData.pending
-                    onClicked: window.bridge.retry_match(matchRow.index)
+                    enabled: !matchRow.rowData.pending
+                    onClicked: window.bridge.retry_match(matchRow.sourceIndex)
                 }
             }
         }
+    }
+
+    function matchingLabel(row) {
+        const local = row.title + (row.localArtist ? " — " + row.localArtist : "");
+        if (!row.matchedTitle)
+            return local + " — " + row.status;
+        const provider = row.matchedTitle + (row.matchedArtist ? " — " + row.matchedArtist : "");
+        const label = row.matchedClose ? "Matched (close): " : "Matched: ";
+        return "Local: " + local + "\n" + label + provider;
     }
 
     Dialog {

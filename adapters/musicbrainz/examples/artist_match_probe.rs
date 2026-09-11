@@ -1,6 +1,9 @@
 //! Opt-in, read-only Artist-first discovery. Never part of normal tests.
 use music_library::{
-    album_matching::{accepted_album, resolve_artist},
+    album_matching::{
+        MatchOutcome, accepted_album, accepted_album_confirmed, corroborate_artist_album,
+        resolve_artist,
+    },
     catalog::CatalogProvider,
 };
 use music_library_musicbrainz::MusicBrainz;
@@ -24,8 +27,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             page.items.len(),
             page.next_offset.is_some()
         );
+        for candidate in &page.items {
+            println!(
+                "  {} | {} | aliases={:?}",
+                candidate.name, candidate.identity.external_id, candidate.aliases
+            );
+        }
         match resolve_artist(artist, &page) {
             Ok(identity) => identity,
+            Err(MatchOutcome::ArtistAmbiguous(candidates)) if !candidates.is_empty() => {
+                let ids = candidates
+                    .iter()
+                    .map(|c| c.identity.clone())
+                    .collect::<Vec<_>>();
+                let albums = client.albums_for_artists(&ids, title)?;
+                println!(
+                    "Pair decision: {:?}",
+                    corroborate_artist_album(artist, title, &candidates, &albums)
+                );
+                return Ok(());
+            }
             Err(state) => {
                 println!("Decision: {state:?}");
                 return Ok(());
@@ -33,12 +54,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     println!("Artist: {}", id.external_id);
-    let page = client.artist_albums(&id, title)?;
+    let page = if args.len() == 3 {
+        client.artist_albums_confirmed(&id, title)?
+    } else {
+        client.artist_albums(&id, title)?
+    };
     println!("Album candidates (more={}):", page.next_offset.is_some());
     for candidate in &page.items {
         println!("  {} | {}", candidate.title, candidate.identity.external_id);
     }
-    let decision = accepted_album(title, &id, &page);
+    let decision = accepted_album_confirmed(title, &id, &page, args.len() == 3);
     println!("Decision: {decision:?}");
     if let music_library::album_matching::MatchOutcome::MatchedClose(identity) = decision {
         let exact = page

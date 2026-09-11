@@ -17,9 +17,22 @@ struct Bridge {
     catalog_changed: qt_signal!(),
     matching_snapshot: qt_property!(QVariantList; READ matching_snapshot_value NOTIFY matching_changed),
     matching_changed: qt_signal!(),
+    matching_provider: qt_property!(QVariantMap; READ matching_provider_value NOTIFY matching_changed),
+    retry_matching: qt_method!(
+        fn retry_matching(&mut self) {
+            if let Some(matcher) = self.matcher.as_mut() {
+                if let Err(error) = matcher.retry_catalog_matching(&self.session.library) {
+                    self.session.error = error.to_string();
+                    self.changed();
+                }
+                self.matching_changed();
+            }
+        }
+    ),
+
     retry_match: qt_method!(
         fn retry_match(&mut self, index: i32) {
-            if let Some((id, _, _)) = self.matching_rows.get(index as usize) {
+            if let Some((id, _, _, _)) = self.matching_rows.get(index as usize) {
                 let id = id.clone();
                 let outcome = self.ensure_matcher().and_then(|()| {
                     self.matcher
@@ -39,7 +52,7 @@ struct Bridge {
             if row < 0 || choice < 0 {
                 return;
             }
-            if let Some((id, _, _)) = self.matching_rows.get(row as usize) {
+            if let Some((id, _, _, _)) = self.matching_rows.get(row as usize) {
                 let id = id.clone();
                 if let Some(matcher) = self.matcher.as_mut() {
                     let outcome = matcher
@@ -58,6 +71,7 @@ struct Bridge {
         music_library::domain::AlbumId,
         String,
         music_library::album_matching::MatchOutcome,
+        String,
     )>,
     set_volume: qt_method!(
         fn set_volume(&mut self, value: f64) {
@@ -164,6 +178,8 @@ impl Bridge {
             catalog_changed: Default::default(),
             matching_snapshot: Default::default(),
             matching_changed: Default::default(),
+            matching_provider: Default::default(),
+            retry_matching: Default::default(),
             retry_match: Default::default(),
             choose_artist: Default::default(),
             matcher: None,
@@ -193,6 +209,7 @@ impl Bridge {
                 music_library::album_matching::AlbumMatcher::new(
                     music_library_musicbrainz::MusicBrainz::new(),
                     callback,
+                    matching_retry_callback(qmetaobject::QPointer::from(&*self)),
                 )
                 .map_err(|e| e.to_string())?,
             );
@@ -212,8 +229,12 @@ impl Bridge {
                 .album_for_release(&import.release_id)
                 .map_err(|e| e.to_string())?;
             if !self.matching_rows.iter().any(|r| r.0 == album.album_id) {
-                self.matching_rows
-                    .push((album.album_id, album.title, MatchOutcome::Disabled));
+                self.matching_rows.push((
+                    album.album_id,
+                    album.title,
+                    MatchOutcome::Disabled,
+                    album.artist_names,
+                ));
             }
         }
         if enabled && !imports.is_empty() {
@@ -233,11 +254,47 @@ impl Bridge {
         self.matching_changed();
         Ok(())
     }
+    fn matching_provider_value(&self) -> QVariantMap {
+        use music_library::album_matching::CircuitState;
+        let mut values = QVariantMap::default();
+        let paused = self
+            .matcher
+            .as_ref()
+            .is_some_and(|m| matches!(m.circuit_state(), CircuitState::Unavailable(_)));
+        let message = match self.matcher.as_ref().map(|m| m.circuit_state()) {
+            Some(CircuitState::Unavailable(error)) => {
+                format!(
+                    "MusicBrainz unavailable — matching paused; retrying automatically: {error}"
+                )
+            }
+            _ => String::new(),
+        };
+        values.insert("paused".into(), paused.into());
+        values.insert("message".into(), QString::from(message).into());
+        values.insert(
+            "probe".into(),
+            self.matcher
+                .as_ref()
+                .is_some_and(|m| m.probe_pending())
+                .into(),
+        );
+        values.insert(
+            "queued".into(),
+            (self.matcher.as_ref().map_or(0, |m| m.pending_count()) as i32).into(),
+        );
+        values
+    }
     fn matching_snapshot_value(&self) -> QVariantList {
         use music_library::album_matching::MatchOutcome;
         self.matching_rows
             .iter()
-            .map(|(id, title, outcome)| -> QVariant {
+            .map(|(id, title, outcome, local_artist)| -> QVariant {
+                let outcome = self
+                    .matcher
+                    .as_ref()
+                    .and_then(|m| m.outcome(id))
+                    .unwrap_or(outcome);
+                let matched = self.matcher.as_ref().and_then(|m| m.matched_album(id));
                 let status = match outcome {
                     MatchOutcome::Pending => "Pending MusicBrainz matching…".into(),
                     MatchOutcome::Matched(identity) => format!("Matched: {}", identity.external_id),
@@ -273,6 +330,9 @@ impl Bridge {
                     }
                     MatchOutcome::NoConfidentMatch => "No confident match".into(),
                     MatchOutcome::Error(error) => format!("Error: {error}"),
+                    MatchOutcome::Deferred(error) => {
+                        format!("Deferred — provider unavailable: {error}")
+                    }
                 };
                 let artists: QVariantList = match outcome {
                     MatchOutcome::ArtistAmbiguous(candidates) => candidates
@@ -298,6 +358,19 @@ impl Bridge {
                     ("albumId", string(id.as_ref())),
                     ("artists", artists.into()),
                     ("title", string(title)),
+                    ("localArtist", string(local_artist)),
+                    (
+                        "matchedTitle",
+                        string(matched.map_or("", |c| c.title.as_str())),
+                    ),
+                    (
+                        "matchedArtist",
+                        string(matched.map_or("", |c| c.artist.as_str())),
+                    ),
+                    (
+                        "matchedClose",
+                        matches!(outcome, MatchOutcome::MatchedClose(_)).into(),
+                    ),
                     ("status", string(&status)),
                     ("pending", matches!(outcome, MatchOutcome::Pending).into()),
                 ])
@@ -520,6 +593,22 @@ fn time_label(ms: Option<u64>) -> String {
         || "--:--".into(),
         |ms| format!("{:02}:{:02}", ms / 60_000, (ms / 1000) % 60),
     )
+}
+
+fn matching_retry_callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(u64) + Send + 'static {
+    qmetaobject::queued_callback(move |token: u64| {
+        if let Some(pinned) = weak.as_pinned() {
+            let mut bridge = pinned.borrow_mut();
+            if let Some(mut matcher) = bridge.matcher.take() {
+                if let Err(error) = matcher.cooldown_elapsed(&bridge.session.library, token) {
+                    bridge.session.error = error.to_string();
+                    bridge.changed();
+                }
+                bridge.matcher = Some(matcher);
+                bridge.matching_changed();
+            }
+        }
+    })
 }
 
 fn matching_callback(
@@ -770,6 +859,7 @@ mod event_delivery_tests {
                 name: &str,
             ) -> Result<Page<ArtistCandidate>, CatalogError> {
                 let candidate = ArtistCandidate {
+                    aliases: vec![],
                     identity: ExternalIdentity {
                         provider: "musicbrainz".into(),
                         kind: "artist".into(),
@@ -798,11 +888,16 @@ mod event_delivery_tests {
                 self.0.recv().unwrap();
                 if !self.1 {
                     self.1 = true;
-                    return Err(CatalogError("HTTP 503".into()));
+                    return Err(CatalogError::ServiceUnavailable {
+                        message: "HTTP 503".into(),
+                        retry_after: None,
+                    });
                 }
                 Ok(Page {
                     next_offset: None,
                     items: vec![ArtistAlbumCandidate {
+                        artist: "Canonical Artist".into(),
+                        primary_type: String::new(),
                         title: format!("{title}s"),
                         artist_ids: vec![artist.clone()],
                         identity: ExternalIdentity {
@@ -866,10 +961,14 @@ mod event_delivery_tests {
         let quit = engine.clone();
         let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
         bridge.pinned().borrow_mut().matcher = Some(
-            AlbumMatcher::new(Provider(wait, false), move |reply| {
-                deliver(reply);
-                done(());
-            })
+            AlbumMatcher::new(
+                Provider(wait, false),
+                move |reply| {
+                    deliver(reply);
+                    done(());
+                },
+                matching_retry_callback(qmetaobject::QPointer::from(bridge.pinned().borrow())),
+            )
             .unwrap(),
         );
         bridge
@@ -904,7 +1003,8 @@ mod event_delivery_tests {
         assert!(view().contains("Pending MusicBrainz"));
         gate.send(()).unwrap();
         engine.borrow().exec();
-        assert!(view().contains("Error: HTTP 503"));
+        assert!(view().contains("Deferred — provider unavailable: HTTP 503"));
+        assert!(view().contains("matching paused; retrying automatically"));
         assert!(
             bridge
                 .pinned()
@@ -915,11 +1015,43 @@ mod event_delivery_tests {
                 .unwrap()
                 .is_some()
         );
-        bridge.pinned().borrow_mut().retry_match(0);
-        assert!(view().contains("Pending MusicBrainz"));
+        // Fake timer expiry follows the actual queued callback path: no user action.
+        let token = bridge
+            .pinned()
+            .borrow()
+            .matcher
+            .as_ref()
+            .unwrap()
+            .retry_schedule()
+            .unwrap()
+            .token;
+        let wake = matching_retry_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
+        wake(token);
+        wake(token); // duplicate expiry is harmless
         gate.send(()).unwrap();
         engine.borrow().exec();
         assert!(view().contains("Matched close title: test-group"));
+        let displayed = engine
+            .borrow_mut()
+            .invoke_method("matchedRowText".into(), &[])
+            .to_qstring()
+            .to_string();
+        assert_eq!(
+            displayed,
+            "Local: Local Album — Artist\nMatched (close): local albums — Canonical Artist"
+        );
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .album_for_release(&imported.release_id)
+                .unwrap()
+                .title,
+            "Local Album"
+        );
+        assert!(!view().contains("matching paused; retrying automatically"));
         bridge.pinned().borrow_mut().retry_match(0);
         assert!(view().contains("Already matched"));
         bridge.pinned().borrow_mut().matcher.take();
@@ -956,7 +1088,9 @@ mod event_delivery_tests {
                 self.calls.fetch_add(1, Ordering::SeqCst);
                 self.gate.recv().unwrap();
                 if q == "failure" {
-                    return Err(CatalogError("HTTP 503 test service unavailable".into()));
+                    return Err(CatalogError::Other(
+                        "HTTP 503 test service unavailable".into(),
+                    ));
                 }
                 Ok(Page {
                     next_offset: None,
@@ -1171,10 +1305,49 @@ mod event_delivery_tests {
             .set_object_property("diagnostic".into(), bridge.pinned());
         // Load the real window/bindings; only add test accessors and label IDs.
         let qml = include_str!("../Main.qml")
+            .replace("onMatchingViewChanged: syncMatchingRows(matchingView)", "onMatchingViewChanged: { syncMatchingRows(matchingView); if (testPresentation) testProviderPresentation(20); }")
             .replace(
                 "    function ready() {",
                 r#"
-    function matchingViewText() { return JSON.stringify(window.matchingView); }
+    function matchingViewText() { return JSON.stringify(window.matchingView) + JSON.stringify(window.bridge.matching_provider); }
+    property bool testPresentation: false
+    function matchedRowText() { return window.matchingLabel(matchingModel.get(0).rowData); }
+    function testProviderPresentation(index) {
+        const rows = JSON.parse(JSON.stringify(window.matchingView));
+        rows[index].matchedTitle = "Provider Album";
+        rows[index].matchedArtist = "tsosis";
+        rows[index].matchedClose = true;
+        window.syncMatchingRows(rows);
+    }
+    function providerPresentationText() {
+        for (let i = 0; i < matchingModel.count; ++i) {
+            if (matchingModel.get(i).albumKey === "scroll-20")
+                return window.matchingLabel(matchingModel.get(i).rowData);
+        }
+        return "missing row";
+    }
+    function prepareMatchingScrollTest() {
+        testPresentation = true;
+        matchingDialog.open();
+        matchingList.forceLayout();
+        matchingList.currentIndex = 50;
+        matchingList.positionViewAtIndex(50, ListView.Center);
+        matchingList.forceLayout();
+        matchingList.currentItem.forceActiveFocus();
+        return matchingScrollState();
+    }
+    function matchingScrollState() {
+        matchingList.forceLayout();
+        return matchingList.contentY + "|" + matchingList.currentIndex + "|"
+            + matchingList.currentItem.rowData.albumId + "|" + matchingList.currentItem.activeFocus;
+    }
+    function changedMatchingRowStatus() {
+        for (let i = 0; i < matchingModel.count; ++i) {
+            if (matchingModel.get(i).albumKey === "scroll-1")
+                return matchingModel.get(i).rowData.status;
+        }
+        return "missing row";
+    }
     function testView() {
         return view.status + "|" + view.pending + "|" + view.outcome
             + "|" + playbackLabel.text + "|" + outcomeLabel.text;
@@ -1279,6 +1452,73 @@ mod event_delivery_tests {
         assert_eq!(report(&engine), failed);
         catalog_flow(&engine, &bridge);
         matching_flow(&engine, &bridge);
+        // A real queued QObject notification updates B while the user inspects Q.
+        {
+            let pinned = bridge.pinned();
+            let mut state = pinned.borrow_mut();
+            state.matching_rows = (0..100)
+                .map(|n| {
+                    (
+                        music_library::domain::AlbumId(format!("scroll-{n}")),
+                        format!("Album {n}"),
+                        music_library::album_matching::MatchOutcome::Pending,
+                        "Local Artist".into(),
+                    )
+                })
+                .collect();
+            state.matching_changed();
+        }
+        let before = engine
+            .borrow_mut()
+            .invoke_method("prepareMatchingScrollTest".into(), &[])
+            .to_qstring()
+            .to_string();
+        let pointer = qmetaobject::QPointer::from(bridge.pinned().borrow());
+        let quit = engine.clone();
+        let update = qmetaobject::queued_callback(move |index: usize| {
+            if let Some(pinned) = pointer.as_pinned() {
+                let mut state = pinned.borrow_mut();
+                state.matching_rows[index].2 =
+                    music_library::album_matching::MatchOutcome::NoConfidentMatch;
+                state.matching_changed();
+            }
+            if index == 20 {
+                quit.borrow().quit();
+            }
+        });
+        let worker = std::thread::spawn(move || {
+            for index in 1..=20 {
+                update(index);
+            }
+        });
+        engine.borrow().exec();
+        worker.join().unwrap();
+        let after = engine
+            .borrow_mut()
+            .invoke_method("matchingScrollState".into(), &[])
+            .to_qstring()
+            .to_string();
+        assert_eq!(
+            before, after,
+            "unrelated completion must retain viewport, selection and focus"
+        );
+        assert!(after.ends_with("|true"), "focused delegate: {after}");
+        assert_eq!(
+            engine
+                .borrow_mut()
+                .invoke_method("providerPresentationText".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "Local: Album 20 — Local Artist\nMatched (close): Provider Album — tsosis"
+        );
+        assert_eq!(
+            engine
+                .borrow_mut()
+                .invoke_method("changedMatchingRowStatus".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "No confident match"
+        );
         drop(engine); // Destroy QML bindings while their QObject still exists.
     }
 }

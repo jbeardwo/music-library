@@ -245,15 +245,31 @@ falls through to normal local creation. External catalog matching remains a
 separate post-import operation and must never delay this transaction.
 
 Post-import matching enriches Artist and Album identities without rewriting local
-metadata. Artist identity must be established first through a stored MBID, one
-exact normalized Artist-name candidate, or explicit manual selection. Similar
-Artist names and search scores must not establish identity. Complex credits must
-not be flattened. Only within the established Artist may Album titles use a
-single-edit comparison (both titles at least five characters), after exact matches
-are considered. Qualifiers remain significant. Ambiguity at either stage remains
-explicit; a confidently resolved Artist may be retained even if Album matching
-fails. Automatic dispatch remains default-on and independently disableable;
-manual retry remains available. Local-only matching stays conservative and unchanged.
+metadata. Artist identity must be established first through a stored MBID, unique
+exact normalized primary name, safe unique exact MusicBrainz alias, or explicit
+manual selection. Exact primary/alias evidence on different Artists is ambiguous.
+A close nonempty primary/alias name may veto alias acceptance (one Unicode edit); fuzzy names and scores never positively establish Artist identity.
+Complex credits must not be flattened.
+
+Album evidence may disambiguate already-plausible Artists before manual selection:
+one bounded Artist-scoped search must establish exactly one supported Artist and
+one unambiguous Album using normal automatic Album rules. Close Artist names alone
+cannot win, and Album evidence cannot introduce unrelated Artists. Pair-dependent
+resolution must not become a name-only identity shortcut for later Albums.
+
+Only within the established Artist may Album comparison consider, in order, exact
+titles, controlled trailing packaging/type decorations, then small edit distance.
+The decoration list is EP, LP, CD, CD1/CD 1, CD2/CD 2, Disc 1/2, 2CD and 2xCD; EP removal
+requires candidate EP type and LP removal requires Album type. Complete literal
+titles always precede fallback: these designations may genuinely belong to the title.
+Plain, bracketed, parenthesized and spaced-dash suffixes
+are comparison-only. Semantic/version qualifiers are not stripped. Automatic
+Artist resolution allows one edit with both Album titles at least five characters;
+explicit manual Artist selection additionally allows two edits with both at least
+eight. Multiple qualifying candidates stay ambiguous, regardless of score. Manual
+confirmation is session-local for that Album; it is not a persisted confidence score.
+A confidently resolved Artist survives later Album failures. Automatic dispatch
+remains default-on and independently disableable; local-only matching is unchanged.
 
 #### Matching execution
 

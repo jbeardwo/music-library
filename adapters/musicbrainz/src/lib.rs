@@ -82,7 +82,7 @@ impl MusicBrainz {
                         "http_error path={path} attempt={} error={e}",
                         attempt + 1
                     ));
-                    CatalogError(format!("MusicBrainz request failed: {e}"))
+                    transport_error(e)
                 })?;
             drop(headers);
             let status = response.status().as_u16();
@@ -113,9 +113,19 @@ impl MusicBrainz {
                 continue;
             }
             if !response.status().is_success() {
-                return Err(CatalogError(format!(
-                    "MusicBrainz request failed: HTTP {status}"
-                )));
+                let message = format!("MusicBrainz request failed: HTTP {status}");
+                return Err(if status == 503 {
+                    CatalogError::ServiceUnavailable {
+                        message,
+                        retry_after: response
+                            .headers()
+                            .get("Retry-After")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_owned),
+                    }
+                } else {
+                    CatalogError::Other(message)
+                });
             }
             let body_read = catalog::Timing::new(format!("{path}.http_body"));
             let body = response
@@ -123,14 +133,14 @@ impl MusicBrainz {
                 .with_config()
                 .limit(MAX_BODY)
                 .read_to_string()
-                .map_err(error)?;
+                .map_err(transport_error)?;
             drop(body_read);
             catalog::Timing::event(format_args!("http_body path={path} bytes={}", body.len()));
             drop(http);
             drop(next);
             let _parse = catalog::Timing::new(format!("{path}.json_parse"));
             return serde_json::from_str(&body)
-                .map_err(|e| CatalogError(format!("Invalid MusicBrainz response: {e}")));
+                .map_err(|e| CatalogError::Other(format!("Invalid MusicBrainz response: {e}")));
         }
         unreachable!("the final attempt returns its response or error")
     }
@@ -223,8 +233,19 @@ fn retry_delay(attempt: u32, header: Option<&str>, now: SystemTime) -> Option<Du
     (delay <= Duration::from_secs(60)).then_some(delay)
 }
 
+fn transport_error(error: ureq::Error) -> CatalogError {
+    let message = format!("MusicBrainz request failed: {error}");
+    match error {
+        ureq::Error::Timeout(_) => CatalogError::Timeout(message),
+        ureq::Error::Io(_) | ureq::Error::HostNotFound | ureq::Error::ConnectionFailed => {
+            CatalogError::TransportUnavailable(message)
+        }
+        _ => CatalogError::Other(message),
+    }
+}
+
 fn error(e: impl std::fmt::Display) -> CatalogError {
-    CatalogError(e.to_string())
+    CatalogError::Other(e.to_string())
 }
 fn identity(kind: &str, id: &str) -> ExternalIdentity {
     ExternalIdentity {
@@ -243,13 +264,13 @@ fn mbid(id: &str) -> Result<(), CatalogError> {
             }
         })
     {
-        return Err(CatalogError("Invalid MusicBrainz identifier".into()));
+        return Err(CatalogError::Other("Invalid MusicBrainz identifier".into()));
     }
     Ok(())
 }
 fn require_identity(id: &ExternalIdentity, kind: &str) -> Result<(), CatalogError> {
     if id.provider != "musicbrainz" || id.kind != kind {
-        return Err(CatalogError(
+        return Err(CatalogError::Other(
             "Unsupported MusicBrainz identity kind/provider".into(),
         ));
     }
@@ -259,51 +280,35 @@ fn next_offset(offset: u32, len: usize, count: u32) -> Option<u32> {
     let next = offset.saturating_add(len as u32);
     (len > 0 && next < count).then_some(next)
 }
-impl CatalogProvider for MusicBrainz {
-    fn search_artists(
+impl MusicBrainz {
+    fn scoped_artist_albums(
         &mut self,
-        name: &str,
-    ) -> Result<catalog::Page<catalog::ArtistCandidate>, CatalogError> {
-        let page: Artists = self.request(
-            "artist",
-            &[
-                ("query", format!("artist:{}", quoted(name))),
-                ("limit", PAGE_SIZE.to_string()),
-                ("offset", "0".into()),
-            ],
-        )?;
-        let next_offset = next_offset(0, page.artists.len(), page.count);
-        let items = page
-            .artists
-            .into_iter()
-            .map(|a| {
-                mbid(&a.id)?;
-                Ok(catalog::ArtistCandidate {
-                    identity: identity("artist", &a.id),
-                    name: a.name,
-                    comment: a.disambiguation.unwrap_or_default(),
-                    country: a.country.unwrap_or_default(),
-                    artist_type: a.artist_type.unwrap_or_default(),
-                    score: a.score,
-                })
-            })
-            .collect::<Result<Vec<_>, CatalogError>>()?;
-        Ok(catalog::Page { items, next_offset })
-    }
-    fn artist_albums(
-        &mut self,
-        artist: &ExternalIdentity,
+        artists: &[ExternalIdentity],
         title: &str,
+        max_edits: u8,
     ) -> Result<catalog::Page<catalog::ArtistAlbumCandidate>, CatalogError> {
-        mbid(&artist.external_id)?;
-        if artist.provider != "musicbrainz" || artist.kind != "artist" {
-            return Err(CatalogError("Expected MusicBrainz Artist identity".into()));
+        if artists.is_empty() || artists.len() > PAGE_SIZE as usize {
+            return Err(CatalogError::Other(
+                "Expected a bounded nonempty Artist candidate set".into(),
+            ));
         }
-        // Candidate retrieval permits single-edit tokens only inside this Artist.
+        let mut scopes = Vec::new();
+        for artist in artists {
+            require_identity(artist, "artist")?;
+            scopes.push(format!("arid:{}", artist.external_id));
+        }
+        scopes.sort();
+        scopes.dedup();
+        let scope = if scopes.len() == 1 {
+            scopes.remove(0)
+        } else {
+            format!("({})", scopes.join(" OR "))
+        };
+        // Candidate retrieval permits bounded edit tokens only inside this Artist.
         // Full-title Unicode edit distance and ambiguity checks belong to the application.
         let fuzzy = title
             .split_whitespace()
-            .map(|word| format!("releasegroup:{}~1", escaped(word)))
+            .map(|word| format!("releasegroup:{}~{max_edits}", escaped(word)))
             .collect::<Vec<_>>()
             .join(" AND ");
         let terms = if title.chars().count() >= 5 {
@@ -311,7 +316,18 @@ impl CatalogProvider for MusicBrainz {
         } else {
             format!("releasegroup:{}", quoted(title))
         };
-        let query = format!("arid:{} AND {terms}", artist.external_id);
+        let mut alternatives = vec![terms];
+        alternatives.extend(
+            music_library::album_matching::album_title_variants(title)
+                .into_iter()
+                .map(|v| format!("releasegroup:{}", quoted(&v.title))),
+        );
+        let terms = if alternatives.len() == 1 {
+            alternatives.remove(0)
+        } else {
+            format!("({})", alternatives.join(" OR "))
+        };
+        let query = format!("{scope} AND {terms}");
         let page: Groups = self.request(
             "release-group",
             &[
@@ -334,7 +350,7 @@ impl CatalogProvider for MusicBrainz {
                             .artist
                             .as_ref()
                             .ok_or_else(|| {
-                                CatalogError("Release Group lacks Artist identity".into())
+                                CatalogError::Other("Release Group lacks Artist identity".into())
                             })?
                             .id;
                         mbid(id)?;
@@ -342,6 +358,19 @@ impl CatalogProvider for MusicBrainz {
                     })
                     .collect::<Result<Vec<_>, CatalogError>>()?;
                 Ok(catalog::ArtistAlbumCandidate {
+                    artist: g
+                        .credits
+                        .iter()
+                        .map(|c| {
+                            let name = c
+                                .artist
+                                .as_ref()
+                                .and_then(|a| a.name.as_deref())
+                                .unwrap_or(&c.name);
+                            format!("{name}{}", c.joinphrase)
+                        })
+                        .collect(),
+                    primary_type: g.primary_type.unwrap_or_default(),
                     identity: identity("release_group", &g.id),
                     title: g.title,
                     artist_ids: ids,
@@ -352,13 +381,70 @@ impl CatalogProvider for MusicBrainz {
             .collect::<Result<Vec<_>, CatalogError>>()?;
         Ok(catalog::Page { items, next_offset })
     }
+}
+impl CatalogProvider for MusicBrainz {
+    fn search_artists(
+        &mut self,
+        name: &str,
+    ) -> Result<catalog::Page<catalog::ArtistCandidate>, CatalogError> {
+        let page: Artists = self.request(
+            "artist",
+            &[
+                (
+                    "query",
+                    format!("(artist:{} OR alias:{})", quoted(name), quoted(name)),
+                ),
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        let next_offset = next_offset(0, page.artists.len(), page.count);
+        let items = page
+            .artists
+            .into_iter()
+            .map(|a| {
+                mbid(&a.id)?;
+                Ok(catalog::ArtistCandidate {
+                    aliases: a.aliases.into_iter().map(|v| v.name).collect(),
+                    identity: identity("artist", &a.id),
+                    name: a.name,
+                    comment: a.disambiguation.unwrap_or_default(),
+                    country: a.country.unwrap_or_default(),
+                    artist_type: a.artist_type.unwrap_or_default(),
+                    score: a.score,
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        Ok(catalog::Page { items, next_offset })
+    }
+    fn artist_albums(
+        &mut self,
+        artist: &ExternalIdentity,
+        title: &str,
+    ) -> Result<catalog::Page<catalog::ArtistAlbumCandidate>, CatalogError> {
+        self.scoped_artist_albums(std::slice::from_ref(artist), title, 1)
+    }
+    fn albums_for_artists(
+        &mut self,
+        artists: &[ExternalIdentity],
+        title: &str,
+    ) -> Result<catalog::Page<catalog::ArtistAlbumCandidate>, CatalogError> {
+        self.scoped_artist_albums(artists, title, 1)
+    }
+    fn artist_albums_confirmed(
+        &mut self,
+        artist: &ExternalIdentity,
+        title: &str,
+    ) -> Result<catalog::Page<catalog::ArtistAlbumCandidate>, CatalogError> {
+        self.scoped_artist_albums(std::slice::from_ref(artist), title, 2)
+    }
     fn search_albums(
         &mut self,
         query: &str,
         offset: u32,
     ) -> Result<catalog::Page<catalog::AlbumCandidate>, CatalogError> {
         if query.trim().is_empty() {
-            return Err(CatalogError("Enter a catalog search query".into()));
+            return Err(CatalogError::Other("Enter a catalog search query".into()));
         }
         let page: Groups = self.request(
             "release-group",
@@ -423,7 +509,7 @@ impl CatalogProvider for MusicBrainz {
             )],
         )?;
         if release.id != id.external_id {
-            return Err(CatalogError(
+            return Err(CatalogError::Other(
                 "MusicBrainz returned a different Release".into(),
             ));
         }
@@ -452,6 +538,8 @@ struct Artists {
 }
 #[derive(Deserialize)]
 struct ArtistSearch {
+    #[serde(default)]
+    aliases: Vec<ArtistAlias>,
     id: String,
     name: String,
     disambiguation: Option<String>,
@@ -460,9 +548,14 @@ struct ArtistSearch {
     artist_type: Option<String>,
     score: Option<u32>,
 }
+#[derive(Deserialize)]
+struct ArtistAlias {
+    name: String,
+}
 #[derive(Clone, Deserialize)]
 struct ArtistRef {
     id: String,
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -595,7 +688,7 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
     mbid(&r.group.id)?;
     r.media.sort_by_key(|m| m.position);
     if r.media.is_empty() || r.media.windows(2).any(|m| m[0].position == m[1].position) {
-        return Err(CatalogError(
+        return Err(CatalogError::Other(
             "Release has missing or duplicate media".into(),
         ));
     }
@@ -605,13 +698,15 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
         .into_iter()
         .map(|mut m| {
             if m.position == 0 || m.tracks.len() != m.track_count {
-                return Err(CatalogError("Release tracklist is incomplete".into()));
+                return Err(CatalogError::Other(
+                    "Release tracklist is incomplete".into(),
+                ));
             }
             m.tracks.extend(m.data_tracks);
             m.tracks.extend(m.pregap);
             m.tracks.sort_by_key(|t| t.position);
             if m.tracks.windows(2).any(|t| t[0].position == t[1].position) {
-                return Err(CatalogError("Duplicate track positions".into()));
+                return Err(CatalogError::Other("Duplicate track positions".into()));
             }
             let tracks = m
                 .tracks
@@ -649,7 +744,7 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
         })
         .collect::<Result<Vec<_>, CatalogError>>()?;
     if media.iter().all(|m| m.tracks.is_empty()) {
-        return Err(CatalogError("Release has no Tracks".into()));
+        return Err(CatalogError::Other("Release has no Tracks".into()));
     }
     Ok(catalog::Release {
         album: catalog::Album {
@@ -673,6 +768,23 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn transport_errors_are_typed_without_string_matching() {
+        assert!(matches!(
+            super::transport_error(ureq::Error::Timeout(ureq::Timeout::Global)),
+            CatalogError::Timeout(_)
+        ));
+        assert!(super::transport_error(ureq::Error::HostNotFound).is_provider_unavailable());
+        assert!(
+            super::transport_error(ureq::Error::Io(std::io::Error::from(
+                std::io::ErrorKind::ConnectionRefused
+            )))
+            .is_provider_unavailable()
+        );
+        assert!(
+            !super::transport_error(ureq::Error::BadUri("bad".into())).is_provider_unavailable()
+        );
+    }
     #[test]
     fn credits_retain_artist_identity_separately_from_printed_name() {
         let values: Vec<super::Credit> = serde_json::from_str(
@@ -754,6 +866,82 @@ mod tests {
         (MusicBrainz::at(base), recv, worker)
     }
     #[test]
+    fn ambiguous_artists_use_one_combined_artist_scoped_album_request() {
+        let artists = r#"{"count":2,"artists":[{"id":"00000000-0000-4000-8000-000000000001","name":"Kid Floral","aliases":[{"name":"Floral"}]},{"id":"00000000-0000-4000-8000-000000000002","name":"Floral"}]}"#;
+        let groups = r#"{"count":1,"release-groups":[{"id":"00000000-0000-4000-8000-000000000003","title":"Floral LP","primary-type":"Album","artist-credit":[{"name":"Floral","artist":{"id":"00000000-0000-4000-8000-000000000002"}}]}]}"#;
+        let (mut client, requests, server) = mock(vec![(200, artists), (200, groups)]);
+        let artist_page = client.search_artists("Floral").unwrap();
+        let Err(music_library::album_matching::MatchOutcome::ArtistAmbiguous(candidates)) =
+            music_library::album_matching::resolve_artist("Floral", &artist_page)
+        else {
+            panic!("expected ambiguous Artist evidence");
+        };
+        let ids = candidates
+            .iter()
+            .map(|c| c.identity.clone())
+            .collect::<Vec<_>>();
+        let page = client.albums_for_artists(&ids, "Floral LP").unwrap();
+        let (chosen, outcome) = music_library::album_matching::corroborate_artist_album(
+            "Floral",
+            "Floral LP",
+            &candidates,
+            &page,
+        );
+        assert_eq!(
+            chosen,
+            Some(identity("artist", "00000000-0000-4000-8000-000000000002"))
+        );
+        assert!(matches!(
+            outcome,
+            music_library::album_matching::MatchOutcome::Matched(_)
+        ));
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
+        let params = request_params(&calls[1].1);
+        assert!(params["query"].starts_with("(arid:00000000-0000-4000-8000-000000000001 OR arid:00000000-0000-4000-8000-000000000002) AND "));
+        assert!(params["query"].contains(r#"releasegroup:"Floral LP""#));
+        assert!(!params["query"].contains("~2"));
+        assert_eq!(params["limit"], "10");
+    }
+    #[test]
+    fn aliases_and_ep_type_arrive_in_two_searches_without_candidate_lookups() {
+        let artists = r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000002","name":"tsosis","aliases":[{"name":"The Speed of Sound in Seawater"}]}]}"#;
+        let groups = r#"{"count":1,"release-groups":[{"id":"00000000-0000-4000-8000-000000000001","title":"Hugs","primary-type":"EP","artist-credit":[{"name":"The Speed of Sound in Seawater","artist":{"id":"00000000-0000-4000-8000-000000000002","name":"tsosis"}}]}]}"#;
+        let (mut client, requests, server) =
+            mock(vec![(200, artists), (200, groups), (200, groups)]);
+        let page = client
+            .search_artists("The Speed of Sound in Seawater")
+            .unwrap();
+        let artist =
+            music_library::album_matching::resolve_artist("The Speed of Sound in Seawater", &page)
+                .unwrap();
+        let page = client.artist_albums(&artist, "Hugs EP").unwrap();
+        assert_eq!(page.items[0].primary_type, "EP");
+        assert_eq!(page.items[0].artist, "tsosis");
+        assert!(matches!(
+            music_library::album_matching::accepted_album("Hugs EP", &artist, &page),
+            music_library::album_matching::MatchOutcome::MatchedClose(_)
+        ));
+        client
+            .artist_albums_confirmed(&artist, "Nevermimd!")
+            .unwrap();
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 3);
+        let q = request_params(&calls[0].1);
+        assert!(q["query"].contains("alias:"));
+        let q = request_params(&calls[1].1);
+        assert!(q["query"].contains(&format!("arid:{}", artist.external_id)));
+        assert!(q["query"].contains(r#"releasegroup:"hugs""#));
+        let q = request_params(&calls[2].1);
+        assert!(q["query"].contains("~2"));
+        for calls in calls.windows(2) {
+            assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
+        }
+    }
+    #[test]
     fn structured_artist_and_scoped_album_search_preserve_rate_and_escape_tags() {
         let artists = r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000002","name":"Hella","score":100}]}"#;
         let groups = r#"{"count":1,"release-groups":[{"id":"00000000-0000-4000-8000-000000000001","title":"Acoustics","artist-credit":[{"name":"Hella","artist":{"id":"00000000-0000-4000-8000-000000000002"}}]}]}"#;
@@ -768,7 +956,7 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
         let first = request_params(&calls[0].1);
-        assert_eq!(first["query"], r#"artist:"Hella""#);
+        assert_eq!(first["query"], r#"(artist:"Hella" OR alias:"Hella")"#);
         assert_eq!(first["limit"], "10");
         let second = request_params(&calls[1].1);
         assert_eq!(second["limit"], "10");
@@ -824,7 +1012,10 @@ mod tests {
             (200, GROUPS, ""),
         ]);
         let failure = client.search_albums("test", 0).unwrap_err();
-        assert!(failure.0.contains("HTTP 503"));
+        assert!(failure.to_string().contains("HTTP 503"));
+        assert!(
+            matches!(failure, CatalogError::ServiceUnavailable { retry_after: Some(ref v), .. } if v == "0")
+        );
         // Another application client shares the same gate after exhaustion.
         let mut another = MusicBrainz::at(client.base.clone());
         another.search_albums("test", 0).unwrap();
@@ -1092,7 +1283,7 @@ mod tests {
                     "00000000-0000-4000-8000-000000000001"
                 ))
                 .unwrap_err()
-                .0
+                .to_string()
                 .contains("HTTP 400")
         );
         server.join().unwrap();

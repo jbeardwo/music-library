@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+httpdate = "1"
 lofty = "0.25"
 rusqlite = { version = "0.40", features = ["bundled"] }
 thiserror = "2"

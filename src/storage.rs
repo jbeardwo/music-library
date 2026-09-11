@@ -1610,6 +1610,7 @@ fn prepare_album_match(
             known
                 .into_iter()
                 .map(|identity| crate::catalog::ArtistCandidate {
+                    aliases: vec![],
                     identity,
                     name: name.clone(),
                     comment: "Multiple stored identities".into(),
@@ -1637,6 +1638,7 @@ fn prepare_album_match(
             artist,
             artist_id,
             known_artist,
+            manual_artist: false,
         })
     } else {
         Preparation::Done(MatchOutcome::Skipped)

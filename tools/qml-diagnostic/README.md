@@ -1,5 +1,36 @@
 # Disposable Qt Quick diagnostic
 
+Ambiguous Artist matching now attempts one Album-corroboration search before showing
+the Artist picker. Only a uniquely supported Artist/Album pair is accepted. Remaining
+candidates appear with Album-supported candidates first; ordering is not a selection
+or confidence guarantee. Local display metadata remains unchanged.
+The local matching list retains delegates by Album ID and updates changed rows in
+place, preserving scroll/focus and first-seen display order while the matching queue
+continues independently. Literal titles such as `Floral EP` and `Floral LP` win over
+type-checked suffix fallback; `Hugs EP` can fall back to `Hugs` of type EP.
+
+Successful matches retain the selected provider title and Artist name for this
+session. Rows always show both `Local: title — artist` and `Matched: title — artist`
+(or `Matched (close): …`), including when the values are identical.
+Canonical provider Artist names make alias resolutions visible. No extra requests
+or durable metadata updates are made; Already matched after restart still uses
+the existing identity-only status because provider presentation is not persisted.
+
+Read-only live checks (each uses the same rate-limited client, without importing):
+
+```sh
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Floral 'Floral EP'
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Floral 'Floral LP'
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Hella "Bitches Ain't Shit but Good People"
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Tabar 'Hugs EP'
+```
+
+On 2026-09-10 all four resolved through one combined corroboration request after
+Artist search: Floral's two literal titles and Hella matched exactly; Tabar used
+the EP fallback. A truncated Artist search no longer suppresses corroboration of
+its returned plausible candidates. This remains bounded evidence, not an exhaustive
+catalog scan; truncated Album results still require manual resolution.
+
 This is integration tooling, not the product UI, skin format, or a final frontend
 choice. The default fake engine produces no audio. An optional GstPlay mode plays
 local files; see [real-audio setup and manual checks](../../adapters/gstreamer/README.md).
@@ -253,21 +284,22 @@ no source files are changed. Import commits before any matching request is sent.
 3. Launch against weakly tagged files: missing/placeholder Album, artist or Track
    title is skipped without HTTP. Filename fallback is not matching evidence.
 4. **Retry Match** repeats a failed/no-match attempt; already matched Albums require
-   no request. The button is disabled only while that Album is pending.
+   no request. The button is disabled while that Album is pending. During a provider
+   outage, it preserves work without starting HTTP; use **Retry Matching** to probe.
 5. To test manual-only operation, add `--no-auto-match` to the command. Local import
    is identical, and Retry Match remains available. For a network-failure test,
    launch a fresh instance with `HTTPS_PROXY=http://127.0.0.1:9` before `cargo run`.
-   Local playback must still work while matching reports a recoverable connection
-   error. Remove that environment variable and relaunch for real-service testing.
+   Local playback must still work while matching reports a paused provider circuit. Remove that environment variable and relaunch for real-service testing.
    Deterministic tests additionally cover failure followed by successful retry in
    the same session, without using the public service.
 
 Artist identity is established first, then Album search is restricted by its MBID.
 Local Release/Track identity and friendly metadata remain unchanged. The first
 unknown Artist normally requires two logical requests; a stored Artist MBID needs
-only the scoped Album request. Scores never resolve ambiguity. Artist names are
-exact-only; Album titles of at least five characters allow one edit only within
-the established Artist, after exact titles. Incomplete pages remain ambiguous.
+only the scoped Album request. Scores never resolve ambiguity. Artist names require exact primary/alias evidence (with competing-Artist veto);
+Album titles allow controlled trailing packaging variants, then one edit for titles
+of at least five characters, only within the established Artist. Explicit Use Artist
+additionally permits two edits for titles of at least eight characters in this session. Incomplete pages remain ambiguous.
 An Artist identity survives later Album errors. Retry does not repeat that Artist
 search. Existing 503 retries may add HTTP attempts. Closing cancels queued work but
 may wait for the in-flight bounded request/retry operation.
@@ -300,3 +332,52 @@ Different newly created Artist IDs may need discovery again in a later session.
 Multi-artist/complex credits are left unresolved; **Use Artist** handles search
 ambiguity for one Artist credit, not restructuring credits or replacing conflicting
 stored identities.
+
+### Provider outage testing
+
+A final HTTP 503, configured request/read timeout, or connection/DNS/I/O failure
+shows **MusicBrainz unavailable — matching paused; retrying automatically**, the preserved work
+count, and **Retry Matching**. Untouched Albums remain pending; the failed Album
+is deferred. New imports are retained without network requests. Retry Matching
+probes the failed Album first; repeated clicks cannot launch parallel probes.
+Recovery clears the banner and resumes the queue, even if the probe yields an
+ambiguous/no-match result. Another outage arms the next automatic cooldown; manual retry is also available. Use Artist still saves the selection locally and queues the continuation.
+These states are ephemeral; closing the diagnostic discards pending session work.
+The deterministic Qt test exercises outage notification and recovery without live
+MusicBrainz. Explicit catalog search/Add Album remains a separate user action.
+
+Automatic recovery probes after 15/30/60/120 seconds, capped at 120. Positive
+Retry-After seconds/dates can extend the normal delay up to 120 seconds; zero or
+invalid headers cannot trigger immediate retries. **Retry Matching** can probe
+sooner, safely invalidating the pending automatic wake. Recovery resets backoff
+and clears the banner without a user action. QML has no cooldown timer or polling.
+
+Deterministic outage/recovery simulation (no live service or 15-second test sleep):
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  cargo test --manifest-path tools/qml-diagnostic/Cargo.toml --all-features \
+  async_confirmations_refresh_actual_qml_labels_without_another_command -- --nocapture
+```
+
+The existing diagnostic test imports a local fixture, selects an ambiguous Artist,
+then its gated fake provider fails with 503. It verifies local playback remains
+usable and the pause banner appears, delivers a fake cooldown expiry through the
+actual queued Qt callback, and verifies automatic matching/recovery with no Retry
+button press. Duplicate expiry delivery must not issue a second probe. Backend
+fake-time tests separately verify the real delay sequence and worker cancellation.
+
+### Alias and packaging comparison probes
+
+These opt-in probes exercise EP suffix comparison and exact alias discovery:
+
+```sh
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- Tabar 'Hugs EP'
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example artist_match_probe -- 'The Speed of Sound in Seawater' 'Red Version'
+```
+
+The probe prints returned canonical names/aliases and the scoped Album decision; it never
+writes the library. A third explicit Artist MBID uses the manual-confirmation
+threshold. Its optional exact-title control adds a diagnostic request beyond the
+normal two-search flow. The latest Tabar probe exhausted three HTTP 503 attempts
+with Retry-After 0; deterministic tests cover both cases without the live service.

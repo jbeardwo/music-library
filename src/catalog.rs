@@ -2,8 +2,24 @@
 use crate::domain::ExternalIdentity;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("{0}")]
-pub struct CatalogError(pub String);
+pub enum CatalogError {
+    #[error("{0}")]
+    Other(String),
+    #[error("{message}")]
+    ServiceUnavailable {
+        message: String,
+        retry_after: Option<String>,
+    },
+    #[error("{0}")]
+    Timeout(String),
+    #[error("{0}")]
+    TransportUnavailable(String),
+}
+impl CatalogError {
+    pub fn is_provider_unavailable(&self) -> bool {
+        !matches!(self, Self::Other(_))
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Credit {
@@ -76,6 +92,7 @@ pub struct Track {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtistCandidate {
+    pub aliases: Vec<String>,
     pub identity: ExternalIdentity,
     pub name: String,
     pub comment: String,
@@ -85,6 +102,9 @@ pub struct ArtistCandidate {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtistAlbumCandidate {
+    /// Provider Artist display names, preserving join phrases; diagnostic only.
+    pub artist: String,
+    pub primary_type: String,
     pub identity: ExternalIdentity,
     pub title: String,
     pub artist_ids: Vec<ExternalIdentity>,
@@ -95,7 +115,7 @@ pub struct ArtistAlbumCandidate {
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
     fn search_artists(&mut self, _name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
-        Err(CatalogError(
+        Err(CatalogError::Other(
             "Artist discovery is not supported by this provider".into(),
         ))
     }
@@ -105,9 +125,29 @@ pub trait CatalogProvider: Send {
         _artist: &ExternalIdentity,
         _title: &str,
     ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
-        Err(CatalogError(
+        Err(CatalogError::Other(
             "Artist-scoped Album discovery is not supported by this provider".into(),
         ))
+    }
+    /// One bounded search across already-plausible Artist identities. Providers
+    /// without this capability return no evidence and leave manual resolution intact.
+    fn albums_for_artists(
+        &mut self,
+        _artists: &[ExternalIdentity],
+        _title: &str,
+    ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+        Ok(Page {
+            items: vec![],
+            next_offset: None,
+        })
+    }
+    /// Explicit Artist confirmation may request slightly wider Album discovery.
+    fn artist_albums_confirmed(
+        &mut self,
+        artist: &ExternalIdentity,
+        title: &str,
+    ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+        self.artist_albums(artist, title)
     }
     fn search_albums(
         &mut self,
@@ -256,7 +296,7 @@ impl<P: CatalogProvider> CatalogSession<P> {
         };
         let selection = Timing::new("representative_selection");
         let id = representative_release(album, &page.items)
-            .ok_or_else(||CatalogError("No representative edition with usable track/media information; inspect Editions".into()))?.identity.clone();
+            .ok_or_else(||CatalogError::Other("No representative edition with usable track/media information; inspect Editions".into()))?.identity.clone();
         drop(selection);
         self.edition(album, &id)
     }
@@ -277,7 +317,7 @@ impl<P: CatalogProvider> CatalogSession<P> {
             }
         };
         if release.identity != *id || release.album.identity != album.identity {
-            return Err(CatalogError(
+            return Err(CatalogError::Other(
                 "Selected edition does not belong to this Album".into(),
             ));
         }

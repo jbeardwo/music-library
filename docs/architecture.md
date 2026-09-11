@@ -1305,32 +1305,65 @@ with an entity-local primary key, cascading Artist foreign key and non-unique
 reverse-lookup index, like the other external identity tables. Opaque Artist IDs
 remain authoritative; attach/list/reverse-resolve APIs permit shared identities.
 
-The matcher first reuses one stored `musicbrainz | artist` identity or requests an
-Artist search. Automatic resolution requires exactly one distinct, conservatively
-normalized exact Artist name on a complete page. Similar names, aliases, scores,
-countries and types do not establish automatic identity. Multiple stored MBIDs or
-plausible exact names remain ArtistAmbiguous. Candidate names, MBIDs and comments
-are retained for session-only diagnostics/manual Artist selection.
+The matcher reuses one stored `musicbrainz | artist` identity or makes one Artist
+search with `(artist:"name" OR alias:"name")`. Search aliases are converted into
+application-owned names without per-candidate lookups. Automatic acceptance uses
+conservative Unicode lowercase/whitespace equality on a complete page. Multiple
+identities with exact primary or alias evidence remain ambiguous. A unique primary
+match wins absent competing exact evidence. A unique alias match is vetoed by any
+other returned Artist whose nonempty primary/alias name is within one Unicode
+edit. Close names are never positive identity evidence;
+scores cannot resolve ambiguity. Incomplete pages remain unaccepted.
+See the [MusicBrainz Artist search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/ArtistSearch)
+for primary/alias discovery; local comparison retains diacritics and punctuation
+even where the search index folds them.
 
-Only after Artist resolution does the adapter query Release Groups using `arid`
-plus local title. Candidate retrieval includes single-edit title tokens **within
-that Artist**, and returned credit MBIDs are checked again. The application first
-accepts one exact normalized full title. If none is exact, both titles must have
-at least five Unicode scalars and full-title edit distance at most one. Punctuation
-and live/remix/edit/acoustic/remaster/deluxe qualifiers are never removed. Multiple
-plausible titles or an incomplete page remain AlbumAmbiguous. No fuzzy Artist-name
-acceptance, fuzzy scores, extra pages or edition/Track requests are introduced.
-See [MusicBrainz indexed search fields and syntax](https://musicbrainz.org/doc/Indexed_Search_Syntax)
-for `artist`, `arid` and scoped fuzzy candidate retrieval. Existing ten-result
-limits, process-wide rate gate, bounded retries and timeouts are unchanged.
+Before requesting manual resolution of an ambiguous Artist page, the matcher
+makes one bounded Release Group search with `(arid:A OR arid:B ...)` and the
+existing Album-title terms. The [MusicBrainz Release Group search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/ReleaseGroupSearch)
+support this Artist scope. Only previously plausible Artists participate; a close-name
+alias veto candidate may block acceptance but cannot win without exact primary/alias
+evidence. Automatic resolution requires exactly one supported Artist and one
+unambiguous Album under the normal comparison rules. A truncated Artist page may
+still supply these bounded plausible candidates; it cannot independently establish
+Artist uniqueness. An incomplete Album corroboration page or competing supported
+Artists remain manual. Album evidence never introduces another Artist. Neither
+result ordering nor search score establishes identity.
+This pair-dependent result is not cached by Artist name. Unresolved picker candidates
+are ordered by Album support, then MBID, without selecting one automatically.
+
+For an individually resolved Artist, Album discovery uses `arid` plus the local title,
+controlled trailing variants and bounded edit tokens in one request. Returned
+Artist MBIDs are checked again. Acceptance tiers are exact full title, unique
+structural variant, then unique close title. Literal EP/LP/CD may be part of the real
+title: test complete titles first and only derive fallback variants if none match.
+Variants strip one trailing EP, LP, CD,
+CD1/CD 1, CD2/CD 2, Disc 1/2, 2CD or 2xCD, optionally enclosed in parentheses/brackets
+or preceded by a spaced dash. EP requires candidate primary type EP; missing type
+is not evidence. LP similarly requires Album primary type. Decorations inside words/titles and semantic qualifiers are not
+removed. Recognized version words in multi-word titles must also agree before
+edit comparison; a standalone title such as Acoustic can still match Acoustics.
+
+Normal/alias-resolved Artists allow one Album edit (both titles >=5 Unicode
+scalars). Explicit Use Artist additionally allows two edits (both >=8), only for
+that Album and confirmed identity during this matcher session. This confirmation
+survives deferred retries; no confidence state is persisted. All candidates within
+the chosen tier count toward ambiguity, not just the closest/highest-scored one.
+No fuzzy structural-variant chaining is performed. Local titles/credited names and
+Release/Track identities remain unchanged. Existing ten-result bounds, serial
+worker, process-wide rate gate, retries and cooldown recovery remain unchanged.
 
 The completion transaction revalidates Artist name/identity and Album metadata.
 It stores the independently resolved Artist MBID even if the later Album request
 failed or was ambiguous, then attaches an accepted Release Group identity to Album.
 Neither local names nor Release/Track identities, sources or membership change.
+Successful replies also retain application-owned provider title/Artist presentation
+in session memory for diagnostics. The MusicBrainz search credit's canonical Artist
+name is used when supplied, otherwise its credited name. This does not add requests,
+change acceptance evidence, or persist provider display metadata.
 States distinguish Pending, Matched, MatchedClose, AlreadyMatched, Skipped,
-ArtistAmbiguous, AlbumAmbiguous, NoConfidentMatch and Error. Provider errors do not
-stop later queued Albums. Explicit `select_artist` chooses a retained candidate,
+ArtistAmbiguous, AlbumAmbiguous, NoConfidentMatch and Error. Album-specific errors do not stop later queued Albums. Exhausted provider
+unavailability pauses dispatch as described below. Explicit `select_artist` chooses a retained candidate,
 stores its identity and retries within that Artist, using the same canonical
 identity resolution as automatic completion. Conflicting stored MusicBrainz
 Artist identities are rejected. There is no manual Album selector.
@@ -1366,3 +1399,47 @@ and is frozen before reassignment. Canonical names never replace credited displa
 text. Consequently consolidation needs no effective-metadata/FTS rebuild or Album
 matching-key refresh. Reverse identity lookup and all three credit reassignments
 use existing indexes; no migration changes their cardinality or adds indexes.
+
+### Post-import provider outage circuit
+
+The matcher owner keeps the pending FIFO and dispatches one item to its existing
+worker at a time. Typed `CatalogError::ServiceUnavailable` (HTTP 503 after the
+unchanged bounded retry policy), `Timeout` (any configured ureq timeout, including
+body reads), or `TransportUnavailable` (I/O, DNS or connection failure) suspends
+dispatch. Error text is diagnostic only; no string/header heuristic controls the
+circuit. Retry-After is retained on the final 503 error. Ordinary 4xx, malformed
+responses and semantic ambiguity/no-match do not open it.
+
+The failed Album is deferred at the front; untouched and newly imported Albums
+remain deduplicated and pending. Independently resolved Artist identities still
+persist. `retry_catalog_matching` permits one logical probe using that front item
+and the same worker/rate limiter/retries/timeouts. A responding operation resumes
+the FIFO (including semantic no-match/ambiguity or a non-provider request error);
+another provider failure preserves the queue and arms the next cooldown.
+Per-Album Retry Match queues work while paused; Retry Matching probes immediately.
+Use Artist persists the local selection and queues its scoped Album continuation
+at the tail without bypassing the circuit. Repeated probe clicks coalesce.
+
+Circuit and queue state are session-only, lost on application exit, and never
+enter SQLite or the import transaction. Local music stays usable. This circuit
+covers post-import/manual Album matching; explicit catalog browsing/Add Album is
+still an independent user action, sharing the existing process-wide HTTP rate
+limiter rather than being silently disabled by the matching circuit.
+
+The application matcher now arms automatic cooldowns of 15, 30, 60, then 120
+seconds (capped). Final 503 Retry-After accepts seconds or HTTP-date via `httpdate`:
+use the larger of the normal cooldown and a positive requested delay clamped to
+120 seconds. Zero, malformed, overflowed or past values cannot shorten cooldown.
+Wall time is used only to convert a header date; the worker deadline is monotonic.
+Any completed non-provider-failure response resets the progression, including
+semantic ambiguity/no-match and ordinary request errors.
+
+The existing owned worker waits interruptibly on its command channel with a timer
+deadline, never sleeps for cooldown and never owns SQLite. Expiry emits a token
+through the owner's callback; `cooldown_elapsed` reuses the same single-in-flight
+dispatch gate. Manual retry invalidates that token before starting a probe, so an
+already queued expiry cannot duplicate it. Failure arms one new timer. Shutdown
+closes the channel and joins the worker without waiting for cooldown; an already
+active HTTP operation retains its existing bounded shutdown behavior. Callers of
+`AlbumMatcher::new` route both completion and retry callbacks to the application
+owner; Qt is only the callback transport, not the timer owner.

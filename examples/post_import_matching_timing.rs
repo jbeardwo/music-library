@@ -39,6 +39,7 @@ impl CatalogProvider for Provider {
         Ok(Page {
             next_offset: None,
             items: vec![ArtistCandidate {
+                aliases: vec![],
                 identity: ExternalIdentity {
                     provider: "musicbrainz".into(),
                     kind: "artist".into(),
@@ -60,6 +61,8 @@ impl CatalogProvider for Provider {
         Ok(Page {
             next_offset: None,
             items: vec![ArtistAlbumCandidate {
+                artist: "Artist".into(),
+                primary_type: String::new(),
                 title: title.into(),
                 artist_ids: vec![artist.clone()],
                 identity: ExternalIdentity {
@@ -112,7 +115,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     std::fs::create_dir(&folder)?;
     let root = library.register_local_root(&folder)?;
     let (send, recv) = mpsc::channel();
-    let mut matcher = AlbumMatcher::new(Provider, move |reply| send.send(reply).unwrap())?;
+    let mut matcher = AlbumMatcher::new(Provider, move |reply| send.send(reply).unwrap(), |_| {})?;
     for count in [1, 3, 15] {
         let mut imports = vec![];
         let mut eligibility = vec![];
