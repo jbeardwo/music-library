@@ -383,6 +383,54 @@ impl MusicBrainz {
     }
 }
 impl CatalogProvider for MusicBrainz {
+    fn recordings(
+        &mut self,
+        group: &ExternalIdentity,
+    ) -> Result<catalog::Page<music_library::recording::Candidate>, CatalogError> {
+        require_identity(group, "release_group")?;
+        let page: RecordingSearch = self.request(
+            "recording",
+            &[
+                ("query", format!("rgid:{}", group.external_id)),
+                ("limit", "100".into()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        // Do not mistake a malformed short/empty page with a positive count for completeness.
+        let next_offset =
+            (page.count as usize > page.recordings.len()).then_some(page.recordings.len() as u32);
+        let items = page
+            .recordings
+            .into_iter()
+            .map(|r| {
+                mbid(&r.id)?;
+                let artist_ids = r
+                    .credits
+                    .iter()
+                    .map(|c| {
+                        let a = c.artist.as_ref().ok_or_else(|| {
+                            CatalogError::Other("Recording credit lacks Artist identity".into())
+                        })?;
+                        mbid(&a.id)?;
+                        Ok(identity("artist", &a.id))
+                    })
+                    .collect::<Result<Vec<_>, CatalogError>>()?;
+                Ok(music_library::recording::Candidate {
+                    identity: identity("recording", &r.id),
+                    title: r.title,
+                    artist: r
+                        .credits
+                        .iter()
+                        .map(|c| format!("{}{}", c.name, c.joinphrase))
+                        .collect(),
+                    artist_ids,
+                    duration_ms: r.length,
+                    isrcs: r.isrcs,
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        Ok(catalog::Page { items, next_offset })
+    }
     fn search_artists(
         &mut self,
         name: &str,
@@ -682,6 +730,12 @@ struct Recording {
     credits: Vec<Credit>,
     #[serde(default)]
     isrcs: Vec<String>,
+    length: Option<u64>,
+}
+#[derive(Deserialize)]
+struct RecordingSearch {
+    count: u32,
+    recordings: Vec<Recording>,
 }
 fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError> {
     mbid(&r.id)?;
@@ -967,6 +1021,84 @@ mod tests {
         assert_eq!(quoted(r#"A" OR *"#), r#""A\" OR \*""#);
     }
 
+    #[test]
+    fn recording_discovery_is_one_scoped_request_with_lengths_credits_and_isrcs() {
+        let body = r#"{"count":2,"recordings":[{"id":"00000000-0000-4000-8000-000000000001","title":"Song 1","length":100001,"isrcs":["USAAA0100001","USAAA0100002"],"artist-credit":[{"name":"Credited Artist","artist":{"id":"00000000-0000-4000-8000-000000000002","name":"Canonical"}}]},{"id":"00000000-0000-4000-8000-000000000003","title":"Song 2"}]}"#;
+        let (mut client, requests, server) = mock(vec![(200, body)]);
+        let page = client
+            .recordings(&identity(
+                "release_group",
+                "00000000-0000-4000-8000-000000000004",
+            ))
+            .unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(page.next_offset.is_none());
+        assert_eq!(page.items[0].duration_ms, Some(100001));
+        assert_eq!(page.items[0].artist, "Credited Artist");
+        assert_eq!(page.items[0].isrcs.len(), 2);
+        assert!(page.items[1].isrcs.is_empty());
+        assert_eq!(page.items[1].duration_ms, None);
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(calls.len(), 1);
+        let params = request_params(&calls[0].1);
+        assert_eq!(params["limit"], "100");
+        assert_eq!(params["query"], "rgid:00000000-0000-4000-8000-000000000004");
+    }
+    #[test]
+    fn truncated_recording_search_stays_incomplete() {
+        let (mut client, _requests, server) = mock(vec![(200, r#"{"count":101,"recordings":[]}"#)]);
+        let page = client
+            .recordings(&identity(
+                "release_group",
+                "00000000-0000-4000-8000-000000000004",
+            ))
+            .unwrap();
+        assert!(page.next_offset.is_some());
+        server.join().unwrap();
+    }
+    #[test]
+    #[ignore = "opt-in live request-shape comparison; MUSIC_LIBRARY_RECORDING_GROUP required"]
+    fn live_recording_shapes() {
+        let group = std::env::var("MUSIC_LIBRARY_RECORDING_GROUP").unwrap();
+        mbid(&group).unwrap();
+        let titles = std::env::var("MUSIC_LIBRARY_RECORDING_TITLES").unwrap();
+        let narrow = format!(
+            "rgid:{group} AND ({})",
+            titles
+                .split('|')
+                .map(|t| format!("recording:{}", quoted(t)))
+                .collect::<Vec<_>>()
+                .join(" OR ")
+        );
+        let broad = format!("rgid:{group}");
+        let client = MusicBrainz::new();
+        for round in 0..3 {
+            for query in if round % 2 == 0 {
+                [&broad, &narrow]
+            } else {
+                [&narrow, &broad]
+            } {
+                let start = Instant::now();
+                let page: serde_json::Value = client
+                    .request(
+                        "recording",
+                        &[("query", query.clone()), ("limit", "100".into())],
+                    )
+                    .unwrap();
+                println!(
+                    "query={query} elapsed={:?} serialized_bytes={} total={} returned={}",
+                    start.elapsed(),
+                    page.to_string().len(),
+                    page["count"],
+                    page["recordings"].as_array().unwrap().len()
+                );
+                if query == &broad {
+                    println!("broad candidates={page}");
+                }
+            }
+        }
+    }
     #[test]
     fn retry_after_policy_uses_seconds_or_dates_without_sleeping() {
         let now = httpdate::parse_http_date("Tue, 08 Sep 2026 12:00:00 GMT").unwrap();

@@ -425,8 +425,21 @@ impl Cooldown {
 }
 enum WorkerCommand {
     Match(MatchInput),
+    Recordings(crate::recording::Input),
     Arm { token: u64, deadline: Instant },
     Cancel,
+}
+#[derive(Clone)]
+enum Work {
+    Album(AlbumId),
+    Recordings(AlbumId),
+}
+impl Work {
+    fn album_id(&self) -> &AlbumId {
+        match self {
+            Self::Album(id) | Self::Recordings(id) => id,
+        }
+    }
 }
 #[derive(Default)]
 struct WorkerTimer(Option<(u64, Instant)>);
@@ -452,7 +465,9 @@ pub struct AlbumMatcher {
     stop: Arc<AtomicBool>,
     outcomes: HashMap<AlbumId, MatchOutcome>,
     matched_albums: HashMap<AlbumId, ArtistAlbumCandidate>,
-    queue: VecDeque<MatchInput>,
+    queue: VecDeque<Work>,
+    recording_enabled: bool,
+    recording_outcomes: HashMap<AlbumId, crate::recording::Outcome>,
     active: bool,
     circuit: CircuitState,
     cooldown: Cooldown,
@@ -463,10 +478,28 @@ impl AlbumMatcher {
     /// replies to `complete` and timer tokens to `cooldown_elapsed`; neither callback
     /// may block the worker waiting for the owner.
     pub fn new(
-        mut provider: impl CatalogProvider + 'static,
+        provider: impl CatalogProvider + 'static,
         emit: impl Fn(MatchReply) + Send + 'static,
         retry_due: impl Fn(u64) + Send + 'static,
     ) -> std::io::Result<Self> {
+        Self::with_callbacks(provider, emit, None, retry_due)
+    }
+    /// Same owned queue/worker and circuit; Recording completion stays on the owner thread.
+    pub fn new_with_recordings(
+        provider: impl CatalogProvider + 'static,
+        emit: impl Fn(MatchReply) + Send + 'static,
+        recordings: impl Fn(crate::recording::Reply) + Send + 'static,
+        retry_due: impl Fn(u64) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::with_callbacks(provider, emit, Some(Box::new(recordings)), retry_due)
+    }
+    fn with_callbacks(
+        mut provider: impl CatalogProvider + 'static,
+        emit: impl Fn(MatchReply) + Send + 'static,
+        recordings: Option<Box<dyn Fn(crate::recording::Reply) + Send>>,
+        retry_due: impl Fn(u64) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let recording_enabled = recordings.is_some();
         let (sender, receiver) = mpsc::channel::<WorkerCommand>();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -509,6 +542,15 @@ impl AlbumMatcher {
                             continue;
                         }
                         WorkerCommand::Match(input) => input,
+                        WorkerCommand::Recordings(input) => {
+                            let result = provider.recordings(&input.group);
+                            if !stopped.load(Ordering::Acquire)
+                                && let Some(emit) = &recordings
+                            {
+                                emit(crate::recording::Reply { input, result });
+                            }
+                            continue;
+                        }
                     };
                     let resolved = if let Some(id) = input
                         .known_artist
@@ -591,6 +633,8 @@ impl AlbumMatcher {
             outcomes: HashMap::new(),
             matched_albums: HashMap::new(),
             queue: VecDeque::new(),
+            recording_enabled,
+            recording_outcomes: HashMap::new(),
             active: false,
             circuit: CircuitState::Available,
             cooldown: Cooldown::default(),
@@ -617,6 +661,8 @@ impl AlbumMatcher {
                 } else {
                     self.match_album(library, &id)?
                 };
+                self.enqueue_recordings(library, &id)?;
+                self.dispatch(library, false)?;
                 updates.push((id, outcome));
             }
         }
@@ -630,13 +676,14 @@ impl AlbumMatcher {
         let outcome = match library.prepare_album_match(id)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(input) => {
-                if !self.queue.iter().any(|i| i.album_id == *id) {
-                    self.queue.push_back(input);
+                if !self.queue.iter().any(|i| i.album_id() == id) {
+                    self.queue.push_back(Work::Album(input.album_id));
                 }
                 MatchOutcome::Pending
             }
         };
         self.outcomes.insert(id.clone(), outcome.clone());
+        self.enqueue_recordings(library, id)?;
         self.dispatch(library, false)?;
         Ok(outcome)
     }
@@ -699,7 +746,7 @@ impl AlbumMatcher {
         }
         if let Some(error) = unavailable {
             self.circuit = CircuitState::Unavailable(error.clone());
-            self.queue.push_front(retry);
+            self.queue.push_front(Work::Album(retry.album_id));
             self.outcomes
                 .insert(id, MatchOutcome::Deferred(error.clone()));
             let schedule = self.cooldown.arm(&error, SystemTime::now());
@@ -712,7 +759,11 @@ impl AlbumMatcher {
         self.circuit = CircuitState::Available;
         self.cooldown.reset();
         let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Cancel);
-        self.outcomes.insert(id, outcome.clone());
+        self.outcomes.insert(id.clone(), outcome.clone());
+        if let Err(error) = self.enqueue_recordings(library, &id) {
+            self.recording_outcomes
+                .insert(id, crate::recording::Outcome::Error(error.to_string()));
+        }
         if let Err(error) = self.dispatch(library, false) {
             return MatchOutcome::Error(error.to_string());
         }
@@ -720,6 +771,55 @@ impl AlbumMatcher {
     }
     pub fn circuit_state(&self) -> &CircuitState {
         &self.circuit
+    }
+    pub fn recording_outcome(&self, id: &AlbumId) -> Option<&crate::recording::Outcome> {
+        self.recording_outcomes.get(id)
+    }
+    fn enqueue_recordings(&mut self, library: &Library, id: &AlbumId) -> Result<()> {
+        if !self.recording_enabled
+            || self.recording_outcomes.get(id) == Some(&crate::recording::Outcome::Pending)
+            || self
+                .queue
+                .iter()
+                .any(|w| matches!(w,Work::Recordings(existing) if existing==id))
+        {
+            return Ok(());
+        }
+        if library.prepare_recording_match(id)?.is_some() {
+            self.queue.push_back(Work::Recordings(id.clone()));
+            self.recording_outcomes
+                .insert(id.clone(), crate::recording::Outcome::Pending);
+        }
+        Ok(())
+    }
+    pub fn complete_recordings(
+        &mut self,
+        library: &mut Library,
+        reply: crate::recording::Reply,
+    ) -> crate::recording::Outcome {
+        let id = reply.input.album_id.clone();
+        let outcome = library
+            .complete_recording_match(reply)
+            .unwrap_or_else(|e| crate::recording::Outcome::Error(e.to_string()));
+        self.active = false;
+        self.recording_outcomes.insert(id.clone(), outcome.clone());
+        if let crate::recording::Outcome::Deferred(error) = &outcome {
+            self.circuit = CircuitState::Unavailable(error.clone());
+            self.queue.push_front(Work::Recordings(id));
+            let schedule = self.cooldown.arm(error, SystemTime::now());
+            let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Arm {
+                token: schedule.token,
+                deadline: Instant::now() + schedule.delay,
+            });
+        } else {
+            self.circuit = CircuitState::Available;
+            self.cooldown.reset();
+            let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Cancel);
+            if let Err(e) = self.dispatch(library, false) {
+                return crate::recording::Outcome::Error(e.to_string());
+            }
+        }
+        outcome
     }
     pub fn pending_count(&self) -> usize {
         self.queue.len() + usize::from(self.active)
@@ -766,14 +866,33 @@ impl AlbumMatcher {
         if self.active || (!probe && matches!(self.circuit, CircuitState::Unavailable(_))) {
             return Ok(());
         }
-        while let Some(input) = self.queue.front() {
+        while let Some(work) = self.queue.front().cloned() {
+            if let Work::Recordings(id) = &work {
+                if let Some(input) = library.prepare_recording_match(id)? {
+                    self.sender
+                        .as_ref()
+                        .unwrap()
+                        .send(WorkerCommand::Recordings(input))
+                        .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+                    self.queue.pop_front();
+                    self.active = true;
+                    self.recording_outcomes
+                        .insert(id.clone(), crate::recording::Outcome::Pending);
+                    break;
+                }
+                self.queue.pop_front();
+                self.recording_outcomes
+                    .insert(id.clone(), crate::recording::Outcome::Complete(vec![]));
+                continue;
+            }
             // Refresh identities after prior completions/consolidation or manual selection.
-            let preparation = library.prepare_album_match(&input.album_id)?;
-            let id = input.album_id.clone();
+            let preparation = library.prepare_album_match(work.album_id())?;
+            let id = work.album_id().clone();
             match preparation {
                 Preparation::Done(outcome) => {
                     self.queue.pop_front();
-                    self.outcomes.insert(id, outcome);
+                    self.outcomes.insert(id.clone(), outcome);
+                    self.enqueue_recordings(library, &id)?;
                 }
                 Preparation::Ready(mut input) => {
                     input.manual_artist = self

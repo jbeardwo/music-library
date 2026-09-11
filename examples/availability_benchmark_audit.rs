@@ -9,6 +9,9 @@ mod catalog;
 #[allow(dead_code)]
 #[path = "../src/domain.rs"]
 mod domain;
+#[allow(dead_code)]
+#[path = "../src/recording.rs"]
+mod recording;
 use music_library::matching;
 #[allow(dead_code)]
 #[path = "../src/application.rs"]

@@ -262,6 +262,23 @@ no timing logs and perform no extra requests.
 
 ## Post-import local Album matching
 
+After an Album resolves, its local Tracks also receive Recording enrichment on the
+same worker. Already-resolved Albums need only one Recording discovery request.
+Rows show `Recordings matched: N / M`; **Recordings…** opens plain-text local/provider
+Track titles, Recording MBIDs, ISRCs and ambiguous/unmatched results. **Retry Match**
+also retries eligible Recording work. Provider outages preserve this stage in the
+same cooldown queue. Source-less catalog Tracks are not merged with local placements.
+No local metadata, exact Release identity or release-specific Track identity changes.
+
+Read-only local probe, using an independently confirmed Release Group (temporary
+in-memory library, no source-file writes):
+
+```sh
+cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example recording_probe -- \
+  "/mnt/f/music/Hella/Hella (2003) - Bitches Ain't Shit but Good People" \
+  9f6d341b-c755-31ee-b5e8-dbb378ae4686
+```
+
 Build and launch with an actual local Album folder (WSLg audio must already work):
 
 ```sh

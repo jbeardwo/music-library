@@ -35,7 +35,7 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Store {
-    connection: Connection,
+    pub(crate) connection: Connection,
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +153,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 7 {
+        } else if version > 8 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -194,6 +194,34 @@ impl Store {
                 .execute_batch(include_str!("../migrations/0007_credited_artist_names.sql"))?;
         }
 
+        if version < 8 {
+            connection.pragma_update(None, "foreign_keys", false)?;
+            let migration = (|| -> Result<()> {
+                let tx = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                tx.execute_batch("CREATE TEMP TABLE recording_backfill(track_id TEXT PRIMARY KEY, recording_id TEXT NOT NULL)")?;
+                {
+                    // Stable application namespace, derived only from existing opaque internal IDs.
+                    let namespace = uuid::Uuid::from_u128(0x47070714_4d3e_46c0_bdc2_279b3616eeb9);
+                    let mut tracks = tx.prepare("SELECT id FROM track ORDER BY id")?;
+                    let mut insert = tx.prepare(
+                        "INSERT INTO recording_backfill(track_id,recording_id) VALUES (?1,?2)",
+                    )?;
+                    for id in tracks.query_map([], |r| r.get::<_, String>(0))? {
+                        let id = id?;
+                        insert.execute(params![
+                            id,
+                            uuid::Uuid::new_v5(&namespace, id.as_bytes()).to_string()
+                        ])?;
+                    }
+                }
+                tx.execute_batch(include_str!("../migrations/0008_recordings.sql"))?;
+                tx.commit()?;
+                Ok(())
+            })();
+            connection.pragma_update(None, "foreign_keys", true)?;
+            migration?;
+        }
         Ok(Self { connection })
     }
 
@@ -648,14 +676,16 @@ impl Store {
         let mut track_ids = Vec::with_capacity(request.tracks.len());
         for input in &request.tracks {
             let track_id = TrackId::new();
+            let recording_id = crate::recording::create_recording_tx(&tx)?;
             tx.execute(
-                "INSERT INTO track(id, release_id, disc_number, track_number)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO track(id, release_id, disc_number, track_number, recording_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     track_id.as_ref(),
                     release_id.as_ref(),
                     input.disc_number,
-                    input.track_number
+                    input.track_number,
+                    recording_id.as_ref()
                 ],
             )?;
             if let Some(title) = &input.title_fallback {
@@ -855,7 +885,32 @@ impl Store {
             )?;
             drop(credits_timer);
             for (track_id, (_, track)) in imported.track_ids.iter().zip(tracks) {
+                let mut recording_id = tx.query_row(
+                    "SELECT recording_id FROM track WHERE id=?1",
+                    [track_id.as_ref()],
+                    |r| r.get(0).map(crate::domain::RecordingId),
+                )?;
+                let isrcs = track
+                    .identities
+                    .iter()
+                    .filter(|i| i.provider == "isrc" && i.kind == "recording")
+                    .map(|i| i.external_id.clone())
+                    .collect::<Vec<_>>();
+                for id in track
+                    .identities
+                    .iter()
+                    .filter(|i| i.provider == "musicbrainz" && i.kind == "recording")
+                {
+                    recording_id =
+                        crate::recording::bind_musicbrainz_tx(&tx, &recording_id, id, &isrcs)?;
+                }
                 for id in &track.identities {
+                    if id.kind == "recording"
+                        && (id.provider == "musicbrainz" || id.provider == "isrc")
+                    {
+                        inserted_identities += tx.execute("INSERT INTO recording_external_identity(recording_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![recording_id.as_ref(),id.provider,id.kind,id.external_id])?;
+                        continue;
+                    }
                     {
                         let _identity =
                             crate::catalog::Timing::detail("persistence.track_identities");
@@ -1324,14 +1379,16 @@ fn create_catalog_release_tx(
     for track in &input.tracks {
         let create = crate::catalog::Timing::detail("persistence.track_create");
         let track_id = TrackId::new();
+        let recording_id = crate::recording::create_recording_tx(tx)?;
         tx.execute(
-            "INSERT INTO track(id, release_id, disc_number, track_number)
-                 VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO track(id, release_id, disc_number, track_number, recording_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 track_id.as_ref(),
                 release_id.as_ref(),
                 track.disc_number,
-                track.track_number
+                track.track_number,
+                recording_id.as_ref()
             ],
         )?;
         drop(create);

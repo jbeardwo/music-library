@@ -7,6 +7,7 @@ pub mod domain;
 pub mod filesystem;
 pub mod matching;
 pub mod playback;
+pub mod recording;
 pub mod storage;
 
 pub use application::Library;

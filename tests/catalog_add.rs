@@ -103,11 +103,11 @@ fn atomic_source_less_add_preserves_credits_identities_membership_and_reimport()
         assert_eq!(row.artist_names, "Artist A feat. Artist B");
         assert_eq!(row.year, Some(2001));
     }
-    for (i, track) in imported.track_ids.iter().enumerate() {
+    for track in &imported.track_ids {
         assert!(library.available_playback_source(track).unwrap().is_none());
         assert_eq!(
             library.list_track_external_identities(track).unwrap().len(),
-            if i == 0 { 4 } else { 3 }
+            1
         );
     }
     assert_eq!(
@@ -180,17 +180,17 @@ fn atomic_source_less_add_preserves_credits_identities_membership_and_reimport()
     );
     assert_eq!(
         library
-            .resolve_tracks_external_identity(&id("musicbrainz", "recording", "recording"))
+            .resolve_recordings_external_identity(&id("musicbrainz", "recording", "recording"))
             .unwrap()
             .len(),
-        4
+        1
     );
     assert_eq!(
         library
-            .resolve_tracks_external_identity(&id("isrc", "recording", "one"))
+            .resolve_recordings_external_identity(&id("isrc", "recording", "one"))
             .unwrap()
             .len(),
-        4
+        1
     );
     assert_eq!(
         library
@@ -219,10 +219,10 @@ fn atomic_source_less_add_preserves_credits_identities_membership_and_reimport()
     assert_eq!(
         Library::open(path)
             .unwrap()
-            .resolve_tracks_external_identity(&id("isrc", "recording", "one"))
+            .resolve_recordings_external_identity(&id("isrc", "recording", "one"))
             .unwrap()
             .len(),
-        4
+        1
     );
 }
 #[test]
@@ -295,7 +295,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        7
+        8
     );
 }
 

@@ -206,9 +206,10 @@ impl Bridge {
             let weak = qmetaobject::QPointer::from(&*self);
             let callback = matching_callback(weak);
             self.matcher = Some(
-                music_library::album_matching::AlbumMatcher::new(
+                music_library::album_matching::AlbumMatcher::new_with_recordings(
                     music_library_musicbrainz::MusicBrainz::new(),
                     callback,
+                    recording_callback(qmetaobject::QPointer::from(&*self)),
                     matching_retry_callback(qmetaobject::QPointer::from(&*self)),
                 )
                 .map_err(|e| e.to_string())?,
@@ -295,6 +296,9 @@ impl Bridge {
                     .and_then(|m| m.outcome(id))
                     .unwrap_or(outcome);
                 let matched = self.matcher.as_ref().and_then(|m| m.matched_album(id));
+                let (recording_summary, recording_details) = recording_presentation(
+                    self.matcher.as_ref().and_then(|m| m.recording_outcome(id)),
+                );
                 let status = match outcome {
                     MatchOutcome::Pending => "Pending MusicBrainz matching…".into(),
                     MatchOutcome::Matched(identity) => format!("Matched: {}", identity.external_id),
@@ -358,6 +362,8 @@ impl Bridge {
                     ("albumId", string(id.as_ref())),
                     ("artists", artists.into()),
                     ("title", string(title)),
+                    ("recordingSummary", string(&recording_summary)),
+                    ("recordingDetails", string(&recording_details)),
                     ("localArtist", string(local_artist)),
                     (
                         "matchedTitle",
@@ -611,6 +617,59 @@ fn matching_retry_callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(u64) 
     })
 }
 
+fn recording_presentation(outcome: Option<&music_library::recording::Outcome>) -> (String, String) {
+    use music_library::recording::{Outcome, TrackOutcome};
+    match outcome {
+        None => (String::new(), String::new()),
+        Some(Outcome::Pending) => ("Recordings: pending…".into(), String::new()),
+        Some(Outcome::Deferred(e)) => (format!("Recordings deferred: {e}"), String::new()),
+        Some(Outcome::Error(e)) => (format!("Recording error: {e}"), String::new()),
+        Some(Outcome::Complete(rows)) => {
+            let matched = rows
+                .iter()
+                .filter(|(_, r)| {
+                    matches!(r, TrackOutcome::Matched(_) | TrackOutcome::AlreadyMatched)
+                })
+                .count();
+            let details = rows
+                .iter()
+                .map(|(t, r)| {
+                    let status = match r {
+                        TrackOutcome::Matched(c) => format!(
+                            "Matched Recording: {} — {}\nMusicBrainz Recording: {}\nISRC: {}",
+                            c.title,
+                            c.artist,
+                            c.identity.external_id,
+                            c.isrcs.join(", ")
+                        ),
+                        other => format!("{other:?}"),
+                    };
+                    format!("Local: {} — {}\n{}", t.title, t.artist, status)
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            (
+                format!("Recordings matched: {matched} / {}", rows.len()),
+                details,
+            )
+        }
+    }
+}
+fn recording_callback(
+    weak: qmetaobject::QPointer<Bridge>,
+) -> impl Fn(music_library::recording::Reply) + Send + 'static {
+    qmetaobject::queued_callback(move |reply: music_library::recording::Reply| {
+        if let Some(pinned) = weak.as_pinned() {
+            let mut bridge = pinned.borrow_mut();
+            if let Some(mut matcher) = bridge.matcher.take() {
+                matcher.complete_recordings(&mut bridge.session.library, reply);
+                bridge.matcher = Some(matcher);
+                bridge.matching_changed();
+            }
+        }
+    })
+}
+
 fn matching_callback(
     weak: qmetaobject::QPointer<Bridge>,
 ) -> impl Fn(music_library::album_matching::MatchReply) + Send + Sync + 'static {
@@ -854,6 +913,28 @@ mod event_delivery_tests {
         }
         struct Provider(mpsc::Receiver<()>, bool);
         impl CatalogProvider for Provider {
+            fn recordings(
+                &mut self,
+                group: &ExternalIdentity,
+            ) -> Result<Page<music_library::recording::Candidate>, CatalogError> {
+                assert_eq!(group.external_id, "test-group");
+                self.0.recv().unwrap();
+                Ok(Page {
+                    next_offset: None,
+                    items: vec![music_library::recording::Candidate {
+                        identity: ExternalIdentity {
+                            provider: "musicbrainz".into(),
+                            kind: "recording".into(),
+                            external_id: "test-recording".into(),
+                        },
+                        title: "Song".into(),
+                        artist: "Artist".into(),
+                        artist_ids: vec![],
+                        duration_ms: None,
+                        isrcs: vec!["ISRC1".into(), "ISRC2".into()],
+                    }],
+                })
+            }
             fn search_artists(
                 &mut self,
                 name: &str,
@@ -960,12 +1041,20 @@ mod event_delivery_tests {
         let deliver = matching_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
         let quit = engine.clone();
         let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
+        let deliver_recording =
+            recording_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
+        let quit_recording = engine.clone();
+        let recording_done = qmetaobject::queued_callback(move |()| quit_recording.borrow().quit());
         bridge.pinned().borrow_mut().matcher = Some(
-            AlbumMatcher::new(
+            AlbumMatcher::new_with_recordings(
                 Provider(wait, false),
                 move |reply| {
                     deliver(reply);
                     done(());
+                },
+                move |reply| {
+                    deliver_recording(reply);
+                    recording_done(());
                 },
                 matching_retry_callback(qmetaobject::QPointer::from(bridge.pinned().borrow())),
             )
@@ -1052,6 +1141,12 @@ mod event_delivery_tests {
             "Local Album"
         );
         assert!(!view().contains("matching paused; retrying automatically"));
+        assert!(view().contains("Recordings: pending"));
+        gate.send(()).unwrap();
+        engine.borrow().exec();
+        assert!(view().contains("Recordings matched: 1 / 1"));
+        assert!(view().contains("MusicBrainz Recording: test-recording"));
+        assert!(view().contains("ISRC1, ISRC2"));
         bridge.pinned().borrow_mut().retry_match(0);
         assert!(view().contains("Already matched"));
         bridge.pinned().borrow_mut().matcher.take();

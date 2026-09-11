@@ -30,7 +30,10 @@ A Track is not:
 
 A Track belongs to one Release under the current model.
 
-Abstract recording/work identity may be introduced later if the product requires grouping multiple release-specific Tracks as the same underlying recording.
+Each Track refers to exactly one provider-neutral Recording; several Tracks may
+share the same particular recording/mix/edit while retaining distinct Release
+placements. Recording uses an opaque application-owned ID. Composition/work
+identity remains deferred.
 
 Durable Track identity should use application-generated opaque identifiers rather than paths, hashes, tags, or external-provider identifiers.
 
@@ -157,7 +160,15 @@ The library must support music that has no currently playable source.
 * Metadata used for display must not be destructively rewritten solely to improve cross-provider matching.
 * Matching may use derived normalized values without replacing original metadata observations.
 * External identifiers such as MusicBrainz MBIDs, ISRCs, and provider-specific track IDs should be preferred over title-string matching when available.
-* MusicBrainz Recording identifiers and ISRCs may be associated with application Tracks without requiring an application-level Recording entity.
+* MusicBrainz Recording MBIDs and ISRCs attach to application Recordings; historical
+  Track mappings remain compatible. Future Spotify Track and Apple Music Song IDs
+  may coexist as external mappings on the same Recording. No provider ID is the
+  canonical cross-platform identity.
+* Recording enrichment operates only inside a resolved Album, uses exact qualified
+  Track titles with compatible Artist/duration evidence, and never claims an exact
+  Release or merges release-specific Tracks. Ambiguous/incomplete candidates remain
+  unmatched. It shares the post-import queue and outage handling, independently of
+  local import/playback.
 
 ### Local-file import and catalog matching
 
@@ -654,7 +665,7 @@ These budgets should be established from an early working prototype rather than 
 
 The following remain intentionally open unless implementation proves one must be decided earlier:
 
-* Abstract recording/work identity.
+* Composition/work identity beyond a particular Recording.
 * Cross-source Album matching and reconciliation.
 * Exact file-tag versus external-provider precedence.
 * Which discovery sources ship initially.

@@ -22,6 +22,13 @@ macro_rules! id_type {
 id_type!(AlbumId);
 id_type!(ReleaseId);
 id_type!(TrackId);
+id_type!(RecordingId);
+
+/// Provider-neutral identity of a particular recording/mix/edit, shared by placements.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Recording {
+    pub recording_id: RecordingId,
+}
 id_type!(ArtistId);
 id_type!(SourceId);
 id_type!(RootId);

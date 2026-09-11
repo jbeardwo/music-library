@@ -70,7 +70,55 @@ A Track is not:
 * An external catalog ID.
 * Necessarily an abstract recording.
 
-Abstract recording identity is intentionally deferred.
+Every Track references exactly one application Recording; multiple release-specific
+Tracks may share it without merging their placements or sources.
+
+### Recording
+
+`RecordingId` is an opaque application-owned identity for a particular recording,
+mix or edit. It is not a MusicBrainz MBID, ISRC, Spotify ID, or Apple Music ID.
+`recording` currently owns identity only; Track metadata observations continue to
+provide local presentation. A Recording need not have external identities or sources.
+Composition/work identity remains deferred.
+
+Migration 0008 rebuilds Track with a non-null Recording foreign key, preserving all
+Track IDs/children. In one transaction, it creates one Recording per existing Track
+using deterministic UUIDv5 IDs in a migration-reserved application namespace, based
+only on the existing internal Track IDs. It performs no matching. Historical Track Recording/ISRC
+identities stay intact and are copied as existing evidence onto their Recordings.
+
+`recording_external_identity` follows the entity-first composite primary key and
+non-unique reverse index used by other external identity tables. Recording MBIDs,
+ISRCs and future Spotify Track / Apple Music Song mappings may coexist. Generic
+attachment is idempotent and reverse resolution returns zero or more Recording IDs.
+An exact MusicBrainz Recording identity triggers canonical reuse: prefer its existing
+owner, choosing binary internal-ID order if several exist. The atomic provider-neutral
+`merge_recording` primitive transfers identities, rewrites indexed Track references,
+and deletes the source Recording. Different MusicBrainz Recording MBIDs veto the
+merge and roll back. ISRC alone never triggers consolidation. Ordinary Track deletion
+does not delete the underlying Recording or its mappings.
+
+After Album identity commits, Recording enrichment joins the existing serial matching
+queue. `new_with_recordings` supplies a second owner-thread completion callback on
+the same worker, limiter, outage circuit and cooldown; the Album-only constructor
+remains available for clients without Recording discovery. An already-resolved Album
+requires no Artist/Album requests. One bounded `recording?query=rgid:<MBID>&limit=100`
+search supplies candidates for all eligible local Tracks. The official
+[Recording search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/RecordingSearch)
+define this Release Group scope. Incomplete results remain unmatched; no automatic
+paging or per-Track lookup is performed.
+
+Acceptance requires one exact normalized title candidate with no conflicting Artist
+or duration evidence. Unicode lowercase/whitespace folding preserves punctuation
+and all version qualifiers. Complete known Track Artist MBID credits are preferred;
+otherwise usable credited names must agree. Missing evidence is not invented. Known
+durations may differ by at most 3,000 ms. All returned ISRCs attach with the Recording
+MBID, unchanged. The completion transaction revalidates local input before attaching
+identities. No exact Release or release-specific Track identity is inferred, and
+source-less catalog Tracks remain separate even when they share a Recording.
+
+The [Recording matching audit](recording-matching-audit.md) records local costs,
+request-shape measurements and the read-only live probe's limits.
 
 ### Artist
 
@@ -820,10 +868,11 @@ The initial MusicBrainz mapping is:
 * a MusicBrainz Release corresponds to an external identity for an application Release;
 * its MusicBrainz Release Group identifies the parent application Album;
 * a MusicBrainz Track corresponds to an external identity for an application Track;
-* the MusicBrainz Recording referenced by that track may also be retained as an external identity for the application Track;
-* ISRCs associated with the recording may be retained as additional recording-level external identifiers for that Track.
+* the MusicBrainz Recording identifies the Track's application Recording;
+* ISRCs attach as additional external identifiers for that Recording.
 
-The application does not initially require its own durable Recording entity. Recording identifiers may be associated with release-specific Tracks until product requirements demonstrate that a first-class Recording entity is necessary.
+Historical Track Recording/ISRC associations remain readable for compatibility;
+new catalog imports and enrichment attach these identities to Recording.
 
 External identities should be represented generically rather than by provider-specific columns on Track or Release. Track and Release identities should use separate relational tables so that ordinary foreign-key integrity is preserved without polymorphic entity references.
 
@@ -932,7 +981,7 @@ A complete Track count match is useful evidence when available but must not be r
 
 The application may confidently associate a partial local Album with a provider-neutral Album while leaving the exact Release unresolved when there is insufficient evidence to distinguish between multiple editions.
 
-Likewise, individual Tracks may gain Recording-level external identities without requiring the application to claim certainty about the exact physical or digital Release from which the local files originated.
+Likewise, a Track's Recording may gain external identities without requiring the application to claim certainty about the exact physical or digital Release from which the local files originated.
 
 Catalog matching is enrichment only. It must not silently fill missing Album membership.
 
@@ -1173,7 +1222,7 @@ Backup and restore must preserve irreplaceable state even if machine-specific so
 
 The first durable schema should not accidentally commit to:
 
-* Abstract recording identity.
+* Composition/work identity beyond a particular Recording.
 * Deliberate cross-source Album reconciliation.
 * Automatic duplicate identity.
 * Automatic move identity.
@@ -1210,9 +1259,8 @@ friendly metadata. Generic identity storage imposes no provider-specific uniquen
 `catalog::AlbumCandidate` represents provider-neutral discovery. `CatalogProvider`
 searches Albums, browses concrete editions and looks up a complete Release carrying
 its parent Album metadata. Private MusicBrainz JSON becomes these application values.
-MusicBrainz Release Group maps to Album, Release to Release, and Track/Recording/ISRC
-identities to release-specific Tracks. No durable Recording or provider-specific
-Release Group entity is added.
+MusicBrainz Release Group maps to Album, Release to Release, Track to release-specific
+Track, and Recording/ISRC to Recording. No provider-specific Release Group entity is added.
 
 `CatalogSession::add_album` lazily requests representative candidates and selects a provisional
 representative for its tracklist. Among candidates with nonzero media/track counts,

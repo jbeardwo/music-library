@@ -93,7 +93,7 @@ ApplicationWindow {
                 required property int index
                 width: ListView.view.width
                 Label {
-                    text: window.matchingLabel(matchRow.rowData)
+                    text: window.matchingLabel(matchRow.rowData) + (matchRow.rowData.recordingSummary ? "\n" + matchRow.rowData.recordingSummary : "")
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
@@ -112,10 +112,37 @@ ApplicationWindow {
                     onClicked: window.bridge.choose_artist(matchRow.sourceIndex, artistChoice.currentIndex)
                 }
                 Button {
+                    text: "Recordings…"
+                    visible: !!matchRow.rowData.recordingDetails
+                    onClicked: {
+                        recordingDialog.details = matchRow.rowData.recordingDetails;
+                        recordingDialog.open();
+                    }
+                }
+                Button {
                     text: "Retry Match"
                     enabled: !matchRow.rowData.pending
                     onClicked: window.bridge.retry_match(matchRow.sourceIndex)
                 }
+            }
+        }
+    }
+
+    Dialog {
+        id: recordingDialog
+        title: "Recording enrichment"
+        property string details: ""
+        width: Math.min(window.width - 40, 800)
+        height: 450
+        anchors.centerIn: parent
+        standardButtons: Dialog.Close
+        contentItem: ScrollView {
+            TextArea {
+                text: recordingDialog.details
+                textFormat: TextEdit.PlainText
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
             }
         }
     }

@@ -114,6 +114,15 @@ pub struct ArtistAlbumCandidate {
 
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    /// One bounded discovery request scoped to a known Album identity.
+    fn recordings(
+        &mut self,
+        _group: &ExternalIdentity,
+    ) -> Result<Page<crate::recording::Candidate>, CatalogError> {
+        Err(CatalogError::Other(
+            "Recording discovery is not supported by this provider".into(),
+        ))
+    }
     fn search_artists(&mut self, _name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
         Err(CatalogError::Other(
             "Artist discovery is not supported by this provider".into(),

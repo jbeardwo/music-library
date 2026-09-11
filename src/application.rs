@@ -14,6 +14,50 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn create_recording(&mut self) -> Result<crate::domain::Recording> {
+        self.store.create_recording()
+    }
+    pub fn recording_for_track(&self, track: &TrackId) -> Result<crate::domain::Recording> {
+        self.store.recording_for_track(track)
+    }
+    pub fn attach_recording_external_identity(
+        &mut self,
+        id: &crate::domain::RecordingId,
+        identity: &ExternalIdentity,
+    ) -> Result<bool> {
+        self.store.attach_recording_external_identity(id, identity)
+    }
+    pub fn list_recording_external_identities(
+        &self,
+        id: &crate::domain::RecordingId,
+    ) -> Result<Vec<ExternalIdentity>> {
+        self.store.list_recording_external_identities(id)
+    }
+    pub fn resolve_recordings_external_identity(
+        &self,
+        identity: &ExternalIdentity,
+    ) -> Result<Vec<crate::domain::RecordingId>> {
+        self.store.resolve_recordings_external_identity(identity)
+    }
+    pub fn merge_recording(
+        &mut self,
+        source: &crate::domain::RecordingId,
+        canonical: &crate::domain::RecordingId,
+    ) -> Result<bool> {
+        self.store.merge_recording(source, canonical)
+    }
+    pub fn prepare_recording_match(
+        &self,
+        album: &crate::domain::AlbumId,
+    ) -> Result<Option<crate::recording::Input>> {
+        self.store.prepare_recording_match(album)
+    }
+    pub fn complete_recording_match(
+        &mut self,
+        reply: crate::recording::Reply,
+    ) -> Result<crate::recording::Outcome> {
+        self.store.complete_recording_match(reply)
+    }
     pub fn prepare_album_match(
         &self,
         id: &crate::domain::AlbumId,

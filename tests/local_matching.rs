@@ -1,5 +1,7 @@
 use music_library::{Library, Result, catalog, domain::*, filesystem::MetadataExtractor};
 use rusqlite::Connection;
+#[path = "support/recording_slice.rs"]
+mod recording_slice;
 use std::{
     collections::HashMap,
     fs,
@@ -193,7 +195,7 @@ fn complete_three_track_and_one_track_subsets_reuse_album_but_not_edition() {
                     .list_track_external_identities(track)
                     .unwrap()
                     .len(),
-                2
+                1
             );
         }
         assert_eq!(

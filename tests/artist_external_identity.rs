@@ -71,7 +71,7 @@ fn v5_upgrade_and_failed_migration_are_atomic() {
         let path = tmp.path().join("db");
         drop(Library::open(&path).unwrap());
         let db = Connection::open(&path).unwrap();
-        db.execute_batch("ALTER TABLE album_artist_credit DROP COLUMN credited_name; ALTER TABLE release_artist_credit DROP COLUMN credited_name; ALTER TABLE track_artist_credit DROP COLUMN credited_name; DROP TABLE artist_external_identity; PRAGMA user_version=5; INSERT INTO artist(id,name) VALUES ('legacy','Preserved');").unwrap();
+        db.execute_batch("DROP INDEX track_recording; ALTER TABLE track DROP COLUMN recording_id; DROP TABLE recording_external_identity; DROP TABLE recording; ALTER TABLE album_artist_credit DROP COLUMN credited_name; ALTER TABLE release_artist_credit DROP COLUMN credited_name; ALTER TABLE track_artist_credit DROP COLUMN credited_name; DROP TABLE artist_external_identity; PRAGMA user_version=5; INSERT INTO artist(id,name) VALUES ('legacy','Preserved');").unwrap();
         if fail {
             db.execute_batch("CREATE TABLE artist_external_identity(sentinel TEXT)")
                 .unwrap();
@@ -82,7 +82,7 @@ fn v5_upgrade_and_failed_migration_are_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 5 } else { 7 }
+            if fail { 5 } else { 8 }
         );
         assert_eq!(
             db.query_row("SELECT name FROM artist WHERE id='legacy'", [], |r| r

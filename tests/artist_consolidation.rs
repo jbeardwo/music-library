@@ -19,7 +19,7 @@ fn setup() -> (tempfile::TempDir, Library, Connection) {
     db.execute_batch("PRAGMA foreign_keys=ON;
       INSERT INTO artist(id,name) VALUES ('source','Original name'),('canonical','Different canonical name'),('other','Other');
       INSERT INTO album(id) VALUES ('album'); INSERT INTO release(id,album_id) VALUES ('release','album');
-      INSERT INTO track(id,release_id) VALUES ('track','release'); INSERT INTO library_membership(track_id) VALUES ('track');").unwrap();
+      INSERT INTO recording(id) VALUES ('recording'); INSERT INTO track(id,release_id,recording_id) VALUES ('track','release','recording'); INSERT INTO library_membership(track_id) VALUES ('track');").unwrap();
     for (table, column, entity) in [
         ("album_artist_credit", "album_id", "album"),
         ("release_artist_credit", "release_id", "release"),
@@ -181,7 +181,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
             db.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN credited_name"))
                 .unwrap();
         }
-        db.execute_batch("PRAGMA user_version=6").unwrap();
+        db.execute_batch("DROP INDEX track_recording; ALTER TABLE track DROP COLUMN recording_id; DROP TABLE recording_external_identity; DROP TABLE recording; PRAGMA user_version=6").unwrap();
         if fail {
             db.execute_batch("CREATE TRIGGER fail_backfill BEFORE UPDATE ON track_artist_credit BEGIN SELECT RAISE(ABORT,'induced'); END").unwrap();
         }
@@ -191,7 +191,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 6 } else { 7 }
+            if fail { 6 } else { 8 }
         );
         for table in [
             "album_artist_credit",

@@ -174,11 +174,12 @@ fn create_fixture(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
          UPDATE album_application_metadata SET match_title=lower(title),
              match_artist_credit=lower((SELECT a.name FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=album_application_metadata.album_id AND c.position=0));
 
-         INSERT INTO track(id, release_id, disc_number, track_number)
+         INSERT INTO recording(id) SELECT printf('recording-%06d',value) FROM fixture_number;
+         INSERT INTO track(id, release_id, disc_number, track_number, recording_id)
          SELECT printf('track-%06d', value),
                 printf('release-%05d', ((value - 1) / 10) + 1),
                 (((value - 1) % 10) / 5) + 1,
-                ((value - 1) % 5) + 1
+                ((value - 1) % 5) + 1, printf('recording-%06d',value)
          FROM fixture_number;
 
          INSERT INTO track_application_metadata(track_id, title)
