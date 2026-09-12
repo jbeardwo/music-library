@@ -566,6 +566,119 @@ impl CatalogProvider for MusicBrainz {
     }
 }
 
+impl music_library::edition::EditionProvider for MusicBrainz {
+    fn edition(
+        &mut self,
+        id: &ExternalIdentity,
+    ) -> Result<music_library::edition::EditionCandidate, CatalogError> {
+        require_identity(id, "release")?;
+        let release: FullRelease = self.request(
+            &format!("release/{}", id.external_id),
+            &[(
+                "inc",
+                "release-groups+recordings+artist-credits+isrcs+media+labels".into(),
+            )],
+        )?;
+        if release.id != id.external_id {
+            return Err(CatalogError::Other(
+                "MusicBrainz returned a different edition".into(),
+            ));
+        }
+        edition_evidence(release)
+    }
+}
+fn edition_evidence(
+    mut release: FullRelease,
+) -> Result<music_library::edition::EditionCandidate, CatalogError> {
+    use music_library::edition::*;
+    fn artist_evidence(credits: Vec<Credit>) -> Vec<ArtistEvidence> {
+        credits
+            .into_iter()
+            .map(|c| ArtistEvidence {
+                identities: c
+                    .artist
+                    .map(|a| identity("artist", &a.id))
+                    .into_iter()
+                    .collect(),
+                name: c.name,
+                join_phrase: c.joinphrase,
+            })
+            .collect()
+    }
+    mbid(&release.id)?;
+    mbid(&release.group.id)?;
+    release.media.sort_by_key(|m| m.position);
+    let mut complete = !release.media.is_empty()
+        && !release
+            .media
+            .windows(2)
+            .any(|m| m[0].position == m[1].position);
+    let mut tracks = vec![];
+    let mut formats = vec![];
+    for mut medium in release.media {
+        complete &= medium.position > 0
+            && medium.tracks.len() == medium.track_count
+            && medium.pregap.is_none()
+            && medium.data_tracks.is_empty();
+        if let Some(format) = medium.format {
+            formats.push(format);
+        }
+        medium.tracks.sort_by_key(|t| t.position);
+        complete &= !medium
+            .tracks
+            .windows(2)
+            .any(|t| t[0].position == t[1].position);
+        for track in medium.tracks {
+            mbid(&track.id)?;
+            mbid(&track.recording.id)?;
+            complete &= track.position > 0;
+            tracks.push(TrackEvidence {
+                identities: vec![identity("track", &track.id)],
+                disc: Some(medium.position),
+                number: Some(track.position),
+                title: track.title.or(Some(track.recording.title)),
+                artists: artist_evidence(track.credits.unwrap_or(track.recording.credits)),
+                duration_ms: track.length.or(track.recording.length),
+                recording: RecordingEvidence {
+                    identities: vec![identity("recording", &track.recording.id)],
+                    isrcs: track.recording.isrcs,
+                },
+            });
+        }
+    }
+    Ok(EditionCandidate {
+        identity: identity("release", &release.id),
+        // Catalog Release identity; local evidence must independently assert it.
+        exact_identities: vec![identity("release", &release.id)],
+        grouping: Some(identity("release_group", &release.group.id)),
+        metadata: EditionMetadata {
+            title: Some(release.title),
+            artists: artist_evidence(release.credits),
+            date: release.date,
+            barcodes: release
+                .barcode
+                .filter(|b| !b.is_empty())
+                .into_iter()
+                .collect(),
+            labels: release
+                .labels
+                .into_iter()
+                .map(|l| {
+                    (
+                        l.label.map(|v| v.name).unwrap_or_default(),
+                        l.catalog_number,
+                    )
+                })
+                .collect(),
+            country: release.country,
+            media: formats,
+            edition_text: release.disambiguation,
+        },
+        tracks,
+        tracklist_complete: complete,
+    })
+}
+
 fn escaped(value: &str) -> String {
     let mut result = String::new();
     for c in value.chars() {
@@ -692,6 +805,11 @@ struct FullRelease {
     #[serde(rename = "release-group")]
     group: GroupRef,
     media: Vec<Medium>,
+    barcode: Option<String>,
+    country: Option<String>,
+    disambiguation: Option<String>,
+    #[serde(default, rename = "label-info")]
+    labels: Vec<LabelInfo>,
 }
 #[derive(Deserialize)]
 struct GroupRef {
@@ -704,6 +822,7 @@ struct GroupRef {
 }
 #[derive(Deserialize)]
 struct Medium {
+    format: Option<String>,
     position: u32,
     #[serde(rename = "track-count")]
     track_count: usize,
@@ -715,6 +834,7 @@ struct Medium {
 }
 #[derive(Deserialize)]
 struct Track {
+    length: Option<u64>,
     id: String,
     position: u32,
     title: Option<String>,
@@ -867,6 +987,49 @@ mod tests {
     const GROUPS: &str = include_str!("../tests/fixtures/groups.json");
     const EDITIONS: &str = include_str!("../tests/fixtures/editions.json");
     const RELEASE: &str = include_str!("../tests/fixtures/release.json");
+    #[test]
+    fn generic_edition_lookup_separates_occurrence_and_recording_evidence() {
+        use music_library::edition::EditionProvider;
+        let (mut provider, requests, worker) = mock(vec![(200, RELEASE)]);
+        let candidate = provider
+            .edition(&identity("release", "00000000-0000-4000-8000-000000000002"))
+            .unwrap();
+        assert!(candidate.tracklist_complete);
+        assert_eq!(candidate.exact_identities, vec![candidate.identity.clone()]);
+        assert_eq!(candidate.tracks.len(), 3);
+        assert_eq!(candidate.tracks[0].disc, Some(1));
+        assert_eq!(candidate.tracks[2].disc, Some(2));
+        assert_eq!(candidate.tracks[0].identities[0].kind, "track");
+        assert_eq!(
+            candidate.tracks[0].recording.identities[0].kind,
+            "recording"
+        );
+        assert_eq!(candidate.tracks[1].recording.isrcs.len(), 2);
+        assert!(candidate.metadata.barcodes.is_empty());
+        assert_eq!(candidate.metadata.artists[0].join_phrase, " feat. ");
+        let request = requests.recv().unwrap().1;
+        assert!(request_params(&request)["inc"].contains("labels"));
+        worker.join().unwrap();
+        assert!(requests.try_recv().is_err());
+        let mut json: serde_json::Value = serde_json::from_str(RELEASE).unwrap();
+        json["barcode"] = serde_json::json!("123");
+        json["label-info"] =
+            serde_json::json!([{"label":{"name":"Label"},"catalog-number":"CAT-1"}]);
+        json["media"][0]["tracks"][0]["length"] = serde_json::json!(123000);
+        let rich = edition_evidence(serde_json::from_value(json.clone()).unwrap()).unwrap();
+        assert_eq!(rich.metadata.barcodes, vec!["123"]);
+        assert_eq!(
+            rich.metadata.labels,
+            vec![("Label".into(), Some("CAT-1".into()))]
+        );
+        assert_eq!(rich.tracks[2].duration_ms, Some(123000));
+        json["media"][0]["track-count"] = serde_json::json!(2);
+        assert!(
+            !edition_evidence(serde_json::from_value(json).unwrap())
+                .unwrap()
+                .tracklist_complete
+        );
+    }
     fn mock(
         responses: Vec<(u16, &str)>,
     ) -> (

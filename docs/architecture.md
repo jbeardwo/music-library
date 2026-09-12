@@ -89,7 +89,9 @@ identities stay intact and are copied as existing evidence onto their Recordings
 
 `recording_external_identity` follows the entity-first composite primary key and
 non-unique reverse index used by other external identity tables. Recording MBIDs,
-ISRCs and future Spotify Track / Apple Music Song mappings may coexist. Generic
+ISRCs and verified recording-level mappings may coexist. Catalog Track/Song IDs
+must not be assumed to identify a Recording; their provider semantics may instead
+require Track-level association. Generic
 attachment is idempotent and reverse resolution returns zero or more Recording IDs.
 An exact MusicBrainz Recording identity triggers canonical reuse: prefer its existing
 owner, choosing binary internal-ID order if several exist. The atomic provider-neutral
@@ -1171,8 +1173,7 @@ An Album represents the musical release concept a user normally thinks of and se
 External provider concepts may be associated with an Album, including:
 
 * MusicBrainz Release Group;
-* Spotify Album;
-* Apple Music Album;
+* Discogs Master, where its grouping semantics correspond;
 * album-level metadata derived from local files.
 
 A Release represents a specific edition or manifestation of an Album, such as a particular MusicBrainz Release with a country, date, format, barcode, or edition-specific tracklist.
@@ -1185,9 +1186,35 @@ The expected relationship is:
 
 `Album -> one or more Releases -> release-specific Tracks`
 
-Album identity must remain application-owned and provider-neutral. A MusicBrainz Release Group ID, Spotify Album ID, Apple Music Album ID, or other external identifier may identify the corresponding concept in a particular provider but must not become the application's primary identity.
+Album identity must remain application-owned and provider-neutral. External grouping identifiers never become application primary IDs. A provider exposing only concrete catalog Albums may map them to Releases without supplying an external grouping ID or mirroring MusicBrainz's hierarchy.
 
 Album metadata used for ordinary display should likewise be application-owned. Provider and local-file metadata remain observations that may contribute to effective Album metadata rather than forcing provider-specific edition names into the normal user interface.
+
+## Provider-neutral edition evidence
+
+Providers are interchangeable evidence sources, not the domain model. Artist, Album,
+Release, Track and Recording IDs remain application-owned. A provider Album, Track
+or Song must be mapped according to verified semantics, not its name: catalog
+occurrence IDs and underlying Recording evidence are separate. ISRC is cross-provider
+evidence, never canonical identity. Missing external grouping/Recording concepts do
+not prevent integration.
+
+Provider-specific discovery is separate from provider-neutral comparison. The new
+`edition` boundary and read-only probe accept optional evidence without requiring
+MusicBrainz IDs. They attach nothing. Existing MusicBrainz-specific matching/import
+policies remain scoped implementation debt rather than requirements on new providers.
+See the [compatibility and boundary audit](provider-edition-matching-audit.md) for
+the field matrix, current coupling, diagnostic rules and remaining acceptance decisions.
+
+Edition evidence has separate `ExactEdition`, `ContentEquivalent`, `AlbumOnly`,
+`InsufficientEvidence`, `Contradictory` and `Ambiguous` assessments. Identical recordings
+do not prove identical pressing/edition. Exact identity requires independently trusted
+edition identifiers, never barcode or content agreement alone. Content equivalence
+requires trusted complete flattened musical programs, independent of medium packaging.
+Local completeness/provenance is currently unknown; database extraction does not
+infer it from counts or existing mappings. Strong identifier conflicts cannot be
+scored through; multiple content-equivalent represses remain ambiguous. This remains
+a read-only probe and does not alter Artist/Album matching or persist Release IDs.
 
 ## Durable Versus Reconstructible State
 

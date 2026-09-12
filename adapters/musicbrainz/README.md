@@ -39,6 +39,13 @@ No artist identity reconciliation or provider metadata refresh is attempted.
 
 ## Checks and optional live probe
 
+The separate [read-only edition probe](../../docs/provider-edition-matching-audit.md#read-only-musicbrainz-probe)
+compares existing local Release evidence with at most three detailed MusicBrainz
+candidates. It opens the database read-only and never attaches Release identities.
+It reports exact edition, content-equivalent, Album-only, insufficient, contradictory
+and ambiguous evidence separately. Database snapshots retain unknown completeness
+and do not promote existing generic mappings to trusted exact-ID assertions.
+
 Normal tests use fixture JSON and a local HTTP server, never MusicBrainz:
 
 ```sh

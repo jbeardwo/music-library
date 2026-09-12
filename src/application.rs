@@ -14,6 +14,12 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn edition_evidence(
+        &self,
+        release: &ReleaseId,
+    ) -> Result<crate::edition::LocalEditionEvidence> {
+        self.store.edition_evidence(release)
+    }
     pub fn create_recording(&mut self) -> Result<crate::domain::Recording> {
         self.store.create_recording()
     }

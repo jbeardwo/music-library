@@ -4,6 +4,8 @@ pub mod album_matching;
 pub mod application;
 pub mod catalog;
 pub mod domain;
+pub mod edition;
+pub mod edition_storage;
 pub mod filesystem;
 pub mod matching;
 pub mod playback;

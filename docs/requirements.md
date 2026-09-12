@@ -135,7 +135,7 @@ The library must support music that has no currently playable source.
 * Album is the normal user-facing grouping for album-oriented music.
 * Users should be able to search for, view, and add an Album without selecting a specific physical, regional, or digital edition.
 * Album identity must be provider-neutral and application-owned.
-* MusicBrainz Release Groups, Spotify Albums, Apple Music Albums, and compatible local album metadata may later be associated with the same application Album.
+* External grouping objects such as MusicBrainz Release Groups and compatible local album metadata may be associated with an application Album. Concrete provider catalog Albums may instead supply Release-level evidence; their names alone do not establish grouping semantics.
 * A specific Release represents an edition of an Album and should normally remain hidden from ordinary library interaction.
 * The application may select a suitable concrete Release internally when edition-specific information such as a tracklist is required.
 * Users must be able to inspect or choose a specific Release when edition differences are relevant, including alternate tracklists, deluxe editions, bonus tracks, reissues, or regional versions.
@@ -161,9 +161,20 @@ The library must support music that has no currently playable source.
 * Matching may use derived normalized values without replacing original metadata observations.
 * External identifiers such as MusicBrainz MBIDs, ISRCs, and provider-specific track IDs should be preferred over title-string matching when available.
 * MusicBrainz Recording MBIDs and ISRCs attach to application Recordings; historical
-  Track mappings remain compatible. Future Spotify Track and Apple Music Song IDs
-  may coexist as external mappings on the same Recording. No provider ID is the
-  canonical cross-platform identity.
+  Track mappings remain compatible. Provider Track/Song IDs must be mapped according
+  to verified semantics and may represent release-specific occurrences, not Recordings.
+  No provider ID or ISRC is the canonical cross-platform identity.
+* Providers are replaceable/corroborating evidence sources. Edition discovery may
+  differ by provider, while comparison consumes provider-neutral evidence. External
+  Album grouping and first-class Recording concepts are optional; concrete catalog
+  Albums may map to Releases without fabricating external grouping identities.
+  The [edition boundary audit](provider-edition-matching-audit.md) defines the current
+  read-only experiment; it does not authorize automatic exact-Release attachment.
+* Album support, content equivalence and exact edition identity are distinct.
+  Identical recordings do not prove identical pressing/edition. Content equivalence
+  requires independently trusted complete ordered content; partial local music cannot
+  establish it. Exact edition identity requires trusted explicit edition identifiers,
+  and conflicting strong evidence must not be overridden by metadata similarity.
 * Recording enrichment operates only inside a resolved Album, uses exact qualified
   Track titles with compatible Artist/duration evidence, and never claims an exact
   Release or merges release-specific Tracks. Ambiguous/incomplete candidates remain
