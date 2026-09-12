@@ -18,6 +18,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!(
             "Durable database evidence (no file reads, network, migration or identity writes):\n{evidence:#?}"
         );
+        let acceptance =
+            music_library::provenance_acceptance::inspect_database(&args[1], &evidence.album_id)?;
+        println!(
+            "Acceptance diagnostics: managed = retractable local acceptance; independent = protected canonical association. Assessments describe current observations, not new writes. Other categories remain observation-only.\n{acceptance:#?}"
+        );
         return Ok(());
     }
     let mut extractor = LoftyMetadataExtractor;

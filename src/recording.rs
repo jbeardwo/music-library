@@ -153,7 +153,14 @@ fn merge_tx(db: &Connection, source: &RecordingId, canonical: &RecordingId) -> R
         return Ok(false);
     }
     check_mb_compatibility(db, &[source, canonical], None)?;
+    // Reassignment alone is not independent confirmation of every transferred
+    // identity. Preserve ownership unless either side already established it.
+    let managed = db.prepare("SELECT s.provider,s.kind,s.external_id FROM recording_provenance_identity s WHERE s.recording_id=?1 AND NOT EXISTS (SELECT 1 FROM recording_external_identity c WHERE c.recording_id=?2 AND c.provider=s.provider AND c.kind=s.kind AND c.external_id=s.external_id AND NOT EXISTS (SELECT 1 FROM recording_provenance_identity m WHERE m.recording_id=c.recording_id AND m.provider=c.provider AND m.kind=c.kind AND m.external_id=c.external_id))")?
+        .query_map(params![source.as_ref(),canonical.as_ref()], |r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     db.execute("INSERT INTO recording_external_identity SELECT ?1,provider,kind,external_id FROM recording_external_identity WHERE recording_id=?2 ON CONFLICT DO NOTHING",params![canonical.as_ref(),source.as_ref()])?;
+    for (provider, kind, value) in managed {
+        db.execute("INSERT OR IGNORE INTO recording_provenance_identity(recording_id,provider,kind,external_id) VALUES (?1,?2,?3,?4)",params![canonical.as_ref(),provider,kind,value])?;
+    }
     db.execute(
         "UPDATE track SET recording_id=?1 WHERE recording_id=?2",
         params![canonical.as_ref(), source.as_ref()],

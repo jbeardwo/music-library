@@ -26,6 +26,422 @@ fn observation(scope: Scope, semantics: Semantics, value: &str) -> Observation {
         },
     }
 }
+
+const X: &str = "12345678-1234-4234-8234-123456789abc";
+const Y: &str = "12345678-1234-4234-8234-123456789abd";
+fn promotable(value: &str) -> FileProvenance {
+    let mut p = file(1, 1, 1, 1);
+    for o in &mut p.observations {
+        if matches!(
+            o.semantics,
+            Semantics::AlbumIdentity | Semantics::RecordingIdentity
+        ) {
+            o.identity = ExternalIdentity {
+                provider: "musicbrainz".into(),
+                kind: if o.scope == Scope::Album {
+                    "release_group"
+                } else {
+                    "recording"
+                }
+                .into(),
+                external_id: value.into(),
+            };
+        }
+    }
+    // Album identity and Recording identity need neither complete positions nor edition.
+    p.positions = Positions::default();
+    p.observations.retain(|o| o.scope != Scope::Edition);
+    p
+}
+
+fn accepted(f: &Fixture, entity: &str) -> Vec<(String, bool)> {
+    f.db().prepare(&format!("SELECT i.external_id,m.{entity}_id IS NOT NULL FROM {entity}_external_identity i LEFT JOIN {entity}_provenance_identity m USING({entity}_id,provider,kind,external_id) ORDER BY i.external_id"))
+        .unwrap().query_map([], |r|Ok((r.get(0)?,r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap()
+}
+
+#[test]
+fn canonical_acceptance_restart_retag_removal_and_independent_confirmation() {
+    let mut f = Fixture::new(vec![promotable(X)]);
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(X.into(), true)]);
+    }
+    assert_eq!(f.evidence().completeness, Completeness::Unknown);
+    let raw = f.snapshots();
+    f.restart();
+    let reads = f.extractor.reads;
+    f.scan();
+    assert_eq!(f.extractor.reads, reads);
+    assert_eq!(f.snapshots(), raw);
+    f.retag(0, promotable(Y));
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(Y.into(), true)]);
+    }
+    let album = f.evidence().album_id.clone();
+    let recording = f
+        .lib()
+        .recording_for_track(&f.release.track_ids[0])
+        .unwrap()
+        .recording_id;
+    let lib = f.library.as_mut().unwrap();
+    assert!(
+        !lib.attach_album_external_identity(
+            &album,
+            &ExternalIdentity {
+                provider: "musicbrainz".into(),
+                kind: "release_group".into(),
+                external_id: Y.into()
+            }
+        )
+        .unwrap()
+    );
+    assert!(
+        !lib.attach_recording_external_identity(
+            &recording,
+            &ExternalIdentity {
+                provider: "musicbrainz".into(),
+                kind: "recording".into(),
+                external_id: Y.into()
+            }
+        )
+        .unwrap()
+    );
+    f.retag(0, FileProvenance::default());
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(Y.into(), false)]);
+    }
+    f.retag(0, promotable(X));
+    let reports = f
+        .library
+        .as_mut()
+        .unwrap()
+        .reconcile_local_provenance(&album)
+        .unwrap();
+    assert!(
+        reports
+            .iter()
+            .all(|r| r.assessments.iter().all(|a| a.decision
+                == music_library::provenance_acceptance::Decision::ConflictingIndependentIdentity))
+    );
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(Y.into(), false)]);
+    }
+}
+
+#[test]
+fn current_conflicts_retract_and_missing_claims_do_not_vote() {
+    let mut f = Fixture::new(vec![promotable(X), promotable(X)]);
+    // Two independent files now support one application Track, as permitted by the model.
+    let db = f.db();
+    let first = &f.release.track_ids[0];
+    let second = &f.release.track_ids[1];
+    db.execute(
+        "UPDATE track_source SET track_id=?1 WHERE track_id=?2",
+        params![first.as_ref(), second.as_ref()],
+    )
+    .unwrap();
+    let album = f.evidence().album_id.clone();
+    f.library
+        .as_mut()
+        .unwrap()
+        .reconcile_local_provenance(&album)
+        .unwrap();
+    assert_eq!(accepted(&f, "recording"), vec![(X.into(), true)]);
+    f.retag(0, FileProvenance::default());
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(X.into(), true)]);
+    }
+    f.retag(0, promotable(Y));
+    for entity in ["album", "recording"] {
+        assert!(accepted(&f, entity).is_empty());
+    }
+    f.retag(0, promotable(X));
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(X.into(), true)]);
+    }
+    f.retag(0, FileProvenance::default());
+    f.retag(1, FileProvenance::default());
+    for entity in ["album", "recording"] {
+        assert!(accepted(&f, entity).is_empty());
+    }
+}
+
+#[test]
+fn malformed_claims_stay_raw_and_source_unavailability_retracts_only_managed() {
+    let mut f = Fixture::new(vec![promotable("malformed")]);
+    assert!(!f.snapshots().is_empty());
+    f.assert_no_canonical_ids();
+    f.retag(0, promotable(X));
+    std::fs::remove_file(f.path(0)).unwrap();
+    f.scan();
+    for entity in ["album", "recording"] {
+        assert!(accepted(&f, entity).is_empty());
+    }
+    assert!(f.snapshots()[0].contains(X));
+    assert_eq!(f.evidence().tracks.len(), 1);
+}
+
+#[test]
+fn synthetic_capabilities_and_deferred_categories() {
+    use music_library::provenance_acceptance::Validation;
+    fn capability(o: &Observation) -> Validation {
+        if o.identity.provider == "synthetic"
+            && matches!(
+                o.semantics,
+                Semantics::AlbumIdentity | Semantics::RecordingIdentity
+            )
+        {
+            Validation::Valid
+        } else {
+            Validation::Unsupported
+        }
+    }
+    let mut p = file(1, 1, 1, 1);
+    p.observations
+        .retain(|o| o.semantics != Semantics::RecordingIdentity);
+    let mut f = Fixture::new(vec![p]);
+    let album = f.evidence().album_id.clone();
+    f.library
+        .as_mut()
+        .unwrap()
+        .set_provenance_validator(capability);
+    f.library
+        .as_mut()
+        .unwrap()
+        .reconcile_local_provenance(&album)
+        .unwrap();
+    assert_eq!(accepted(&f, "album"), vec![("group".into(), true)]);
+    assert!(accepted(&f, "recording").is_empty());
+    f.retag(0, file(1, 1, 1, 1));
+    assert_eq!(
+        accepted(&f, "recording"),
+        vec![("recording-1-1".into(), true)]
+    );
+    for table in [
+        "artist_external_identity",
+        "track_external_identity",
+        "release_external_identity",
+    ] {
+        assert_eq!(
+            f.db()
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                    .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
+    }
+}
+
+#[test]
+fn shared_recording_conflict_is_not_hidden_by_album_boundaries_and_no_entities_merge() {
+    let mut f = Fixture::new(vec![promotable(X), promotable(Y)]);
+    assert!(accepted(&f, "album").is_empty());
+    assert_eq!(accepted(&f, "recording").len(), 2);
+    let db = f.db();
+    db.execute("INSERT INTO album(id) VALUES ('other-album')", [])
+        .unwrap();
+    db.execute(
+        "INSERT INTO release(id,album_id) VALUES ('other-release','other-album')",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE track SET release_id='other-release' WHERE id=?1",
+        [f.release.track_ids[1].as_ref()],
+    )
+    .unwrap();
+    let recording = f
+        .lib()
+        .recording_for_track(&f.release.track_ids[0])
+        .unwrap()
+        .recording_id;
+    db.execute(
+        "UPDATE track SET recording_id=?1 WHERE id=?2",
+        params![recording.as_ref(), f.release.track_ids[1].as_ref()],
+    )
+    .unwrap();
+    let album = f.evidence().album_id.clone();
+    let reports = f
+        .library
+        .as_mut()
+        .unwrap()
+        .reconcile_local_provenance(&album)
+        .unwrap();
+    let report = reports.iter().find(|r| r.entity == "recording").unwrap();
+    assert!(report.managed.is_empty());
+    assert_eq!(
+        report.assessments[0].decision,
+        music_library::provenance_acceptance::Decision::ConflictingObservations
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+}
+
+#[test]
+fn acceptance_failure_rolls_back_source_snapshot_and_canonical_retraction() {
+    let mut f = Fixture::new(vec![promotable(X)]);
+    let before = f.snapshots();
+    f.db().execute_batch("CREATE TRIGGER fail_acceptance BEFORE INSERT ON recording_provenance_identity BEGIN SELECT RAISE(ABORT,'induced failure'); END;").unwrap();
+    let path = f.path(0);
+    f.extractor.values.get_mut(&path).unwrap().provenance = promotable(Y);
+    std::fs::write(path, b"changed test metadata").unwrap();
+    assert!(
+        f.library
+            .as_mut()
+            .unwrap()
+            .scan_local_root(&f.root, &mut f.extractor)
+            .is_err()
+    );
+    assert_eq!(f.snapshots(), before);
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(X.into(), true)]);
+    }
+}
+
+#[test]
+fn explicit_recording_merge_preserves_managed_ownership_without_merging_tracks() {
+    let mut f = Fixture::new(vec![promotable(X), promotable(X)]);
+    let a = f
+        .lib()
+        .recording_for_track(&f.release.track_ids[0])
+        .unwrap()
+        .recording_id;
+    let b = f
+        .lib()
+        .recording_for_track(&f.release.track_ids[1])
+        .unwrap()
+        .recording_id;
+    assert_ne!(a, b);
+    f.library.as_mut().unwrap().merge_recording(&a, &b).unwrap();
+    assert_eq!(accepted(&f, "recording"), vec![(X.into(), true)]);
+    f.retag(0, FileProvenance::default());
+    assert_eq!(accepted(&f, "recording"), vec![(X.into(), true)]);
+    f.retag(1, FileProvenance::default());
+    assert!(accepted(&f, "recording").is_empty());
+    assert_eq!(f.evidence().tracks.len(), 2);
+}
+
+#[test]
+fn acceptance_reconstruction_uses_entity_and_source_indexes() {
+    let f = Fixture::new(vec![promotable(X)]);
+    let db = f.db();
+    for (query, expected) in [
+        (
+            "SELECT r.album_id,ts.source_id,m.provenance_json FROM release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id AND l.available=1 LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id IN (SELECT value FROM json_each(?1))",
+            "release_album",
+        ),
+        (
+            "SELECT t.recording_id,ts.source_id,m.provenance_json FROM track t CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id AND l.available=1 LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE t.recording_id IN (SELECT value FROM json_each(?1))",
+            "track_recording",
+        ),
+    ] {
+        let plan = db
+            .prepare(&format!("EXPLAIN QUERY PLAN {query}"))
+            .unwrap()
+            .query_map(["[]"], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        println!("{}", plan.join("\n"));
+        assert!(plan.iter().any(|l| l.contains(expected)));
+        for table in ["r", "t", "ts", "l", "m"] {
+            assert!(
+                !plan
+                    .iter()
+                    .any(|l| l == &format!("SCAN {table}")
+                        || l.starts_with(&format!("SCAN {table} "))),
+                "{plan:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
+    let mut f = Fixture::new(vec![promotable(X)]);
+    drop(f.library.take());
+    let db = f.db();
+    db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; PRAGMA user_version=9;").unwrap();
+    f.restart();
+    for entity in ["album", "recording"] {
+        assert_eq!(accepted(&f, entity), vec![(X.into(), false)]);
+    }
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+            .unwrap(),
+        10
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
+            .get::<_, u32>(
+            0
+        ))
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn failed_ownership_migration_rolls_back_without_changing_prior_identities() {
+    let mut f = Fixture::new(vec![promotable(X)]);
+    drop(f.library.take());
+    let db = f.db();
+    db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; CREATE TABLE recording_provenance_identity(sentinel TEXT); PRAGMA user_version=9;").unwrap();
+    assert!(Library::open(f.temp.path().join("db")).is_err());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+            .unwrap(),
+        9
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='album_provenance_identity'",
+            [],
+            |r| r.get::<_, u32>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT external_id FROM album_external_identity", [], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        X
+    );
+}
+
+#[test]
+#[ignore = "local acceptance/retraction timings; no network"]
+fn acceptance_timings() {
+    use std::time::Instant;
+    for count in [1, 3, 15, 30] {
+        let mut f = Fixture::new((0..count).map(|_| promotable(X)).collect());
+        let album = f.evidence().album_id.clone();
+        let mut times = vec![];
+        for _ in 0..9 {
+            // Measure actual new canonical writes as well as batched reconstruction.
+            f.db()
+                .execute_batch(
+                    "DELETE FROM album_external_identity; DELETE FROM recording_external_identity;",
+                )
+                .unwrap();
+            let start = Instant::now();
+            f.library
+                .as_mut()
+                .unwrap()
+                .reconcile_local_provenance(&album)
+                .unwrap();
+            times.push(start.elapsed());
+        }
+        times.sort();
+        println!(
+            "{count} Tracks acceptance incl transaction median {:?}",
+            times[4]
+        );
+    }
+}
 fn file(disc: u32, discs: u32, number: u32, total: u32) -> FileProvenance {
     FileProvenance {
         file_type: Some("TestAudio".into()),
@@ -398,7 +814,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     drop(f.library.take());
     let db = f.db();
     db.execute_batch(
-        "ALTER TABLE file_metadata_observation DROP COLUMN provenance_json; PRAGMA user_version=8;",
+        "DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; ALTER TABLE file_metadata_observation DROP COLUMN provenance_json; PRAGMA user_version=8;",
     )
     .unwrap();
     f.restart();
@@ -417,7 +833,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        9
+        10
     );
     f.scan();
     assert_eq!(f.extractor.reads, 1); // no forced reparse of legacy files

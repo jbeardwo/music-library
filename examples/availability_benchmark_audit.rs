@@ -19,6 +19,9 @@ mod edition_storage;
 #[path = "../src/provenance.rs"]
 mod provenance;
 #[allow(dead_code)]
+#[path = "../src/provenance_acceptance.rs"]
+mod provenance_acceptance;
+#[allow(dead_code)]
 #[path = "../src/provenance_storage.rs"]
 mod provenance_storage;
 #[allow(dead_code)]

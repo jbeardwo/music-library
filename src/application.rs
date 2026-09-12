@@ -14,6 +14,18 @@ pub struct Library {
 }
 
 impl Library {
+    /// Composition boundary for embedded identifier capabilities. This replaces
+    /// the default file-adapter validator; it does not reinterpret stored claims.
+    pub fn set_provenance_validator(&mut self, validator: crate::provenance_acceptance::Validator) {
+        self.store.provenance_validator = validator;
+    }
+
+    pub fn reconcile_local_provenance(
+        &mut self,
+        album: &crate::domain::AlbumId,
+    ) -> Result<Vec<crate::provenance_acceptance::EntityReport>> {
+        self.store.reconcile_local_provenance(album)
+    }
     pub fn edition_evidence(
         &self,
         release: &ReleaseId,

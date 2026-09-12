@@ -140,8 +140,16 @@ The library must support music that has no currently playable source.
   Embedded observations must survive restart in source-attributed storage, separately
   from accepted canonical external identities. Actual rereads replace that source's
   snapshot; unavailable/deleted sources stop contributing current evidence without
-  deleting library entities or retracting accepted identities. Completeness is derived
+  deleting library entities or retracting independently established identities. Completeness is derived
   from current durable observations, not persisted as an authoritative verdict.
+* Strong validated, unanimous Album/group and recording-level local claims may be
+  automatically accepted without completeness or edition certainty. Local acceptance
+  must be explicitly retractable when supporting current evidence disappears or
+  conflicts. Independent catalog/matcher/manual confirmation protects the association
+  from local retraction, including confirmation of an already-present identity.
+  Invalid claims remain observations; conflicting independent identities are never
+  overwritten. Artist, edition, occurrence and ISRC promotion, and automatic entity
+  merging, remain deferred. Recording acceptance preserves release-specific Tracks.
 * Explicit consistent local disc/track totals may establish optional completeness;
   contiguous positions alone cannot. Album identity, completeness and optional exact
   edition evidence remain independent. Extraction must use the existing metadata

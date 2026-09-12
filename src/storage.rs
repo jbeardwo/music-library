@@ -36,6 +36,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Store {
     pub(crate) connection: Connection,
+    pub(crate) provenance_validator: crate::provenance_acceptance::Validator,
 }
 
 #[derive(Clone, Debug)]
@@ -153,7 +154,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 9 {
+        } else if version > 10 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -225,7 +226,14 @@ impl Store {
         if version < 9 {
             connection.execute_batch(include_str!("../migrations/0009_local_provenance.sql"))?;
         }
-        Ok(Self { connection })
+        if version < 10 {
+            connection
+                .execute_batch(include_str!("../migrations/0010_provenance_acceptance.sql"))?;
+        }
+        Ok(Self {
+            connection,
+            provenance_validator: crate::filesystem::provenance::validate,
+        })
     }
 
     /// Returns true for a new association, false for an identical existing association.
@@ -514,8 +522,20 @@ impl Store {
             })
             .collect::<Result<Vec<_>>>()?;
         let tx = self.connection.transaction()?;
+        let unchanged_ids: Vec<_> = items
+            .iter()
+            .filter(|i| i.metadata.is_none())
+            .filter_map(|i| i.source_id.as_ref().map(|id| id.as_ref().to_owned()))
+            .collect();
+        let unchanged_json =
+            serde_json::to_string(&unchanged_ids).map_err(|e| Error::Invalid(e.to_string()))?;
+        let mut affected_sources = tx.prepare("SELECT source_id FROM local_file_observation WHERE source_id IN (SELECT value FROM json_each(?1)) AND available=0")?
+            .query_map([unchanged_json], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         for (item, provenance) in items.iter().zip(&observations) {
             let source_id = item.source_id.clone().unwrap_or_else(SourceId::new);
+            if item.metadata.is_some() {
+                affected_sources.push(source_id.as_ref().to_owned());
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO playable_source(id, kind) VALUES (?1, 'local_file')",
                 [source_id.as_ref()],
@@ -544,12 +564,17 @@ impl Store {
                 refresh_associated_effective_track(&tx, &source_id)?;
             }
         }
+        let albums = crate::provenance_acceptance::albums_for_sources(&tx, &affected_sources)?;
+        crate::provenance_acceptance::reconcile(&tx, &albums, self.provenance_validator, true)?;
         tx.commit()?;
         Ok(())
     }
 
     pub(crate) fn complete_scan(&mut self, root_id: &RootId, scan_id: i64) -> Result<u64> {
         let tx = self.connection.transaction()?;
+        let sources = tx.prepare("SELECT source_id FROM local_file_observation WHERE root_id=?1 AND available=1 AND (last_seen_scan_id IS NULL OR last_seen_scan_id<>?2)")?
+            .query_map(params![root_id.as_ref(),scan_id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let albums = crate::provenance_acceptance::albums_for_sources(&tx, &sources)?;
         let changed = tx.execute(
             "UPDATE local_file_observation
              SET available = 0, last_observed_at = unixepoch()
@@ -562,6 +587,7 @@ impl Store {
              WHERE id = ?1 AND root_id = ?2 AND status = 'running'",
             params![scan_id, root_id.as_ref()],
         )?;
+        crate::provenance_acceptance::reconcile(&tx, &albums, self.provenance_validator, true)?;
         tx.commit()?;
         Ok(changed as u64)
     }
@@ -727,6 +753,12 @@ impl Store {
             refresh_effective_track_tx(&tx, &track_id)?;
             track_ids.push(track_id);
         }
+        crate::provenance_acceptance::reconcile(
+            &tx,
+            &[album_id.as_ref().to_owned()],
+            self.provenance_validator,
+            true,
+        )?;
         tx.commit()?;
         Ok(ImportedRelease {
             release_id,
@@ -839,6 +871,9 @@ impl Store {
             refresh_album_match_key(&tx, id.as_ref())?;
             id
         };
+        // Catalog evidence independently confirms even an Album first identified
+        // by local tags. The idempotent INSERT clears its retractable marker.
+        tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![album_id.as_ref(),album.identity.provider,album.identity.kind,album.identity.external_id])?;
         let imported = if let Some(id) = existing.first() {
             let owner: String =
                 tx.query_row("SELECT album_id FROM release WHERE id=?1", [id], |r| {

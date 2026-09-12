@@ -69,6 +69,29 @@ fn release(key: &str) -> Release {
     }
 }
 #[test]
+fn catalog_reuse_confirms_previously_managed_album_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let input = release("edition");
+    library.add_catalog_release(&input).unwrap();
+    let db = Connection::open(path).unwrap();
+    db.execute(
+        "INSERT INTO album_provenance_identity SELECT * FROM album_external_identity",
+        [],
+    )
+    .unwrap();
+    library.add_catalog_release(&input).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM album_provenance_identity", [], |r| {
+            r.get::<_, u32>(0)
+        })
+        .unwrap(),
+        0
+    );
+}
+
+#[test]
 fn atomic_source_less_add_preserves_credits_identities_membership_and_reimport() {
     let temp = tempfile::TempDir::new().unwrap();
     let path = temp.path().join("library.sqlite");
@@ -295,7 +318,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        9
+        10
     );
 }
 

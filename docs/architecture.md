@@ -1279,9 +1279,9 @@ reread occurs. Missing provenance never blocks import or matching.
 Unavailable sources retain their last observations but do not contribute to current
 local evidence; completed scans remain authoritative for availability. Reappearance
 can restore that evidence. Deleting a source cascades its observation row through the
-existing foreign key. Neither action retracts accepted canonical external identities
-or deletes its Album/Tracks/membership. Promotion and canonical retraction policy remain
-separate future work. The local evidence snapshot keeps observations separate from
+existing foreign key. Neither action deletes its Album/Tracks/membership. Independently
+established identities remain protected; locally managed acceptance follows the policy
+below. The local evidence snapshot keeps observations separate from
 the comparator's trusted identity fields.
 
 Album/group and edition observations must agree within each provider/kind namespace;
@@ -1306,6 +1306,42 @@ This proof uses only local declarations, never provider counts. Partial files ma
 carry an edition observation while completeness remains Unknown; complete files
 may have no edition identifiers. Neither dimension gates normal Album enrichment.
 See [the local probe and format mapping](provider-edition-matching-audit.md#local-provenance-probe).
+
+### Conservative local identity acceptance
+
+Only embedded, adapter-validated strong Album/group and Recording observations are
+eligible. All current observed values in an entity/provider/kind namespace must agree;
+missing claims are neutral, invalid claims block acceptance, and conflicts never vote.
+Completeness, edition identity, Artist credits, and network availability are irrelevant.
+Artist, edition, occurrence and ISRC promotion remain deferred. No entities merge.
+Recording identities belong to application Recordings, not release-specific Tracks;
+all current sources across Tracks sharing a Recording contribute to its reconciliation.
+
+Migration 0010 adds `album_provenance_identity` and `recording_provenance_identity`
+ownership markers, referencing the existing canonical associations with cascading
+foreign keys. Unmarked identities are independent; migration protects all existing
+associations. Reconciliation atomically retracts managed associations when support
+disappears or conflicts, and accepts a replacement only if unanimous and not opposed
+by independent canonical values. An independent INSERT, including an idempotent
+confirmation, clears ownership via a BEFORE INSERT trigger. Catalog Album reuse
+explicitly confirms its identity; Recording reassignment preserves ownership unless
+either side independently established that association. Raw observations never change
+as a side effect of acceptance.
+
+Source metadata updates, reappearance, completed-scan unavailability and import
+association reconcile only affected Albums/Recordings, in the existing transaction.
+Unchanged available sources skip reconciliation. `Library::reconcile_local_provenance`
+also permits scoped reevaluation after explicit association/lifecycle changes; direct
+SQL deletion is not an application lifecycle API and needs this explicit reevaluation.
+Reads batch source snapshots and canonical associations using existing Album, Track,
+Recording and source indexes, without per-Track queries or filesystem/network work.
+
+The generic policy accepts an adapter validator capability; it never branches on
+provider names. The file adapter validates Picard Release Group and Recording MBIDs
+as non-nil canonical lowercase hyphenated UUIDs. Unrecognized/malformed observations
+remain durable. Applications may supply a different validator at the composition
+boundary; the default validator is restored on restart, so custom capabilities must
+be registered before using that application's source-update operations.
 
 ## Durable Versus Reconstructible State
 

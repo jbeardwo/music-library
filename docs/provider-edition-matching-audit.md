@@ -139,6 +139,28 @@ completeness; partial 3-of-15 or one-Track subsets never prove whole-program equ
 
 ### Local provenance probe
 
+Canonical acceptance is separate from the read-only edition comparator. Strong,
+validated unanimous Album and Recording claims can now be accepted from durable
+local evidence without completeness or exact edition. Artist, edition, occurrence
+and ISRC claims remain observation-only. Accepted local associations carry explicit
+retractable ownership; independent confirmations protect them from tag retraction.
+No automatic Album, Track or Recording merging occurs in this path.
+
+The database probe additionally prints `managed`, `independent`, current raw
+observations and assessments (`Accepted`, `Invalid`, `ConflictingObservations`,
+`ConflictingIndependentIdentity`). Inspection never promotes/retracts anything.
+The source-attributed edition snapshot still shows all deferred categories and
+original tag fields. Use the normal application to migrate older databases first.
+
+Local acceptance timings (release build, nine samples, median; new identity writes
+and transaction included, no network/file reads): 1/3/15/30 Tracks took
+0.36/0.36/0.63/0.76 ms. Reconstruction plans use `release_album`,
+`track_release_order`/`track_recording`, Track/source association keys and source
+metadata keys. Only the small supplied ID list uses `json_each`; observations are
+decoded after indexed entity selection, never scanned globally. The existing 200k
+fixture retained ~6.1 µs Album candidate lookup, ~14.1 µs Track corroboration and
+~135 µs first library page in this run.
+
 ```sh
 cargo run --offline --example local_provenance -- "/mnt/f/music/Artist/One Album"
 # Or explicitly supply just the files belonging to one local Release:
@@ -213,8 +235,8 @@ fields identify occurrences. No custom format parser is added. Repeated values
 exposed by Lofty are retained, including conflicting numeric declarations; information
 discarded by upstream format conversion cannot be reconstructed here. Unverified tag
 strings are not normalized into canonical IDs. Artist IDs are not zipped blindly to
-multi-artist credits. Conservative canonical promotion must still decide validation,
-association, conflicts and retraction without changing local display metadata.
+multi-artist credits. The initial Album/Recording acceptance policy validates and
+reconciles only those categories; broader promotion remains deferred.
 
 Complete lists are compared by their supplied flattened musical order, retaining
 disc/position metadata unchanged. Two CDs can equal one digital sequence. Every
@@ -296,7 +318,7 @@ normal tests remain independent of the public service.
 
 Define what “same relevant catalog edition” means across physical pressings and digital
 market variants. A barcode or identical audio sequence is not universally unique.
-Define durable validation/promotion of observed provenance, barcode normalization, catalog-number namespaces,
+Define edition-specific validation/promotion, barcode normalization, catalog-number namespaces,
 relinking and contradictory identifiers before allowing writes. Do not infer missing
 Tracks, merge Releases or rewrite credited/local metadata.
 

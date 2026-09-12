@@ -10,6 +10,7 @@ pub mod filesystem;
 pub mod matching;
 pub mod playback;
 pub mod provenance;
+pub mod provenance_acceptance;
 mod provenance_storage;
 pub mod recording;
 pub mod storage;

@@ -2,6 +2,27 @@
 use crate::{domain::ExternalIdentity, provenance::*};
 use lofty::tag::{ItemKey, Tag};
 
+/// Picard's Album-group and Recording identifiers are MBIDs. Only canonical
+/// hyphenated, non-nil UUID strings qualify; malformed raw tags remain observable.
+pub(crate) fn validate(o: &Observation) -> crate::provenance_acceptance::Validation {
+    use crate::provenance_acceptance::Validation;
+    if o.identity.provider != "musicbrainz"
+        || !matches!(
+            (o.scope, o.semantics, o.identity.kind.as_str()),
+            (Scope::Album, Semantics::AlbumIdentity, "release_group")
+                | (Scope::Recording, Semantics::RecordingIdentity, "recording")
+        )
+    {
+        return Validation::Unsupported;
+    }
+    match uuid::Uuid::parse_str(&o.identity.external_id) {
+        Ok(id) if !id.is_nil() && id.hyphenated().to_string() == o.identity.external_id => {
+            Validation::Valid
+        }
+        _ => Validation::Invalid,
+    }
+}
+
 /// Lofty 0.25.1 translates ID3 UFID, Vorbis MUSICBRAINZ_TRACKID and MP4
 /// MusicBrainz Track Id into *RecordingId*. Release Track Id is *TrackId*.
 /// See https://docs.rs/lofty/0.25.1/lofty/tag/enum.ItemKey.html .

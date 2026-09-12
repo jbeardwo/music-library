@@ -12,7 +12,7 @@ use crate::storage::{Error, Result, ScannedLocalSource, Store};
 
 const SCAN_BATCH_SIZE: usize = 256;
 #[path = "filesystem/provenance.rs"]
-mod provenance;
+pub(crate) mod provenance;
 
 pub trait MetadataExtractor {
     fn supports(&self, path: &Path) -> bool;
