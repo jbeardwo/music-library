@@ -4,7 +4,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{domain::ExternalIdentity, edition::Completeness};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Scope {
     AlbumArtist,
     TrackArtist,
@@ -14,7 +15,8 @@ pub enum Scope {
     Occurrence,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Semantics {
     ArtistIdentity,
     AlbumIdentity,
@@ -25,14 +27,15 @@ pub enum Semantics {
     Isrc,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Origin {
     EmbeddedTag { format: String, field: String },
     ProviderResponse,
     ManualSelection,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Observation {
     pub identity: ExternalIdentity,
     pub scope: Scope,
@@ -41,7 +44,7 @@ pub struct Observation {
 }
 
 /// Keep repeated/raw declarations: a first-value accessor would hide conflicts.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Positions {
     pub disc: Vec<String>,
     pub discs: Vec<String>,
@@ -49,9 +52,10 @@ pub struct Positions {
     pub tracks: Vec<String>,
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileProvenance {
-    /// Assigned after scan persistence commits, absent for a stand-alone file probe.
+    /// Reconstructed from the owning SQLite row; never trusted from serialized data.
+    #[serde(skip)]
     pub source_id: Option<crate::domain::SourceId>,
     pub file_type: Option<String>,
     pub formats: Vec<String>,
@@ -115,7 +119,7 @@ pub fn aggregate<'a>(observations: impl IntoIterator<Item = &'a Observation>) ->
 }
 
 /// One entry per Track, retaining each source separately. Empty entries mean no
-/// session observation. Multiple sources deliberately cannot prove completeness.
+/// current observation. Multiple sources deliberately cannot prove completeness.
 #[derive(Clone, Debug, Default)]
 pub struct EditionProvenance {
     pub tracks: Vec<Vec<FileProvenance>>,

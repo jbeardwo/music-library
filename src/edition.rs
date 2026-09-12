@@ -67,7 +67,7 @@ pub enum Completeness {
 }
 #[derive(Clone, Debug)]
 pub struct LocalEditionEvidence {
-    /// Raw session observations. Not promoted to the comparator's trusted IDs.
+    /// Raw source observations. Not promoted to the comparator's trusted IDs.
     pub provenance: crate::provenance::EditionProvenance,
     pub album_id: AlbumId,
     pub release_id: ReleaseId,

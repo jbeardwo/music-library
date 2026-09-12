@@ -34,7 +34,7 @@ id_type!(SourceId);
 id_type!(RootId);
 
 /// Provider-neutral identity. Strings are persisted exactly, without normalization.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ExternalIdentity {
     pub provider: String,
     pub kind: String,
@@ -43,7 +43,7 @@ pub struct ExternalIdentity {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObservedMetadata {
-    /// Session-only observations from the same read as friendly metadata.
+    /// Source observations from the same read as friendly metadata, not accepted IDs.
     pub provenance: crate::provenance::FileProvenance,
     pub track_title: Option<String>,
     pub release_title: Option<String>,

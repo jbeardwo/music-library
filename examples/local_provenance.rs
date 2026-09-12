@@ -6,6 +6,20 @@ use music_library::{
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if args.first().is_some_and(|a| a == "--database") {
+        if args.len() != 3 {
+            return Err("usage: local_provenance --database LIBRARY.sqlite RELEASE_ID".into());
+        }
+        let release = music_library::domain::ReleaseId(
+            args[2].to_str().ok_or("Release ID must be UTF-8")?.into(),
+        );
+        let evidence = music_library::edition_storage::read_only(&args[1], &release)?;
+        println!(
+            "Durable database evidence (no file reads, network, migration or identity writes):\n{evidence:#?}"
+        );
+        return Ok(());
+    }
     let mut extractor = LoftyMetadataExtractor;
     let mut paths = Vec::new();
     for arg in std::env::args_os().skip(1) {

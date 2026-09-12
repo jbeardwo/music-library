@@ -137,6 +137,11 @@ The library must support music that has no currently playable source.
   mappings. After extraction their scopes and semantics are provider-neutral;
   providers need not expose MusicBrainz-like groupings or Recordings. Missing tags
   are normal. Conflicting strong observations must be exposed rather than voted on.
+  Embedded observations must survive restart in source-attributed storage, separately
+  from accepted canonical external identities. Actual rereads replace that source's
+  snapshot; unavailable/deleted sources stop contributing current evidence without
+  deleting library entities or retracting accepted identities. Completeness is derived
+  from current durable observations, not persisted as an authoritative verdict.
 * Explicit consistent local disc/track totals may establish optional completeness;
   contiguous positions alone cannot. Album identity, completeness and optional exact
   edition evidence remain independent. Extraction must use the existing metadata

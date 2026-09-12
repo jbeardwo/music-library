@@ -418,6 +418,8 @@ dependencies = [
  "httpdate",
  "lofty",
  "rusqlite",
+ "serde",
+ "serde_json",
  "thiserror",
  "uuid",
  "walkdir",

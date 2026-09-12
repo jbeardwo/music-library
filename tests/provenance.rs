@@ -241,7 +241,7 @@ fn scan_import_snapshot_uses_one_read_and_never_attaches_observed_ids() {
             .unwrap();
         assert_eq!(n, 0);
     }
-    // Failed persistence must not publish newly read provenance into the cache.
+    // Failed persistence must not publish newly read provenance.
     db.execute_batch("CREATE TRIGGER fail_scan BEFORE INSERT ON file_metadata_observation BEGIN SELECT RAISE(ABORT,'induced failure'); END;").unwrap();
     std::fs::write(root.join("song.mp3"), b"changed source bytes").unwrap();
     assert!(library.scan_local_root(&root_id, &mut extractor).is_err());
@@ -256,8 +256,8 @@ fn scan_import_snapshot_uses_one_read_and_never_attaches_observed_ids() {
     drop(library);
     let library = Library::open(&db_path).unwrap();
     let evidence = library.edition_evidence(&imported.release_id).unwrap();
-    assert_eq!(evidence.completeness, Unknown);
-    assert!(evidence.provenance.album_and_edition.consistent.is_empty());
+    assert_eq!(evidence.completeness, TrustedComplete);
+    assert_eq!(evidence.provenance.tracks, after_failure.provenance.tracks);
 }
 
 #[test]

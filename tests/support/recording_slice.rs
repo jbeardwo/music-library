@@ -421,7 +421,7 @@ fn backfill_preserves_tracks_and_historical_ids_without_inferred_sharing() {
     let path = f.temp.path().join("db");
     drop(f.library);
     let db = Connection::open(&path).unwrap();
-    db.execute_batch("DROP INDEX track_recording; ALTER TABLE track DROP COLUMN recording_id; DROP TABLE recording_external_identity; DROP TABLE recording; PRAGMA user_version=7;").unwrap();
+    db.execute_batch("ALTER TABLE file_metadata_observation DROP COLUMN provenance_json; DROP INDEX track_recording; ALTER TABLE track DROP COLUMN recording_id; DROP TABLE recording_external_identity; DROP TABLE recording; PRAGMA user_version=7;").unwrap();
     db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
     drop(db);
     let twin_path = f.temp.path().join("twin");

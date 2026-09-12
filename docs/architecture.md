@@ -1225,7 +1225,7 @@ Edition evidence has separate `ExactEdition`, `ContentEquivalent`, `AlbumOnly`,
 do not prove identical pressing/edition. Exact identity requires independently trusted
 edition identifiers, never barcode or content agreement alone. Content equivalence
 requires trusted complete flattened musical programs, independent of medium packaging.
-Local completeness is Unknown unless the current scan's explicit tag declarations
+Local completeness is Unknown unless durable source tag declarations
 prove a complete ordered program; counts or existing mappings alone do not.
 Strong identifier conflicts cannot be
 scored through; multiple content-equivalent represses remain ambiguous. This remains
@@ -1248,7 +1248,7 @@ external groupings before adding a concrete-only provider. Normal MusicBrainz Ad
 still looks up a representative Release to obtain Tracks; that is catalog retrieval,
 not proof that local files came from that edition.
 
-### Local embedded provenance (read-only)
+### Durable local embedded observations
 
 Album remains primary; edition identity is optional precision. The filesystem
 adapter extracts `FileProvenance` alongside friendly metadata in the existing
@@ -1259,25 +1259,49 @@ The adapter alone interprets Picard/MusicBrainz keys; generic aggregation and
 comparison do not branch on provider names. A provider can supply Album and song
 occurrence evidence without a grouping hierarchy or a Recording entity.
 
-These observations are **not attached identities**. Scan batches retain them in
-session memory only after SQLite commit, indexed by source ID. The local edition
-snapshot exposes them separately from the comparator's trusted identity fields;
-the next persistence slice must explicitly validate/promote safe observations.
-No new columns or identity writes are introduced. Unchanged scans reuse available
-session observations; after restart, skipped files have unknown provenance. There
-is no forced reread. Missing provenance never blocks import or matching.
+These observations are **not attached identities**. Migration 0009 adds nullable
+`provenance_json` to the existing source-owned `file_metadata_observation` row.
+It holds a version-1 typed snapshot: identifier semantics/scopes/origins, recognized
+formats, and raw position/total declarations (including repeated/conflicting values).
+This is a fixed source metadata structure, not a general EAV store. Source attribution
+comes from the row's existing foreign key, not a serialized caller-supplied ID.
+Existing display position columns remain unchanged; raw declarations must be retained
+separately because a single parsed integer cannot preserve conflicting totals.
+
+The snapshot is encoded before the scan transaction and replaces that source's old
+snapshot atomically with its friendly metadata. Removed tags therefore disappear;
+unchanged scans do not touch observations. The session cache is gone: both application
+and read-only database snapshots reconstruct observations after restart without file
+or network reads. NULL on upgraded libraries means no durable extraction yet; no
+provenance or explicit totals are inferred from old display fields and no forced
+reread occurs. Missing provenance never blocks import or matching.
+
+Unavailable sources retain their last observations but do not contribute to current
+local evidence; completed scans remain authoritative for availability. Reappearance
+can restore that evidence. Deleting a source cascades its observation row through the
+existing foreign key. Neither action retracts accepted canonical external identities
+or deletes its Album/Tracks/membership. Promotion and canonical retraction policy remain
+separate future work. The local evidence snapshot keeps observations separate from
+the comparator's trusted identity fields.
 
 Album/group and edition observations must agree within each provider/kind namespace;
 conflicts are reported without majority voting. Recording and occurrence observations
 stay with their Track; ISRCs remain supporting evidence. Original names and values
-are unchanged. One targeted Track/source association query builds the snapshot,
-without per-Track provenance queries or filesystem I/O inside transactions.
+are unchanged. One targeted query joins the Release's Track/source associations to
+available local observations and metadata using existing indexes. No reverse-ID index
+is needed: this slice has no reverse observation lookup. There are no per-Track
+provenance queries or filesystem reads inside transactions.
+Track-level accepted identities and ordered credits are also read in Release-scoped
+batches, avoiding the previous per-Track queries when building complete evidence.
+The reconstruction query intentionally uses SQLite `CROSS JOIN` to preserve this
+order: ordinary joins selected the global available-source index in the plan test.
 
 `TrustedComplete` requires explicit positive consistent disc totals, every declared
 disc, explicit consistent track totals per disc, and each declared position exactly
 once. Missing, invalid, conflicting, duplicate or out-of-range declarations keep
 `Unknown`; absent disc tags never mean 1 of 1. Multiple sources for one Track also
 remain Unknown for now. Application positions must agree with tag positions.
+The verdict is derived every time, never persisted as authoritative state.
 This proof uses only local declarations, never provider counts. Partial files may
 carry an edition observation while completeness remains Unknown; complete files
 may have no edition identifiers. Neither dimension gates normal Album enrichment.

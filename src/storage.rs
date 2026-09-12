@@ -36,7 +36,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Store {
     pub(crate) connection: Connection,
-    pub(crate) provenance: std::collections::HashMap<SourceId, crate::provenance::FileProvenance>,
 }
 
 #[derive(Clone, Debug)]
@@ -154,7 +153,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 8 {
+        } else if version > 9 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -223,10 +222,10 @@ impl Store {
             connection.pragma_update(None, "foreign_keys", true)?;
             migration?;
         }
-        Ok(Self {
-            connection,
-            provenance: Default::default(),
-        })
+        if version < 9 {
+            connection.execute_batch(include_str!("../migrations/0009_local_provenance.sql"))?;
+        }
+        Ok(Self { connection })
     }
 
     /// Returns true for a new association, false for an identical existing association.
@@ -505,9 +504,17 @@ impl Store {
         scan_id: i64,
         items: &[ScannedLocalSource],
     ) -> Result<()> {
-        let mut observations = Vec::new();
+        let observations = items
+            .iter()
+            .map(|item| {
+                item.metadata
+                    .as_ref()
+                    .map(|m| crate::provenance_storage::encode(&m.provenance))
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>>>()?;
         let tx = self.connection.transaction()?;
-        for item in items {
+        for (item, provenance) in items.iter().zip(&observations) {
             let source_id = item.source_id.clone().unwrap_or_else(SourceId::new);
             tx.execute(
                 "INSERT OR IGNORE INTO playable_source(id, kind) VALUES (?1, 'local_file')",
@@ -533,15 +540,11 @@ impl Store {
                 ],
             )?;
             if let Some(metadata) = &item.metadata {
-                write_file_metadata(&tx, &source_id, metadata)?;
+                write_file_metadata(&tx, &source_id, metadata, provenance.as_deref())?;
                 refresh_associated_effective_track(&tx, &source_id)?;
-                let mut provenance = metadata.provenance.clone();
-                provenance.source_id = Some(source_id.clone());
-                observations.push((source_id, provenance));
             }
         }
         tx.commit()?;
-        self.provenance.extend(observations);
         Ok(())
     }
 
@@ -585,7 +588,7 @@ impl Store {
                             SELECT name FROM file_artist_observation
                             WHERE source_id = ps.id AND scope = 'release' ORDER BY position
                         )
-                    ), '')
+                    ), ''), m.provenance_json
              FROM playable_source ps
              JOIN local_file_observation l ON l.source_id = ps.id
              LEFT JOIN file_metadata_observation m ON m.source_id = ps.id
@@ -610,12 +613,14 @@ impl Store {
                     track_artists: split_artist_names(row.get(10)?),
                     release_artists: split_artist_names(row.get(11)?),
                 },
+                row.get::<_, Option<String>>(12)?,
             ))
         })?;
         let mut candidates = Vec::new();
         for row in rows {
-            let (source_id, path, available, mut metadata) = row?;
-            metadata.provenance = self.provenance.get(&source_id).cloned().unwrap_or_default();
+            let (source_id, path, available, mut metadata, provenance) = row?;
+            metadata.provenance =
+                crate::provenance_storage::decode(&source_id, provenance.as_deref())?;
             candidates.push(DiscoveryCandidate {
                 source_id,
                 path,
@@ -1456,12 +1461,13 @@ fn write_file_metadata(
     tx: &Transaction<'_>,
     source_id: &SourceId,
     metadata: &ObservedMetadata,
+    provenance: Option<&str>,
 ) -> Result<()> {
     tx.execute(
         "INSERT INTO file_metadata_observation(
             source_id, track_title, release_title, disc_number, track_number,
-            year, duration_ms, format
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            year, duration_ms, format, provenance_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(source_id) DO UPDATE SET
             track_title = excluded.track_title,
             release_title = excluded.release_title,
@@ -1470,6 +1476,7 @@ fn write_file_metadata(
             year = excluded.year,
             duration_ms = excluded.duration_ms,
             format = excluded.format,
+            provenance_json = excluded.provenance_json,
             observed_at = unixepoch()",
         params![
             source_id.as_ref(),
@@ -1479,7 +1486,8 @@ fn write_file_metadata(
             metadata.track_number,
             metadata.year,
             metadata.duration_ms.map(|value| value as i64),
-            metadata.format
+            metadata.format,
+            provenance
         ],
     )?;
     tx.execute(

@@ -128,11 +128,12 @@ now exposes raw observations separately; validating/promoting these or trusted
 manual confirmation remains future work.
 
 Local `Completeness::TrustedComplete` asserts independent knowledge of the entire
-musical program **and its order**. `Unknown` is the default. Session-local scan
+musical program **and its order**. `Unknown` is the default. Durable source
 observations can prove completeness from explicit consistent disc/track totals
 and unique complete positions; application positions must agree. Neither contiguous
-Track numbers nor catalog creation alone proves it. The database does not retain
-this proof across sessions. Provider tracklist completeness comes from the
+Track numbers nor catalog creation alone proves it. The database retains declarations,
+not the derived verdict: reconstruction filters unavailable sources and recomputes
+completeness after restart or retag. Provider tracklist completeness comes from the
 adapter's existing count/media validation. No count comparison establishes local
 completeness; partial 3-of-15 or one-Track subsets never prove whole-program equivalence.
 
@@ -142,14 +143,55 @@ completeness; partial 3-of-15 or one-Track subsets never prove whole-program equ
 cargo run --offline --example local_provenance -- "/mnt/f/music/Artist/One Album"
 # Or explicitly supply just the files belonging to one local Release:
 cargo run --offline --example local_provenance -- /path/track1.flac /path/track2.flac
+# Durable observations in an already-upgraded library; no audio files are opened:
+cargo run --offline --example local_provenance -- --database /path/library.sqlite APPLICATION_RELEASE_ID
 ```
 
 Supply one local Release, not a whole collection: the probe does not guess grouping.
 It reads each supplied file once, prints recognized container/tag formats, local
 title/artist/duration, semantic identifier observations with provider/kind/value and
-tag origin, raw position/totals, conflicts and completeness. It never opens a library,
-contacts a provider, modifies files or attaches identities. The application snapshot
-retains source IDs for observed files; stand-alone output labels observations by path.
+tag origin, raw position/totals, conflicts and completeness. File mode does not open a
+library; database mode opens SQLite read-only and performs no migrations or audio-file
+reads. Neither mode contacts a provider, modifies files or attaches identities. Database
+output retains source IDs; file-mode output labels observations by path. To verify
+restart durability manually, scan/import through the diagnostic application, close it,
+then run database mode for that application Release ID in a separate process.
+
+The source-owned `file_metadata_observation.provenance_json` snapshot is versioned
+and typed, with opaque provider/kind/value strings and explicit origin/scope/semantics.
+It reuses the existing metadata transaction and cascade lifecycle. NULL means legacy
+unknown provenance. A reread replaces the whole snapshot (including removing absent
+tags); an unchanged scan leaves it intact. Availability controls contribution to
+current evidence, not retention of the last observation. No observation is queried
+as an accepted canonical identity and no completeness result is stored.
+
+Durability validation covers restart without reads, unchanged scans, full replacement
+on retag, source availability/deletion, multi-source conflicts and v8 upgrade. The
+query plan uses `track_release_order`, the Track/source association key, an
+availability+source lookup and the source metadata primary key. SQLite `CROSS JOIN`
+keeps the lookup Release-first; ordinary joins chose the global availability index.
+The final ordering sort is bounded to that Release's associations.
+
+Local measurements (release build, nine warmed repetitions, medians; mock extraction,
+real temporary SQLite, six identity observations per file):
+
+| Tracks | Changed-source scan/write | Full local edition reconstruction |
+|---:|---:|---:|
+| 1 | 0.392 ms | 0.124 ms |
+| 3 | 0.750 ms | 0.150 ms |
+| 15 | 2.805 ms | 0.247 ms |
+| 30 | 5.533 ms | 0.386 ms |
+
+Writes include enumeration/stat, existing metadata/effective-metadata maintenance,
+JSON encoding and commit; fixture file changes happen before measurement. Reads
+include canonical/display evidence and new provenance decode/aggregation; Track
+identities and ordered credits are batch-read rather than queried per Track.
+These are local costs, not tag-parser/network measurements or an
+isolated JSON overhead claim. Reproduce with:
+
+```sh
+cargo test --offline --release --test durable_provenance durable_provenance_timings -- --ignored --nocapture
+```
 
 Lofty is locked at **0.25.1**. Its native ID3v2, Vorbis-comment and MP4 conversions
 and full-file reads are regression-tested. Interpretation follows
@@ -171,8 +213,8 @@ fields identify occurrences. No custom format parser is added. Repeated values
 exposed by Lofty are retained, including conflicting numeric declarations; information
 discarded by upstream format conversion cannot be reconstructed here. Unverified tag
 strings are not normalized into canonical IDs. Artist IDs are not zipped blindly to
-multi-artist credits. The next persistence slice must decide validation, association
-and provenance durability without changing local display metadata.
+multi-artist credits. Conservative canonical promotion must still decide validation,
+association, conflicts and retraction without changing local display metadata.
 
 Complete lists are compared by their supplied flattened musical order, retaining
 disc/position metadata unchanged. Two CDs can equal one digital sequence. Every
