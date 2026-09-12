@@ -16,6 +16,9 @@ mod edition;
 #[path = "../src/edition_storage.rs"]
 mod edition_storage;
 #[allow(dead_code)]
+#[path = "../src/provenance.rs"]
+mod provenance;
+#[allow(dead_code)]
 #[path = "../src/recording.rs"]
 mod recording;
 use music_library::matching;

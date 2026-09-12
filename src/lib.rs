@@ -9,6 +9,7 @@ pub mod edition_storage;
 pub mod filesystem;
 pub mod matching;
 pub mod playback;
+pub mod provenance;
 pub mod recording;
 pub mod storage;
 

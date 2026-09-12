@@ -11,6 +11,8 @@ use crate::domain::{ObservedMetadata, RootId, ScanReport};
 use crate::storage::{Error, Result, ScannedLocalSource, Store};
 
 const SCAN_BATCH_SIZE: usize = 256;
+#[path = "filesystem/provenance.rs"]
+mod provenance;
 
 pub trait MetadataExtractor {
     fn supports(&self, path: &Path) -> bool;
@@ -51,7 +53,10 @@ impl MetadataExtractor for LoftyMetadataExtractor {
             })?;
         let tag = tagged.primary_tag().or_else(|| tagged.first_tag());
         let properties = tagged.properties();
+        let mut provenance = provenance::extract(tagged.tags());
+        provenance.file_type = Some(format!("{:?}", tagged.file_type()));
         Ok(ObservedMetadata {
+            provenance,
             track_title: tag.and_then(|tag| tag.title().map(|value| value.into_owned())),
             release_title: tag.and_then(|tag| tag.album().map(|value| value.into_owned())),
             track_artists: tag

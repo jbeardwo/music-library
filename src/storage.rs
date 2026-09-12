@@ -36,6 +36,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub struct Store {
     pub(crate) connection: Connection,
+    pub(crate) provenance: std::collections::HashMap<SourceId, crate::provenance::FileProvenance>,
 }
 
 #[derive(Clone, Debug)]
@@ -222,7 +223,10 @@ impl Store {
             connection.pragma_update(None, "foreign_keys", true)?;
             migration?;
         }
-        Ok(Self { connection })
+        Ok(Self {
+            connection,
+            provenance: Default::default(),
+        })
     }
 
     /// Returns true for a new association, false for an identical existing association.
@@ -501,6 +505,7 @@ impl Store {
         scan_id: i64,
         items: &[ScannedLocalSource],
     ) -> Result<()> {
+        let mut observations = Vec::new();
         let tx = self.connection.transaction()?;
         for item in items {
             let source_id = item.source_id.clone().unwrap_or_else(SourceId::new);
@@ -530,9 +535,13 @@ impl Store {
             if let Some(metadata) = &item.metadata {
                 write_file_metadata(&tx, &source_id, metadata)?;
                 refresh_associated_effective_track(&tx, &source_id)?;
+                let mut provenance = metadata.provenance.clone();
+                provenance.source_id = Some(source_id.clone());
+                observations.push((source_id, provenance));
             }
         }
         tx.commit()?;
+        self.provenance.extend(observations);
         Ok(())
     }
 
@@ -590,6 +599,7 @@ impl Store {
                 bytes_to_path(row.get::<_, Vec<u8>>(1)?),
                 row.get::<_, bool>(2)?,
                 ObservedMetadata {
+                    provenance: Default::default(),
                     track_title: row.get(3)?,
                     release_title: row.get(4)?,
                     disc_number: row.get::<_, Option<u32>>(5)?,
@@ -604,7 +614,8 @@ impl Store {
         })?;
         let mut candidates = Vec::new();
         for row in rows {
-            let (source_id, path, available, metadata) = row?;
+            let (source_id, path, available, mut metadata) = row?;
+            metadata.provenance = self.provenance.get(&source_id).cloned().unwrap_or_default();
             candidates.push(DiscoveryCandidate {
                 source_id,
                 path,

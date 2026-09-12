@@ -26,6 +26,7 @@ fn fixture(count: u32) -> (LocalEditionEvidence, EditionCandidate) {
     };
     (
         LocalEditionEvidence {
+            provenance: Default::default(),
             album_id: AlbumId("a".into()),
             release_id: ReleaseId("r".into()),
             album_title: "Album".into(),

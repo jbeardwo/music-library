@@ -1168,6 +1168,13 @@ Use of the public MusicBrainz service must account for its API identification an
 
 Album is the user-facing, provider-neutral grouping identity.
 
+The normal enrichment direction is Artist identity where possible → Album identity
+→ safe Track/Recording/source evidence → optional exact edition refinement. Unknown
+edition is a normal state, including for partial local Albums. An application Release
+still owns Track placements; its existence does not assert a known external edition.
+Edition ambiguity is not Album ambiguity: multiple pressings of *Demon Days* must
+not force the user to resolve a pressing before the Album can be useful.
+
 An Album represents the musical release concept a user normally thinks of and searches for, such as "Demon Days" by Gorillaz, without requiring the user to choose a particular physical, regional, or digital edition.
 
 External provider concepts may be associated with an Album, including:
@@ -1187,6 +1194,13 @@ The expected relationship is:
 `Album -> one or more Releases -> release-specific Tracks`
 
 Album identity must remain application-owned and provider-neutral. External grouping identifiers never become application primary IDs. A provider exposing only concrete catalog Albums may map them to Releases without supplying an external grouping ID or mirroring MusicBrainz's hierarchy.
+
+Such a catalog object may also supply friendly Album metadata/evidence without its
+ID becoming an Album-grouping identifier. Spotify/Apple-style catalog objects need
+not manufacture Release Groups, and Discogs need not supply a Master when absent.
+Providers without Recording entities may contribute occurrence/ISRC evidence according
+to verified semantics. Safe enrichment need not wait for exact local-edition resolution;
+none of this changes the conservative acceptance or persistence rules.
 
 Album metadata used for ordinary display should likewise be application-owned. Provider and local-file metadata remain observations that may contribute to effective Album metadata rather than forcing provider-specific edition names into the normal user interface.
 
@@ -1211,10 +1225,63 @@ Edition evidence has separate `ExactEdition`, `ContentEquivalent`, `AlbumOnly`,
 do not prove identical pressing/edition. Exact identity requires independently trusted
 edition identifiers, never barcode or content agreement alone. Content equivalence
 requires trusted complete flattened musical programs, independent of medium packaging.
-Local completeness/provenance is currently unknown; database extraction does not
-infer it from counts or existing mappings. Strong identifier conflicts cannot be
+Local completeness is Unknown unless the current scan's explicit tag declarations
+prove a complete ordered program; counts or existing mappings alone do not.
+Strong identifier conflicts cannot be
 scored through; multiple content-equivalent represses remain ambiguous. This remains
 a read-only probe and does not alter Artist/Album matching or persist Release IDs.
+
+This machinery is optional advanced precision for collectors/audiophiles, not an
+eligibility check for the friendly Album. The flow audit found no calls to the edition
+comparator from local import, Artist/Album matching, Recording enrichment or QML.
+`TrustedComplete` gates only content-equivalence assessment. Album matching commits
+before Recording work is queued; Recording failures do not revoke the Album match.
+QML shows local/matched Album names, with edition browsing behind **Editions…**;
+its `AlbumAmbiguous` result concerns competing Albums, not competing pressings.
+
+Existing provider limitations remain distinct from edition certainty: the current
+automatic matcher recognizes MusicBrainz Artist/Release Group identities, Recording
+discovery is scoped to a MusicBrainz Release Group, and the catalog-import DTO requires
+an external Album identity. These are current MusicBrainz workflow constraints, not
+requirements on future providers. The capability/import boundary must allow missing
+external groupings before adding a concrete-only provider. Normal MusicBrainz Add Album
+still looks up a representative Release to obtain Tracks; that is catalog retrieval,
+not proof that local files came from that edition.
+
+### Local embedded provenance (read-only)
+
+Album remains primary; edition identity is optional precision. The filesystem
+adapter extracts `FileProvenance` alongside friendly metadata in the existing
+Lofty read. `Observation` retains opaque `ExternalIdentity`, semantic category,
+entity scope and origin (tag format/key). Album/Track artist observations remain
+separate, without assigning multiple IDs to credit positions by guesswork.
+The adapter alone interprets Picard/MusicBrainz keys; generic aggregation and
+comparison do not branch on provider names. A provider can supply Album and song
+occurrence evidence without a grouping hierarchy or a Recording entity.
+
+These observations are **not attached identities**. Scan batches retain them in
+session memory only after SQLite commit, indexed by source ID. The local edition
+snapshot exposes them separately from the comparator's trusted identity fields;
+the next persistence slice must explicitly validate/promote safe observations.
+No new columns or identity writes are introduced. Unchanged scans reuse available
+session observations; after restart, skipped files have unknown provenance. There
+is no forced reread. Missing provenance never blocks import or matching.
+
+Album/group and edition observations must agree within each provider/kind namespace;
+conflicts are reported without majority voting. Recording and occurrence observations
+stay with their Track; ISRCs remain supporting evidence. Original names and values
+are unchanged. One targeted Track/source association query builds the snapshot,
+without per-Track provenance queries or filesystem I/O inside transactions.
+
+`TrustedComplete` requires explicit positive consistent disc totals, every declared
+disc, explicit consistent track totals per disc, and each declared position exactly
+once. Missing, invalid, conflicting, duplicate or out-of-range declarations keep
+`Unknown`; absent disc tags never mean 1 of 1. Multiple sources for one Track also
+remain Unknown for now. Application positions must agree with tag positions.
+This proof uses only local declarations, never provider counts. Partial files may
+carry an edition observation while completeness remains Unknown; complete files
+may have no edition identifiers. Neither dimension gates normal Album enrichment.
+See [the local probe and format mapping](provider-edition-matching-audit.md#local-provenance-probe).
 
 ## Durable Versus Reconstructible State
 

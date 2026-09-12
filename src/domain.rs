@@ -43,6 +43,8 @@ pub struct ExternalIdentity {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObservedMetadata {
+    /// Session-only observations from the same read as friendly metadata.
+    pub provenance: crate::provenance::FileProvenance,
     pub track_title: Option<String>,
     pub release_title: Option<String>,
     pub track_artists: Vec<String>,

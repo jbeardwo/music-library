@@ -124,15 +124,55 @@ evidence; this does not identify a physical copy. No barcode, title, year, order
 tracklist, ISRC or recording sequence is promoted to exact evidence. The current
 database extractor leaves local `exact_identities` empty: generic stored mappings
 are not silently assumed to have the required provenance. Embedded-ID extraction
-and trusted manual confirmation remain future work.
+now exposes raw observations separately; validating/promoting these or trusted
+manual confirmation remains future work.
 
 Local `Completeness::TrustedComplete` asserts independent knowledge of the entire
-musical program **and its order**. `Unknown` is the default and the only value
-currently emitted by database extraction, even for contiguous Track numbers or
-catalog-created Releases: the database does not retain this proof. Synthetic tests
-explicitly supply completeness. Provider tracklist completeness comes from the
+musical program **and its order**. `Unknown` is the default. Session-local scan
+observations can prove completeness from explicit consistent disc/track totals
+and unique complete positions; application positions must agree. Neither contiguous
+Track numbers nor catalog creation alone proves it. The database does not retain
+this proof across sessions. Provider tracklist completeness comes from the
 adapter's existing count/media validation. No count comparison establishes local
-completeness; partial 3-of-15 or one-Track imports never prove whole-program equivalence.
+completeness; partial 3-of-15 or one-Track subsets never prove whole-program equivalence.
+
+### Local provenance probe
+
+```sh
+cargo run --offline --example local_provenance -- "/mnt/f/music/Artist/One Album"
+# Or explicitly supply just the files belonging to one local Release:
+cargo run --offline --example local_provenance -- /path/track1.flac /path/track2.flac
+```
+
+Supply one local Release, not a whole collection: the probe does not guess grouping.
+It reads each supplied file once, prints recognized container/tag formats, local
+title/artist/duration, semantic identifier observations with provider/kind/value and
+tag origin, raw position/totals, conflicts and completeness. It never opens a library,
+contacts a provider, modifies files or attaches identities. The application snapshot
+retains source IDs for observed files; stand-alone output labels observations by path.
+
+Lofty is locked at **0.25.1**. Its native ID3v2, Vorbis-comment and MP4 conversions
+and full-file reads are regression-tested. Interpretation follows
+[Picard's tag mapping](https://picard-docs.musicbrainz.org/en/latest/appendices/tag_mapping.html)
+and the pinned [Lofty ItemKey API](https://docs.rs/lofty/0.25.1/lofty/tag/enum.ItemKey.html):
+
+| Lofty key | Generic observation |
+|---|---|
+| `MusicBrainzArtistId` / `MusicBrainzReleaseArtistId` | Track/Album Artist identity |
+| `MusicBrainzReleaseGroupId` | Album/group identity |
+| `MusicBrainzReleaseId` | Edition/catalog-release identity |
+| `MusicBrainzRecordingId` | Recording identity |
+| `MusicBrainzTrackId` | Release-specific occurrence identity |
+| `Isrc` | Supporting Recording identifier |
+
+The historically named Vorbis `MUSICBRAINZ_TRACKID`, MP4 `MusicBrainz Track Id`, and
+ID3 `UFID:http://musicbrainz.org` identify **Recordings**, while Release Track Id
+fields identify occurrences. No custom format parser is added. Repeated values
+exposed by Lofty are retained, including conflicting numeric declarations; information
+discarded by upstream format conversion cannot be reconstructed here. Unverified tag
+strings are not normalized into canonical IDs. Artist IDs are not zipped blindly to
+multi-artist credits. The next persistence slice must decide validation, association
+and provenance durability without changing local display metadata.
 
 Complete lists are compared by their supplied flattened musical order, retaining
 disc/position metadata unchanged. Two CDs can equal one digital sequence. Every
@@ -214,7 +254,7 @@ normal tests remain independent of the public service.
 
 Define what “same relevant catalog edition” means across physical pressings and digital
 market variants. A barcode or identical audio sequence is not universally unique.
-Define trusted completeness/provenance, barcode normalization, catalog-number namespaces,
+Define durable validation/promotion of observed provenance, barcode normalization, catalog-number namespaces,
 relinking and contradictory identifiers before allowing writes. Do not infer missing
 Tracks, merge Releases or rewrite credited/local metadata.
 

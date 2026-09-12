@@ -40,6 +40,7 @@ fn snapshot(db: &Connection, release: &ReleaseId) -> Result<LocalEditionEvidence
         }
     }
     Ok(LocalEditionEvidence {
+        provenance: Default::default(),
         grouping_identities: identities(db, "album", &album)?,
         album_id: AlbumId(album),
         release_id: release.clone(),
@@ -59,7 +60,42 @@ fn snapshot(db: &Connection, release: &ReleaseId) -> Result<LocalEditionEvidence
 impl Store {
     pub fn edition_evidence(&self, release: &ReleaseId) -> Result<LocalEditionEvidence> {
         let tx = self.connection.unchecked_transaction()?;
-        let evidence = snapshot(&tx, release)?;
+        let mut evidence = snapshot(&tx, release)?;
+        // One indexed association query, no file reads or per-Track DB lookups.
+        let mut sources = std::collections::HashMap::<TrackId, Vec<_>>::new();
+        let mut statement = tx.prepare("SELECT t.id,ts.source_id FROM track t JOIN track_source ts ON ts.track_id=t.id WHERE t.release_id=?1 ORDER BY t.id,ts.source_id")?;
+        for row in statement.query_map([release.as_ref()], |r| {
+            Ok((TrackId(r.get(0)?), SourceId(r.get(1)?)))
+        })? {
+            let (track, source) = row?;
+            sources
+                .entry(track)
+                .or_default()
+                .push(self.provenance.get(&source).cloned().unwrap_or_default());
+        }
+        drop(statement);
+        evidence.provenance = crate::provenance::EditionProvenance::new(
+            evidence
+                .tracks
+                .iter()
+                .map(|t| sources.remove(&t.track_id).unwrap_or_default())
+                .collect(),
+        );
+        evidence.completeness = evidence.provenance.completeness;
+        // Tags prove only their own ordered program. Do not assert completeness
+        // for application positions that were supplied differently at import.
+        if evidence
+            .tracks
+            .iter()
+            .zip(&evidence.provenance.tracks)
+            .any(|(t, sources)| {
+                sources
+                    .iter()
+                    .any(|s| !s.positions.agrees_with(t.evidence.disc, t.evidence.number))
+            })
+        {
+            evidence.completeness = Completeness::Unknown;
+        }
         tx.commit()?;
         Ok(evidence)
     }

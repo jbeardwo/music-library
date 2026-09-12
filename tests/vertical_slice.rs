@@ -41,6 +41,7 @@ impl MetadataExtractor for FakeExtractor {
 
 fn observed(title: &str, track_number: u32) -> ObservedMetadata {
     ObservedMetadata {
+        provenance: Default::default(),
         track_title: Some(title.into()),
         release_title: Some("Observed Release".into()),
         track_artists: vec!["Observed Artist".into()],

@@ -133,14 +133,34 @@ The library must support music that has no currently playable source.
 ### Album interaction model
 
 * Album is the normal user-facing grouping for album-oriented music.
+* Local embedded identities are provenance observations, not automatically canonical
+  mappings. After extraction their scopes and semantics are provider-neutral;
+  providers need not expose MusicBrainz-like groupings or Recordings. Missing tags
+  are normal. Conflicting strong observations must be exposed rather than voted on.
+* Explicit consistent local disc/track totals may establish optional completeness;
+  contiguous positions alone cannot. Album identity, completeness and optional exact
+  edition evidence remain independent. Extraction must use the existing metadata
+  read, without network calls, rereads or filesystem work in import transactions.
+* Normal enrichment establishes Artist where possible, then Album, then safe
+  Track/Recording/source evidence; exact Release/edition refinement is optional.
+  Unknown completeness or edition must not prevent a confidently identified Album
+  from being useful. Application Release/Track placements still exist independently.
 * Users should be able to search for, view, and add an Album without selecting a specific physical, regional, or digital edition.
 * Album identity must be provider-neutral and application-owned.
 * External grouping objects such as MusicBrainz Release Groups and compatible local album metadata may be associated with an application Album. Concrete provider catalog Albums may instead supply Release-level evidence; their names alone do not establish grouping semantics.
 * A specific Release represents an edition of an Album and should normally remain hidden from ordinary library interaction.
 * The application may select a suitable concrete Release internally when edition-specific information such as a tracklist is required.
 * Users must be able to inspect or choose a specific Release when edition differences are relevant, including alternate tracklists, deluxe editions, bonus tracks, reissues, or regional versions.
+* Edition ambiguity is not Album ambiguity. Normal users should not have to resolve
+  pressings; collectors/audiophiles may optionally refine edition detail. The edition
+  certainty model remains advanced precision, not a gate for Album matching/enrichment.
 * Normal catalog search results should prioritize friendly Album metadata such as title, primary artist credit, and original release year rather than edition-specific details such as country, barcode, label, or physical format.
 * Provider-specific edition metadata must not replace the Album metadata used for normal display.
+* Provider hierarchies map into this Album-first model. A concrete catalog Album may
+  contribute friendly Album evidence without a fabricated external grouping ID;
+  providers need not expose separate Release Group, exact-edition or Recording
+  concepts. Occurrence/Recording evidence must follow verified provider semantics,
+  without universally requiring exact local-edition identity first.
 
 ### Catalog-backed additions
 
