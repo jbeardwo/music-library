@@ -173,6 +173,8 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
     for fail in [false, true] {
         let (tmp, lib, db) = setup();
         drop(lib);
+        db.execute_batch(include_str!("support/drop_manual_schema.sql"))
+            .unwrap();
         for table in [
             "album_artist_credit",
             "release_artist_credit",
@@ -191,7 +193,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 6 } else { 10 }
+            if fail { 6 } else { 11 }
         );
         for table in [
             "album_artist_credit",

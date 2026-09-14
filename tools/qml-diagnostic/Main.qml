@@ -39,6 +39,7 @@ ApplicationWindow {
                     albumKey: row.albumId,
                     rowData: row,
                     encoded: encoded,
+                    expanded: false,
                     sourceIndex: sourceIndex
                 });
             } else {
@@ -65,8 +66,8 @@ ApplicationWindow {
                 onClicked: window.bridge.retry_matching()
             }
             Label {
-                visible: window.bridge.matching_provider.paused
-                text: window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)"
+                visible: window.bridge.matching_provider.paused || window.bridge.matching_provider.queued > 0
+                text: window.bridge.matching_provider.paused ? window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)" : "MusicBrainz matching: " + window.bridge.matching_provider.queued + " queued/running"
                 Layout.maximumWidth: 550
                 wrapMode: Text.Wrap
             }
@@ -77,7 +78,7 @@ ApplicationWindow {
     }
     Dialog {
         id: matchingDialog
-        title: "Local Album matching"
+        title: "Local Album matching — " + (window.bridge.matching_provider.paused ? "MusicBrainz unavailable; retrying automatically" : window.bridge.matching_provider.processing ? "processing; " + (window.bridge.matching_provider.queued - 1) + " waiting" : window.bridge.matching_provider.queued > 0 ? window.bridge.matching_provider.queued + " waiting" : "queue idle")
         width: Math.min(window.width - 40, 900)
         height: 400
         anchors.centerIn: parent
@@ -86,46 +87,174 @@ ApplicationWindow {
             id: matchingList
             model: matchingModel
             clip: true
-            delegate: RowLayout {
+            delegate: ColumnLayout {
                 id: matchRow
                 required property var rowData
                 required property int sourceIndex
                 required property int index
+                required property bool expanded
                 width: ListView.view.width
-                Label {
-                    text: window.matchingLabel(matchRow.rowData) + (matchRow.rowData.recordingSummary ? "\n" + matchRow.rowData.recordingSummary : "")
-                    textFormat: Text.PlainText
-                    wrapMode: Text.Wrap
+                RowLayout {
                     Layout.fillWidth: true
-                }
-                ComboBox {
-                    id: artistChoice
-                    Layout.preferredWidth: 260
-                    visible: matchRow.rowData.artists.length > 0
-                    model: matchRow.rowData.artists
-                    textRole: "label"
-                }
-                Button {
-                    text: "Use Artist"
-                    visible: matchRow.rowData.artists.length > 0
-                    enabled: !matchRow.rowData.pending && artistChoice.currentIndex >= 0
-                    onClicked: window.bridge.choose_artist(matchRow.sourceIndex, artistChoice.currentIndex)
-                }
-                Button {
-                    text: "Recordings…"
-                    visible: !!matchRow.rowData.recordingDetails
-                    onClicked: {
-                        recordingDialog.details = matchRow.rowData.recordingDetails;
-                        recordingDialog.open();
+                    Button {
+                        text: matchRow.expanded ? "▾" : "▸"
+                        onClicked: matchingModel.setProperty(matchRow.index, "expanded", !matchRow.expanded)
+                        Accessible.name: "Expand or collapse local Tracks"
+                    }
+                    Label {
+                        text: window.matchingLabel(matchRow.rowData) + (matchRow.rowData.recordingSummary ? "\n" + matchRow.rowData.recordingSummary : "")
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
+                    ComboBox {
+                        id: artistChoice
+                        Layout.preferredWidth: 260
+                        visible: matchRow.rowData.artists.length > 0
+                        model: matchRow.rowData.artists
+                        textRole: "label"
+                    }
+                    Button {
+                        text: "Use Artist"
+                        visible: matchRow.rowData.artists.length > 0
+                        enabled: !matchRow.rowData.pending && artistChoice.currentIndex >= 0
+                        onClicked: window.bridge.choose_artist(matchRow.sourceIndex, artistChoice.currentIndex)
+                    }
+                    Button {
+                        text: "Recordings…"
+                        visible: !!matchRow.rowData.recordingDetails
+                        onClicked: {
+                            recordingDialog.details = matchRow.rowData.recordingDetails;
+                            recordingDialog.open();
+                        }
+                    }
+                    Button {
+                        text: "Retry Match"
+                        enabled: !matchRow.rowData.pending
+                        onClicked: window.bridge.retry_match(matchRow.sourceIndex)
                     }
                 }
-                Button {
-                    text: "Retry Match"
-                    enabled: !matchRow.rowData.pending
-                    onClicked: window.bridge.retry_match(matchRow.sourceIndex)
+                Repeater {
+                    model: matchRow.expanded ? matchRow.rowData.tracks : []
+                    delegate: RowLayout {
+                        id: trackRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 24
+                        Label {
+                            objectName: "program-track-" + trackRow.modelData.trackId
+                            Layout.fillWidth: true
+                            textFormat: Text.PlainText
+                            wrapMode: Text.Wrap
+                            text: "Local: " + trackRow.modelData.localTitle + " → " + (trackRow.modelData.matchedTitle ? "Matched: " + trackRow.modelData.matchedTitle + " (" + trackRow.modelData.status + "; Recording: " + trackRow.modelData.recordingStatus + ")" : trackRow.modelData.status + (trackRow.modelData.storedIdentity ? " [" + trackRow.modelData.storedIdentity + "]" : ""))
+                        }
+                        Button {
+                            objectName: "choose-track-" + trackRow.modelData.trackId
+                            text: trackRow.modelData.matchedTitle ? "Choose Recording" : "Choose Match"
+                            visible: !!trackRow.modelData.canChoose
+                            onClicked: {
+                                manualTrackDialog.albumKey = matchRow.rowData.albumId;
+                                manualTrackDialog.trackKey = trackRow.modelData.trackId;
+                                window.bridge.choose_track(matchRow.rowData.albumId, trackRow.modelData.trackId);
+                                manualTrackDialog.open();
+                            }
+                        }
+                        Button {
+                            objectName: "clear-track-" + trackRow.modelData.trackId
+                            text: "Clear manual match"
+                            visible: !!trackRow.modelData.manual
+                            onClicked: window.bridge.clear_track_choice(matchRow.rowData.albumId, trackRow.modelData.trackId)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    Dialog {
+        id: manualTrackDialog
+        property string albumKey: ""
+        property string trackKey: ""
+        objectName: "manual-track-dialog"
+        title: "Choose Track within the Album"
+        modal: true
+        width: Math.min(window.width - 60, 750)
+        anchors.centerIn: parent
+        onClosed: {
+            window.bridge.cancel_track_choice();
+            Qt.callLater(function () {
+                window.focusTrackAction(manualTrackDialog.albumKey, manualTrackDialog.trackKey);
+            });
+        }
+        ColumnLayout {
+            anchors.fill: parent
+            Label {
+                text: "Local: " + window.bridge.manual_snapshot.localTitle
+                textFormat: Text.PlainText
+            }
+            Label {
+                text: window.bridge.manual_snapshot.pending ? "Loading Album candidates…" : window.bridge.manual_snapshot.error
+                visible: text.length > 0
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+            }
+            ComboBox {
+                id: manualTrackChoice
+                objectName: "manual-track-choice"
+                Layout.fillWidth: true
+                model: window.bridge.manual_snapshot.candidates
+                textRole: "label"
+                currentIndex: -1
+                onModelChanged: currentIndex = -1
+                displayText: currentIndex < 0 ? "Select a provider Track…" : currentText
+            }
+            RowLayout {
+                Button {
+                    id: manualTrackConfirm
+                    objectName: "confirm-track-choice"
+                    text: "Confirm"
+                    enabled: manualTrackChoice.currentIndex >= 0 && !window.bridge.manual_snapshot.pending
+                    onClicked: {
+                        if (window.bridge.confirm_track(manualTrackChoice.currentIndex))
+                            manualTrackDialog.close();
+                    }
+                }
+                Button {
+                    text: "Cancel"
+                    onClicked: manualTrackDialog.close()
+                }
+                Button {
+                    text: "Retry Matching"
+                    visible: window.bridge.matching_provider.paused
+                    enabled: !window.bridge.matching_provider.probe
+                    onClicked: window.bridge.retry_matching()
+                }
+            }
+        }
+    }
+
+    function focusTrackAction(album, track) {
+        if (!matchingDialog.visible)
+            return;
+        function visit(item) {
+            if (!item)
+                return false;
+            if (item.visible && (item.objectName === "choose-track-" + track || item.objectName === "clear-track-" + track)) {
+                item.forceActiveFocus();
+                return true;
+            }
+            if (item.children)
+                for (const child of item.children)
+                    if (visit(child))
+                        return true;
+            return false;
+        }
+        for (let i = 0; i < matchingModel.count; ++i)
+            if (matchingModel.get(i).albumKey === album) {
+                visit(matchingList.itemAtIndex(i));
+                return;
+            }
     }
 
     Dialog {

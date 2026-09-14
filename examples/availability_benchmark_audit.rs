@@ -4,6 +4,9 @@ use domain::{SearchRequest, TrackSearchResult};
 #[path = "../src/album_matching.rs"]
 mod album_matching;
 #[allow(dead_code)]
+#[path = "../src/album_program.rs"]
+mod album_program;
+#[allow(dead_code)]
 #[path = "../src/catalog.rs"]
 mod catalog;
 #[allow(dead_code)]
@@ -15,6 +18,9 @@ mod edition;
 #[allow(dead_code)]
 #[path = "../src/edition_storage.rs"]
 mod edition_storage;
+#[allow(dead_code)]
+#[path = "../src/manual_track.rs"]
+mod manual_track;
 #[allow(dead_code)]
 #[path = "../src/provenance.rs"]
 mod provenance;

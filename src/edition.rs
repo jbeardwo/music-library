@@ -5,19 +5,19 @@ use crate::{
     matching::normalize,
 };
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtistEvidence {
     pub identities: Vec<ExternalIdentity>,
     pub name: String,
     pub join_phrase: String,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordingEvidence {
     /// Trusted identifiers of a particular recording/version, not occurrence IDs.
     pub identities: Vec<ExternalIdentity>,
     pub isrcs: Vec<String>,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TrackEvidence {
     pub identities: Vec<ExternalIdentity>,
     pub disc: Option<u32>,
@@ -51,7 +51,7 @@ pub struct EditionCandidate {
     pub tracks: Vec<TrackEvidence>,
     pub tracklist_complete: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalTrackEvidence {
     pub track_id: TrackId,
     pub recording_id: RecordingId,

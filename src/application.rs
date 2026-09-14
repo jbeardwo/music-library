@@ -14,6 +14,28 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn local_releases_for_root(&self, root: &RootId) -> Result<Vec<ImportedRelease>> {
+        self.store.local_releases_for_root(root)
+    }
+    pub fn local_album_tracks(
+        &self,
+        album: &crate::domain::AlbumId,
+    ) -> Result<Vec<crate::edition::LocalTrackEvidence>> {
+        self.store.local_album_tracks(album)
+    }
+    pub fn prepare_album_program(
+        &self,
+        album: &crate::domain::AlbumId,
+        identity: &ExternalIdentity,
+    ) -> Result<Option<crate::album_program::Input>> {
+        self.store.prepare_album_program(album, identity)
+    }
+    pub fn complete_album_program(
+        &mut self,
+        reply: crate::album_program::Reply,
+    ) -> Result<crate::album_program::Outcome> {
+        self.store.complete_album_program(reply)
+    }
     /// Composition boundary for embedded identifier capabilities. This replaces
     /// the default file-adapter validator; it does not reinterpret stored claims.
     pub fn set_provenance_validator(&mut self, validator: crate::provenance_acceptance::Validator) {
@@ -34,6 +56,34 @@ impl Library {
     }
     pub fn create_recording(&mut self) -> Result<crate::domain::Recording> {
         self.store.create_recording()
+    }
+    pub fn manual_track_associations(
+        &self,
+        album: &crate::domain::AlbumId,
+    ) -> Result<Vec<crate::manual_track::Association>> {
+        self.store.manual_track_associations(album)
+    }
+    pub fn prepare_manual_track(
+        &self,
+        album: &crate::domain::AlbumId,
+        track: &TrackId,
+        programs: &crate::album_program::Programs,
+    ) -> Result<crate::manual_track::Selection> {
+        self.store.prepare_manual_track(album, track, programs)
+    }
+    pub fn confirm_manual_track(
+        &mut self,
+        selection: &crate::manual_track::Selection,
+        index: usize,
+    ) -> Result<crate::manual_track::Association> {
+        self.store.confirm_manual_track(selection, index)
+    }
+    pub fn clear_manual_track(
+        &mut self,
+        album: &crate::domain::AlbumId,
+        track: &TrackId,
+    ) -> Result<bool> {
+        self.store.clear_manual_track(album, track)
     }
     pub fn recording_for_track(&self, track: &TrackId) -> Result<crate::domain::Recording> {
         self.store.recording_for_track(track)

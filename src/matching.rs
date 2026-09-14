@@ -10,6 +10,18 @@ pub fn normalize(value: &str) -> String {
         .to_lowercase()
 }
 
+/// Album-title typography only. Keep the hyphen rather than deleting punctuation;
+/// en/em dashes, minus signs and Artist-name identity comparisons stay distinct.
+pub fn normalize_album_title(value: &str) -> String {
+    normalize(value)
+        .chars()
+        .map(|c| match c {
+            '\u{2010}' | '\u{2011}' => '-',
+            _ => c,
+        })
+        .collect()
+}
+
 pub fn usable(value: &str) -> bool {
     !matches!(
         normalize(value).as_str(),

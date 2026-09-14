@@ -363,6 +363,8 @@ fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
     let mut f = Fixture::new(vec![promotable(X)]);
     drop(f.library.take());
     let db = f.db();
+    db.execute_batch(include_str!("support/drop_manual_schema.sql"))
+        .unwrap();
     db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; PRAGMA user_version=9;").unwrap();
     f.restart();
     for entity in ["album", "recording"] {
@@ -371,7 +373,7 @@ fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        10
+        11
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -388,6 +390,8 @@ fn failed_ownership_migration_rolls_back_without_changing_prior_identities() {
     let mut f = Fixture::new(vec![promotable(X)]);
     drop(f.library.take());
     let db = f.db();
+    db.execute_batch(include_str!("support/drop_manual_schema.sql"))
+        .unwrap();
     db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; CREATE TABLE recording_provenance_identity(sentinel TEXT); PRAGMA user_version=9;").unwrap();
     assert!(Library::open(f.temp.path().join("db")).is_err());
     assert_eq!(
@@ -813,6 +817,8 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     let mut f = Fixture::new(vec![file(1, 1, 1, 1)]);
     drop(f.library.take());
     let db = f.db();
+    db.execute_batch(include_str!("support/drop_manual_schema.sql"))
+        .unwrap();
     db.execute_batch(
         "DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; ALTER TABLE file_metadata_observation DROP COLUMN provenance_json; PRAGMA user_version=8;",
     )
@@ -833,7 +839,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        10
+        11
     );
     f.scan();
     assert_eq!(f.extractor.reads, 1); // no forced reparse of legacy files

@@ -114,6 +114,18 @@ pub struct ArtistAlbumCandidate {
 
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    /// Supported accepted Album identity namespaces. No fabricated external hierarchy.
+    fn album_program_namespaces(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+    fn album_programs(
+        &mut self,
+        _album: &ExternalIdentity,
+    ) -> Result<crate::album_program::Programs, CatalogError> {
+        Err(CatalogError::Other(
+            "Album programs are not supported".into(),
+        ))
+    }
     /// One bounded discovery request scoped to a known Album identity.
     fn recordings(
         &mut self,

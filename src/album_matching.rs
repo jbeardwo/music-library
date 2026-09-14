@@ -4,7 +4,7 @@ use crate::{
     Library,
     catalog::{ArtistAlbumCandidate, ArtistCandidate, CatalogProvider, Page},
     domain::{AlbumId, ArtistId, ExternalIdentity, ImportedRelease},
-    matching::{normalize, usable},
+    matching::{normalize, normalize_album_title, usable},
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},
@@ -226,7 +226,13 @@ fn qualifiers(title: &str) -> Vec<String> {
         .collect()
 }
 pub fn close_album_title(left: &str, right: &str) -> bool {
-    qualifiers(left) == qualifiers(right) && edit_close(left, right, 1, 5)
+    qualifiers(left) == qualifiers(right)
+        && edit_close(
+            &normalize_album_title(left),
+            &normalize_album_title(right),
+            1,
+            5,
+        )
 }
 /// Comparison-only trailing tag decorations; EP/LP require candidate type evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,7 +242,7 @@ pub struct AlbumTitleVariant {
     pub requires_album: bool,
 }
 pub fn album_title_variants(title: &str) -> Vec<AlbumTitleVariant> {
-    let key = normalize(title);
+    let key = normalize_album_title(title);
     let mut result = vec![];
     for suffix in [
         "ep", "lp", "cd", "cd1", "cd 1", "cd2", "cd 2", "disc 1", "disc 2", "2cd", "2xcd",
@@ -299,7 +305,7 @@ pub fn accepted_album_confirmed(
     }
     let exact = candidates
         .iter()
-        .filter(|c| normalize(&c.title) == normalize(title))
+        .filter(|c| normalize_album_title(&c.title) == normalize_album_title(title))
         .cloned()
         .collect::<Vec<_>>();
     // Literal format/type words may be part of the real title. Only derive
@@ -313,7 +319,7 @@ pub fn accepted_album_confirmed(
         .iter()
         .filter(|c| {
             variants.iter().any(|v| {
-                v.title == normalize(&c.title)
+                v.title == normalize_album_title(&c.title)
                     && (!v.requires_ep || normalize(&c.primary_type) == "ep")
                     && (!v.requires_album || normalize(&c.primary_type) == "album")
             })
@@ -332,7 +338,12 @@ pub fn accepted_album_confirmed(
                     close_album_title(title, &c.title)
                         || (manual
                             && qualifiers(title) == qualifiers(&c.title)
-                            && edit_close(title, &c.title, 2, 8))
+                            && edit_close(
+                                &normalize_album_title(title),
+                                &normalize_album_title(&c.title),
+                                2,
+                                8,
+                            ))
                 })
                 .collect(),
             true,
@@ -424,6 +435,7 @@ impl Cooldown {
     }
 }
 enum WorkerCommand {
+    Programs(crate::album_program::Input),
     Match(MatchInput),
     Recordings(crate::recording::Input),
     Arm { token: u64, deadline: Instant },
@@ -431,13 +443,14 @@ enum WorkerCommand {
 }
 #[derive(Clone)]
 enum Work {
+    Programs(AlbumId),
     Album(AlbumId),
     Recordings(AlbumId),
 }
 impl Work {
     fn album_id(&self) -> &AlbumId {
         match self {
-            Self::Album(id) | Self::Recordings(id) => id,
+            Self::Album(id) | Self::Recordings(id) | Self::Programs(id) => id,
         }
     }
 }
@@ -460,6 +473,10 @@ impl WorkerTimer {
 /// One owned serial worker, session-only deduplication and explicit completion on
 /// the application owner thread. Drop cancels queued work and joins in-flight HTTP.
 pub struct AlbumMatcher {
+    program_namespaces: Vec<(String, String)>,
+    program_enabled: bool,
+    program_outcomes: HashMap<AlbumId, crate::album_program::Outcome>,
+    program_cache: VecDeque<(AlbumId, crate::album_program::Programs)>,
     sender: Option<mpsc::Sender<WorkerCommand>>,
     thread: Option<JoinHandle<()>>,
     stop: Arc<AtomicBool>,
@@ -482,7 +499,7 @@ impl AlbumMatcher {
         emit: impl Fn(MatchReply) + Send + 'static,
         retry_due: impl Fn(u64) + Send + 'static,
     ) -> std::io::Result<Self> {
-        Self::with_callbacks(provider, emit, None, retry_due)
+        Self::with_callbacks(provider, emit, None, None, retry_due)
     }
     /// Same owned queue/worker and circuit; Recording completion stays on the owner thread.
     pub fn new_with_recordings(
@@ -491,15 +508,27 @@ impl AlbumMatcher {
         recordings: impl Fn(crate::recording::Reply) + Send + 'static,
         retry_due: impl Fn(u64) + Send + 'static,
     ) -> std::io::Result<Self> {
-        Self::with_callbacks(provider, emit, Some(Box::new(recordings)), retry_due)
+        Self::with_callbacks(provider, emit, Some(Box::new(recordings)), None, retry_due)
+    }
+    /// Album-first program enrichment on the same worker, limiter and circuit.
+    pub fn new_with_programs(
+        provider: impl CatalogProvider + 'static,
+        emit: impl Fn(MatchReply) + Send + 'static,
+        programs: impl Fn(crate::album_program::Reply) + Send + 'static,
+        retry_due: impl Fn(u64) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        Self::with_callbacks(provider, emit, None, Some(Box::new(programs)), retry_due)
     }
     fn with_callbacks(
         mut provider: impl CatalogProvider + 'static,
         emit: impl Fn(MatchReply) + Send + 'static,
         recordings: Option<Box<dyn Fn(crate::recording::Reply) + Send>>,
+        programs: Option<Box<dyn Fn(crate::album_program::Reply) + Send>>,
         retry_due: impl Fn(u64) + Send + 'static,
     ) -> std::io::Result<Self> {
         let recording_enabled = recordings.is_some();
+        let program_enabled = programs.is_some();
+        let program_namespaces = provider.album_program_namespaces();
         let (sender, receiver) = mpsc::channel::<WorkerCommand>();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -533,6 +562,15 @@ impl AlbumMatcher {
                         break;
                     }
                     let input = match command {
+                        WorkerCommand::Programs(input) => {
+                            let result = provider.album_programs(&input.album);
+                            if !stopped.load(Ordering::Acquire)
+                                && let Some(emit) = &programs
+                            {
+                                emit(crate::album_program::Reply { input, result });
+                            }
+                            continue;
+                        }
                         WorkerCommand::Arm { token, deadline } => {
                             timer.0 = Some((token, deadline));
                             continue;
@@ -627,6 +665,10 @@ impl AlbumMatcher {
                 }
             })?;
         Ok(Self {
+            program_namespaces,
+            program_enabled,
+            program_outcomes: HashMap::new(),
+            program_cache: VecDeque::new(),
             sender: Some(sender),
             thread: Some(thread),
             stop,
@@ -670,6 +712,13 @@ impl AlbumMatcher {
     }
     /// Manual retry is independent of automatic policy. Pending requests coalesce.
     pub fn match_album(&mut self, library: &Library, id: &AlbumId) -> Result<MatchOutcome> {
+        if self.program_enabled && self.prepare_program(library, id)?.is_some() {
+            self.outcomes
+                .insert(id.clone(), MatchOutcome::AlreadyMatched);
+            self.enqueue_recordings(library, id)?;
+            self.dispatch(library, false)?;
+            return Ok(MatchOutcome::AlreadyMatched);
+        }
         if self.outcomes.get(id) == Some(&MatchOutcome::Pending) {
             return Ok(MatchOutcome::Pending);
         }
@@ -760,7 +809,7 @@ impl AlbumMatcher {
         self.cooldown.reset();
         let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Cancel);
         self.outcomes.insert(id.clone(), outcome.clone());
-        if let Err(error) = self.enqueue_recordings(library, &id) {
+        if let Err(error) = self.continue_album_enrichment(library, &id) {
             self.recording_outcomes
                 .insert(id, crate::recording::Outcome::Error(error.to_string()));
         }
@@ -775,7 +824,108 @@ impl AlbumMatcher {
     pub fn recording_outcome(&self, id: &AlbumId) -> Option<&crate::recording::Outcome> {
         self.recording_outcomes.get(id)
     }
+    pub fn program_outcome(&self, id: &AlbumId) -> Option<&crate::album_program::Outcome> {
+        self.program_outcomes.get(id)
+    }
+    /// The chooser reuses these bounded provider results without HTTP. An absent
+    /// entry is refetched by match_album on the same owned queue/circuit.
+    pub fn cached_programs(&self, id: &AlbumId) -> Option<&crate::album_program::Programs> {
+        self.program_cache
+            .iter()
+            .find(|(key, _)| key == id)
+            .map(|(_, p)| p)
+    }
+    pub fn request_album_programs(&mut self, library: &Library, id: &AlbumId) -> Result<()> {
+        if !self.program_enabled || self.prepare_program(library, id)?.is_none() {
+            return Err(crate::storage::Error::Invalid(
+                "Manual Track choice requires one established provider Album identity".into(),
+            ));
+        }
+        self.enqueue_recordings(library, id)?;
+        self.dispatch(library, false)
+    }
+    pub fn clear_program_outcome(&mut self, id: &AlbumId) {
+        // Do not disturb an in-flight worker; its completion reads manual state.
+        if !matches!(
+            self.program_outcomes.get(id),
+            Some(crate::album_program::Outcome::Pending)
+        ) {
+            self.program_outcomes.remove(id);
+        }
+    }
+    fn prepare_program(
+        &self,
+        library: &Library,
+        id: &AlbumId,
+    ) -> Result<Option<crate::album_program::Input>> {
+        let identities: Vec<_> = library
+            .list_album_external_identities(id)?
+            .into_iter()
+            .filter(|i| {
+                self.program_namespaces
+                    .iter()
+                    .any(|(p, k)| p == &i.provider && k == &i.kind)
+            })
+            .collect();
+        if let [identity] = identities.as_slice() {
+            library.prepare_album_program(id, identity)
+        } else {
+            Ok(None)
+        }
+    }
+    pub fn complete_programs(
+        &mut self,
+        library: &mut Library,
+        reply: crate::album_program::Reply,
+    ) -> crate::album_program::Outcome {
+        let id = reply.input.album_id.clone();
+        if let Ok(programs) = &reply.result
+            && programs.album == reply.input.album
+        {
+            self.program_cache.retain(|(key, _)| key != &id);
+            if self.program_cache.len() == 4 {
+                self.program_cache.pop_front();
+            }
+            self.program_cache.push_back((id.clone(), programs.clone()));
+        }
+        let outcome = library
+            .complete_album_program(reply)
+            .unwrap_or_else(|e| crate::album_program::Outcome::Error(e.to_string()));
+        self.active = false;
+        self.program_outcomes.insert(id.clone(), outcome.clone());
+        if let crate::album_program::Outcome::Deferred(error) = &outcome {
+            self.circuit = CircuitState::Unavailable(error.clone());
+            self.queue.push_front(Work::Programs(id));
+            let schedule = self.cooldown.arm(error, SystemTime::now());
+            let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Arm {
+                token: schedule.token,
+                deadline: Instant::now() + schedule.delay,
+            });
+        } else {
+            self.circuit = CircuitState::Available;
+            self.cooldown.reset();
+            let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Cancel);
+            if let Err(e) = self.dispatch(library, false) {
+                return crate::album_program::Outcome::Error(e.to_string());
+            }
+        }
+        outcome
+    }
     fn enqueue_recordings(&mut self, library: &Library, id: &AlbumId) -> Result<()> {
+        if self.program_enabled {
+            if self.program_outcomes.get(id) != Some(&crate::album_program::Outcome::Pending)
+                && !self
+                    .queue
+                    .iter()
+                    .any(|w| matches!(w,Work::Programs(existing) if existing==id))
+                && self.prepare_program(library, id)?.is_some()
+            {
+                self.queue.push_back(Work::Programs(id.clone()));
+                self.program_outcomes
+                    .insert(id.clone(), crate::album_program::Outcome::Pending);
+            }
+            return Ok(());
+        }
         if !self.recording_enabled
             || self.recording_outcomes.get(id) == Some(&crate::recording::Outcome::Pending)
             || self
@@ -789,6 +939,18 @@ impl AlbumMatcher {
             self.queue.push_back(Work::Recordings(id.clone()));
             self.recording_outcomes
                 .insert(id.clone(), crate::recording::Outcome::Pending);
+        }
+        Ok(())
+    }
+    /// Finish the current Album before starting another one. Only a continuation
+    /// moves to the front; newly imported Albums and explicit retries keep FIFO.
+    fn continue_album_enrichment(&mut self, library: &Library, id: &AlbumId) -> Result<()> {
+        self.enqueue_recordings(library, id)?;
+        if let Some(index) = self.queue.iter().position(
+            |work| matches!(work, Work::Programs(album) | Work::Recordings(album) if album == id),
+        ) {
+            let continuation = self.queue.remove(index).unwrap();
+            self.queue.push_front(continuation);
         }
         Ok(())
     }
@@ -823,6 +985,10 @@ impl AlbumMatcher {
     }
     pub fn pending_count(&self) -> usize {
         self.queue.len() + usize::from(self.active)
+    }
+    /// Diagnostic distinction between queued work and a dispatched operation.
+    pub fn is_processing(&self) -> bool {
+        self.active
     }
     pub fn probe_pending(&self) -> bool {
         self.active && matches!(self.circuit, CircuitState::Unavailable(_))
@@ -867,6 +1033,24 @@ impl AlbumMatcher {
             return Ok(());
         }
         while let Some(work) = self.queue.front().cloned() {
+            if let Work::Programs(id) = &work {
+                if let Some(input) = self.prepare_program(library, id)? {
+                    self.sender
+                        .as_ref()
+                        .unwrap()
+                        .send(WorkerCommand::Programs(input))
+                        .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+                    self.queue.pop_front();
+                    self.active = true;
+                    self.program_outcomes
+                        .insert(id.clone(), crate::album_program::Outcome::Pending);
+                    break;
+                }
+                self.queue.pop_front();
+                self.program_outcomes
+                    .insert(id.clone(), crate::album_program::Outcome::Complete(vec![]));
+                continue;
+            }
             if let Work::Recordings(id) = &work {
                 if let Some(input) = library.prepare_recording_match(id)? {
                     self.sender
@@ -892,7 +1076,7 @@ impl AlbumMatcher {
                 Preparation::Done(outcome) => {
                     self.queue.pop_front();
                     self.outcomes.insert(id.clone(), outcome);
-                    self.enqueue_recordings(library, &id)?;
+                    self.continue_album_enrichment(library, &id)?;
                 }
                 Preparation::Ready(mut input) => {
                     input.manual_artist = self

@@ -154,7 +154,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 10 {
+        } else if version > 11 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -229,6 +229,11 @@ impl Store {
         if version < 10 {
             connection
                 .execute_batch(include_str!("../migrations/0010_provenance_acceptance.sql"))?;
+        }
+        if version < 11 {
+            connection.execute_batch(include_str!(
+                "../migrations/0011_manual_track_associations.sql"
+            ))?;
         }
         Ok(Self {
             connection,

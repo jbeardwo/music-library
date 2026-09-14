@@ -1,5 +1,51 @@
 # Disposable Qt Quick diagnostic
 
+Matching now progresses one Album at a time: Artist/Album resolution → Track
+enrichment → next Album. The Album row shows enrichment queued/running, finished
+or deferred. Individual ambiguous Tracks remain available for manual correction
+without blocking the queue. Provider outages still pause/retry the current phase.
+
+## Manual Track correction and restart check
+
+From the repository root, use a persistent database and real GStreamer playback:
+
+```sh
+MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-library-manual.sqlite \
+  cargo run --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- \
+  --gstreamer /mnt/f/music
+```
+
+Open **Local Album matches…**, expand an Album, then use **Choose Match** on an
+unresolved Track or **Choose Recording** for an associated Track whose Recording
+remains uncertain. Tera Melos's *Super Fx* may provide distinct Recording choices.
+Hella's *Rich Kid* now resolves automatically from its unique exact Album Track
+title; the 3,102 ms duration difference is diagnostic, not a reason to choose manually.
+Select a candidate explicitly and press **Confirm**; opening the selector makes no
+choice. Candidates show title, duration, position and, when labels collide, identity.
+The row shows both local/provider titles and **Manual**. Recording-unavailable
+providers still support a manual Track association.
+
+Quit and repeat the same command. The persisted candidate snapshot remains visible
+even offline. **Clear manual match** removes the manual decision and requests normal
+automatic reevaluation, without changing local metadata, membership or exact edition.
+An identity confirmed independently is preserved; a solely manual Recording identity
+is removed only after its last manual supporter is cleared. Current embedded evidence
+may independently qualify for provenance-managed acceptance again.
+
+The chooser uses cached Album programs (zero additional HTTP requests); if evicted,
+it queues the same bounded Album retrieval used by automatic matching, including
+outage cooldown/retry. No global/per-Track searches or exact-edition selections occur.
+Distinct Recording candidates remain choices; repeated appearances of the same
+Recording collapse. A conflicting existing canonical Recording identity is protected:
+replacement of such an identity requires a later explicit correction workflow.
+
+Album expansion, ordering and scroll state stay retained during these updates.
+The Local Album matching dialog title also reports processing/waiting, provider
+unavailability or queue idle. Clearing a manual match schedules Album-program
+reevaluation, so Pending may wait for existing queue work or provider recovery.
+If a Track remains Pending while the dialog reports queue idle, report both states;
+that distinguishes stale presentation from an outstanding provider operation.
+
 Ambiguous Artist matching now attempts one Album-corroboration search before showing
 the Artist picker. Only a uniquely supported Artist/Album pair is accepted. Remaining
 candidates appear with Album-supported candidates first; ordering is not a selection
@@ -262,13 +308,50 @@ no timing logs and perform no extra requests.
 
 ## Post-import local Album matching
 
-After an Album resolves, its local Tracks also receive Recording enrichment on the
-same worker. Already-resolved Albums need only one Recording discovery request.
-Rows show `Recordings matched: N / M`; **Recordings…** opens plain-text local/provider
-Track titles, Recording MBIDs, ISRCs and ambiguous/unmatched results. **Retry Match**
-also retries eligible Recording work. Provider outages preserve this stage in the
-same cooldown queue. Source-less catalog Tracks are not merged with local placements.
-No local metadata, exact Release identity or release-specific Track identity changes.
+After an Album resolves, its local Tracks receive program-based enrichment on the
+same worker. Expand an Album with **▸** to see `Local: title → Matched: provider title`
+for every local Track, or its pending/ambiguous/conflicting/unmatched/error status.
+Both names appear even when identical. Albums default collapsed; expansion, focus
+and display order survive unrelated completions. **Retry Match** retries enrichment.
+Album success remains visible while provider failures pause/retry the Track stage.
+No exact-edition selection or complete local Album is required, and missing provider
+Tracks do not appear as errors or get imported. Tracks and Recordings are not merged.
+
+MusicBrainz normally makes one lightweight browse plus up to three representative
+program lookups (2–4 requests; at most five with the no-Official fallback, excluding
+existing bounded HTTP retries). A four-Album session cache avoids repeat retrieval.
+Whole-program fit can exclude contradicted or demonstrably weaker mapping templates;
+ties remain. Only agreement across retained mappings establishes Recording identity.
+This is not exhaustive coverage of every pressing. Occurrence-only providers can report useful Track matches
+without creating a Recording identity. Provider titles/results are ephemeral;
+canonical Recording IDs survive restart and are rechecked on the next enrichment.
+
+Expanded rows show `Local → Matched` even when Recording certainty is `Ambiguous`,
+`NotProvided`, or `DurationMismatch`. `Identified` means strong Recording evidence
+can be accepted/confirmed. An existing canonical conflict is still protected.
+Album expansion, selection, order and viewport remain retained across updates.
+
+The [three-case audit](../../docs/album-track-matching-audit.md) diagnoses Hella's
+`Rich Kid` duration disagreement, Hop Along's conjunction spelling, and Tera Melos's
+alternate LP Recording. It includes actual sampled program IDs. The read-only
+`recording_probe ... --programs` now prints all candidate decisions and program fits;
+it never changes the source files or the persistent diagnostic database.
+A deterministic 1,000-edition mock still proves the three-lookup cap and cache reuse.
+
+For restart testing, opt into a diagnostic database instead of the default temporary one:
+
+```sh
+MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-program-diagnostic.sqlite \
+  cargo run --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- \
+  --gstreamer '/mnt/f/music/Gorillaz/Demon Days'
+```
+
+Import, open **Local Album matches…**, expand an Album, and inspect both Track names.
+Collapse/reopen while other Albums finish; the view should remain stable. Quit and
+repeat the same command: unchanged files are not reparsed and accepted identities
+remain in SQLite. Provider display names are fetched again (no persistent response
+cache); offline/unavailable state does not retract accepted identities. With
+`--no-auto-match`, stored identity status remains visible and **Retry Match** is explicit.
 
 Read-only local probe, using an independently confirmed Release Group (temporary
 in-memory library, no source-file writes):
@@ -276,7 +359,7 @@ in-memory library, no source-file writes):
 ```sh
 cargo run --manifest-path adapters/musicbrainz/Cargo.toml --example recording_probe -- \
   "/mnt/f/music/Hella/Hella (2003) - Bitches Ain't Shit but Good People" \
-  9f6d341b-c755-31ee-b5e8-dbb378ae4686
+  9f6d341b-c755-31ee-b5e8-dbb378ae4686 --programs
 ```
 
 Build and launch with an actual local Album folder (WSLg audio must already work):

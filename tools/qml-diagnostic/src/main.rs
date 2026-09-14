@@ -17,6 +17,113 @@ struct Bridge {
     catalog_changed: qt_signal!(),
     matching_snapshot: qt_property!(QVariantList; READ matching_snapshot_value NOTIFY matching_changed),
     matching_changed: qt_signal!(),
+    manual_snapshot: qt_property!(QVariantMap; READ manual_snapshot_value NOTIFY manual_changed),
+    manual_changed: qt_signal!(),
+    choose_track: qt_method!(
+        fn choose_track(&mut self, album: String, track: String) {
+            self.manual_context = Some((
+                music_library::domain::AlbumId(album),
+                music_library::domain::TrackId(track),
+            ));
+            self.manual_selection = None;
+            self.manual_error.clear();
+            let result = self
+                .ensure_matcher()
+                .and_then(|()| self.load_manual_choices());
+            match result {
+                Ok(false) => {
+                    let album = self.manual_context.as_ref().unwrap().0.clone();
+                    if let Err(e) = self
+                        .matcher
+                        .as_mut()
+                        .unwrap()
+                        .request_album_programs(&self.session.library, &album)
+                    {
+                        self.manual_error = e.to_string();
+                    }
+                }
+                Err(e) => self.manual_error = e,
+                Ok(true) => {}
+            }
+            self.manual_changed();
+            self.matching_changed();
+        }
+    ),
+    confirm_track: qt_method!(
+        fn confirm_track(&mut self, index: i32) -> bool {
+            let result = if let Some(selection) = &self.manual_selection {
+                self.session
+                    .library
+                    .confirm_manual_track(selection, index as usize)
+                    .map(|_| selection.album_id().clone())
+                    .map_err(|e| e.to_string())
+            } else {
+                Err("Wait for candidates and explicitly choose one".into())
+            };
+            match result {
+                Ok(album) => {
+                    if let Err(e) = self.refresh_manual_album(&album) {
+                        self.manual_error = e;
+                        self.manual_changed();
+                        return false;
+                    }
+                    self.manual_selection = None;
+                    self.manual_context = None;
+                    self.manual_error.clear();
+                    self.manual_changed();
+                    self.matching_changed();
+                    true
+                }
+                Err(e) => {
+                    self.manual_error = e;
+                    self.manual_changed();
+                    false
+                }
+            }
+        }
+    ),
+    cancel_track_choice: qt_method!(
+        fn cancel_track_choice(&mut self) {
+            self.manual_context = None;
+            self.manual_selection = None;
+            self.manual_error.clear();
+            self.manual_changed();
+        }
+    ),
+    clear_track_choice: qt_method!(
+        fn clear_track_choice(&mut self, album: String, track: String) {
+            let album = music_library::domain::AlbumId(album);
+            let result = self
+                .session
+                .library
+                .clear_manual_track(&album, &music_library::domain::TrackId(track))
+                .map_err(|e| e.to_string())
+                .and_then(|_| self.refresh_manual_album(&album));
+            if let Err(e) = result {
+                self.session.error = e;
+                self.changed();
+                return;
+            }
+            if let Some(matcher) = self.matcher.as_mut() {
+                matcher.clear_program_outcome(&album);
+                if let Err(e) = matcher.request_album_programs(&self.session.library, &album) {
+                    self.session.error = e.to_string();
+                    self.changed();
+                }
+            }
+            self.matching_changed();
+        }
+    ),
+    manual_context: Option<(
+        music_library::domain::AlbumId,
+        music_library::domain::TrackId,
+    )>,
+    manual_selection: Option<music_library::manual_track::Selection>,
+    manual_error: String,
+    manual_associations: std::collections::HashMap<
+        music_library::domain::AlbumId,
+        Vec<music_library::manual_track::Association>,
+    >,
     matching_provider: qt_property!(QVariantMap; READ matching_provider_value NOTIFY matching_changed),
     retry_matching: qt_method!(
         fn retry_matching(&mut self) {
@@ -67,6 +174,10 @@ struct Bridge {
         }
     ),
     matcher: Option<music_library::album_matching::AlbumMatcher>,
+    matching_tracks: std::collections::HashMap<
+        music_library::domain::AlbumId,
+        Vec<music_library::edition::LocalTrackEvidence>,
+    >,
     matching_rows: Vec<(
         music_library::domain::AlbumId,
         String,
@@ -178,11 +289,22 @@ impl Bridge {
             catalog_changed: Default::default(),
             matching_snapshot: Default::default(),
             matching_changed: Default::default(),
+            manual_snapshot: Default::default(),
+            manual_changed: Default::default(),
+            choose_track: Default::default(),
+            confirm_track: Default::default(),
+            cancel_track_choice: Default::default(),
+            clear_track_choice: Default::default(),
+            manual_context: None,
+            manual_selection: None,
+            manual_error: String::new(),
+            manual_associations: Default::default(),
             matching_provider: Default::default(),
             retry_matching: Default::default(),
             retry_match: Default::default(),
             choose_artist: Default::default(),
             matcher: None,
+            matching_tracks: Default::default(),
             matching_rows: Vec::new(),
             set_volume: Default::default(),
             search: Default::default(),
@@ -206,10 +328,10 @@ impl Bridge {
             let weak = qmetaobject::QPointer::from(&*self);
             let callback = matching_callback(weak);
             self.matcher = Some(
-                music_library::album_matching::AlbumMatcher::new_with_recordings(
+                music_library::album_matching::AlbumMatcher::new_with_programs(
                     music_library_musicbrainz::MusicBrainz::new(),
                     callback,
-                    recording_callback(qmetaobject::QPointer::from(&*self)),
+                    program_callback(qmetaobject::QPointer::from(&*self)),
                     matching_retry_callback(qmetaobject::QPointer::from(&*self)),
                 )
                 .map_err(|e| e.to_string())?,
@@ -230,6 +352,20 @@ impl Bridge {
                 .album_for_release(&import.release_id)
                 .map_err(|e| e.to_string())?;
             if !self.matching_rows.iter().any(|r| r.0 == album.album_id) {
+                self.manual_associations.insert(
+                    album.album_id.clone(),
+                    self.session
+                        .library
+                        .manual_track_associations(&album.album_id)
+                        .map_err(|e| e.to_string())?,
+                );
+                self.matching_tracks.insert(
+                    album.album_id.clone(),
+                    self.session
+                        .library
+                        .local_album_tracks(&album.album_id)
+                        .map_err(|e| e.to_string())?,
+                );
                 self.matching_rows.push((
                     album.album_id,
                     album.title,
@@ -255,6 +391,120 @@ impl Bridge {
         self.matching_changed();
         Ok(())
     }
+    fn refresh_manual_album(
+        &mut self,
+        album: &music_library::domain::AlbumId,
+    ) -> Result<(), String> {
+        self.manual_associations.insert(
+            album.clone(),
+            self.session
+                .library
+                .manual_track_associations(album)
+                .map_err(|e| e.to_string())?,
+        );
+        self.matching_tracks.insert(
+            album.clone(),
+            self.session
+                .library
+                .local_album_tracks(album)
+                .map_err(|e| e.to_string())?,
+        );
+        Ok(())
+    }
+    fn load_manual_choices(&mut self) -> Result<bool, String> {
+        if self.manual_selection.is_some() {
+            return Ok(true);
+        }
+        let Some((album, track)) = &self.manual_context else {
+            return Ok(false);
+        };
+        let Some(programs) = self.matcher.as_ref().and_then(|m| m.cached_programs(album)) else {
+            return Ok(false);
+        };
+        self.manual_selection = Some(
+            self.session
+                .library
+                .prepare_manual_track(album, track, programs)
+                .map_err(|e| e.to_string())?,
+        );
+        self.manual_error.clear();
+        Ok(true)
+    }
+    fn manual_snapshot_value(&self) -> QVariantMap {
+        let local = self
+            .manual_context
+            .as_ref()
+            .and_then(|(a, t)| {
+                self.matching_tracks
+                    .get(a)
+                    .and_then(|rows| rows.iter().find(|r| &r.track_id == t))
+            })
+            .and_then(|t| t.evidence.title.as_deref())
+            .unwrap_or("");
+        let candidates = self
+            .manual_selection
+            .as_ref()
+            .map_or(&[][..], |s| s.candidates());
+        let labels: Vec<_> = candidates
+            .iter()
+            .map(|c| {
+                let e = &c.evidence;
+                let duration = e
+                    .duration_ms
+                    .map(|ms| format!("{}:{:02}", ms / 60_000, (ms / 1000) % 60))
+                    .unwrap_or_else(|| "duration unknown".into());
+                format!(
+                    "{} — {} · {}/{}",
+                    e.title.as_deref().unwrap_or("Untitled"),
+                    duration,
+                    e.disc.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
+                    e.number
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "?".into())
+                )
+            })
+            .collect();
+        let rows: QVariantList = candidates
+            .iter()
+            .enumerate()
+            .map(|(i, c)| -> QVariant {
+                let mut label = labels[i].clone();
+                if labels.iter().filter(|l| *l == &label).count() > 1 {
+                    let id = c
+                        .evidence
+                        .recording
+                        .identities
+                        .first()
+                        .or_else(|| c.evidence.identities.first());
+                    label.push_str(&format!(
+                        " · {}",
+                        id.map(|id| format!("ID {}", id.external_id))
+                            .unwrap_or_else(|| format!("candidate {}", i + 1))
+                    ));
+                }
+                QVariantMap::from_iter([
+                    ("label", string(label)),
+                    (
+                        "support",
+                        string(format!("{} sampled programs", c.supporting_programs)),
+                    ),
+                ])
+                .into()
+            })
+            .collect();
+        QVariantMap::from_iter([
+            ("localTitle", string(local)),
+            ("candidates", rows.into()),
+            ("error", string(&self.manual_error)),
+            (
+                "pending",
+                (self.manual_context.is_some()
+                    && self.manual_selection.is_none()
+                    && self.manual_error.is_empty())
+                .into(),
+            ),
+        ])
+    }
     fn matching_provider_value(&self) -> QVariantMap {
         use music_library::album_matching::CircuitState;
         let mut values = QVariantMap::default();
@@ -271,6 +521,13 @@ impl Bridge {
             _ => String::new(),
         };
         values.insert("paused".into(), paused.into());
+        values.insert(
+            "processing".into(),
+            self.matcher
+                .as_ref()
+                .is_some_and(|m| m.is_processing())
+                .into(),
+        );
         values.insert("message".into(), QString::from(message).into());
         values.insert(
             "probe".into(),
@@ -296,9 +553,29 @@ impl Bridge {
                     .and_then(|m| m.outcome(id))
                     .unwrap_or(outcome);
                 let matched = self.matcher.as_ref().and_then(|m| m.matched_album(id));
-                let (recording_summary, recording_details) = recording_presentation(
+                let program = self.matcher.as_ref().and_then(|m| m.program_outcome(id));
+                let track_rows = program_rows(
+                    self.matching_tracks.get(id).map_or(&[], Vec::as_slice),
+                    program,
+                    self.manual_associations.get(id).map_or(&[], Vec::as_slice),
+                );
+                let (mut recording_summary, recording_details) = recording_presentation(
                     self.matcher.as_ref().and_then(|m| m.recording_outcome(id)),
                 );
+                if let Some(program) = program {
+                    use music_library::album_program::Outcome;
+                    recording_summary = match program {
+                        Outcome::Pending => "Track enrichment queued/running…".into(),
+                        Outcome::Complete(rows) => format!(
+                            "Track enrichment finished: {} local Tracks assessed",
+                            rows.len()
+                        ),
+                        Outcome::Deferred(_) => {
+                            "Track enrichment deferred: provider unavailable".into()
+                        }
+                        Outcome::Error(error) => format!("Track enrichment error: {error}"),
+                    };
+                }
                 let status = match outcome {
                     MatchOutcome::Pending => "Pending MusicBrainz matching…".into(),
                     MatchOutcome::Matched(identity) => format!("Matched: {}", identity.external_id),
@@ -360,6 +637,7 @@ impl Bridge {
                 };
                 QVariantMap::from_iter([
                     ("albumId", string(id.as_ref())),
+                    ("tracks", track_rows.into()),
                     ("artists", artists.into()),
                     ("title", string(title)),
                     ("recordingSummary", string(&recording_summary)),
@@ -617,6 +895,133 @@ fn matching_retry_callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(u64) 
     })
 }
 
+fn program_rows(
+    local: &[music_library::edition::LocalTrackEvidence],
+    outcome: Option<&music_library::album_program::Outcome>,
+    manual: &[music_library::manual_track::Association],
+) -> QVariantList {
+    use music_library::album_program::{Outcome, TrackOutcome};
+    local
+        .iter()
+        .map(|t| -> QVariant {
+            let result = match outcome {
+                Some(Outcome::Complete(rows)) => rows
+                    .iter()
+                    .find(|(other, _)| other.track_id == t.track_id)
+                    .map(|(_, o)| o),
+                _ => None,
+            };
+            let manual_outcome = manual
+                .iter()
+                .find(|m| m.track_id == t.track_id)
+                .map(|m| TrackOutcome::ManuallyMatched(m.matched()));
+            let result = manual_outcome.as_ref().or(result);
+            let mut matched = String::new();
+            let mut recording_status = String::new();
+            let status = match result {
+                Some(
+                    TrackOutcome::Matched(m)
+                    | TrackOutcome::AlreadyMatched(m)
+                    | TrackOutcome::ManuallyMatched(m),
+                ) => {
+                    matched = m.title.clone();
+                    recording_status = format!("{:?}", m.recording_status);
+                    if matches!(result, Some(TrackOutcome::ManuallyMatched(_))) {
+                        "Manual"
+                    } else if matches!(result, Some(TrackOutcome::AlreadyMatched(_))) {
+                        "AlreadyMatched"
+                    } else {
+                        "Matched"
+                    }
+                }
+                Some(TrackOutcome::Ambiguous) => "Ambiguous",
+                Some(TrackOutcome::ConflictingIdentity) => "ConflictingIdentity",
+                Some(TrackOutcome::NoConfidentMatch) => "NoConfidentMatch",
+                None => match outcome {
+                    Some(Outcome::Pending) => "Pending",
+                    Some(Outcome::Deferred(_)) => "ProviderUnavailable",
+                    Some(Outcome::Error(_)) => "Error",
+                    _ if !t.evidence.recording.identities.is_empty() => {
+                        "AlreadyMatched (stored identity; provider title not cached)"
+                    }
+                    _ => "Not matched",
+                },
+            };
+            QVariantMap::from_iter([
+                ("trackId", string(t.track_id.as_ref())),
+                ("manual", (status == "Manual").into()),
+                (
+                    "canChoose",
+                    (status != "Manual" && status != "Pending" && recording_status != "Identified")
+                        .into(),
+                ),
+                (
+                    "storedIdentity",
+                    string(
+                        t.evidence
+                            .recording
+                            .identities
+                            .iter()
+                            .map(|i| format!("{}:{}:{}", i.provider, i.kind, i.external_id))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    ),
+                ),
+                (
+                    "localTitle",
+                    string(t.evidence.title.as_deref().unwrap_or("")),
+                ),
+                ("matchedTitle", string(matched)),
+                ("recordingStatus", string(recording_status)),
+                ("status", string(status)),
+            ])
+            .into()
+        })
+        .collect()
+}
+fn program_callback(
+    weak: qmetaobject::QPointer<Bridge>,
+) -> impl Fn(music_library::album_program::Reply) + Send + 'static {
+    qmetaobject::queued_callback(move |reply: music_library::album_program::Reply| {
+        if let Some(pinned) = weak.as_pinned() {
+            let mut bridge = pinned.borrow_mut();
+            if let Some(mut matcher) = bridge.matcher.take() {
+                let id = reply.input.album_id.clone();
+                bridge
+                    .matching_tracks
+                    .insert(id.clone(), reply.input.tracks.clone());
+                matcher.complete_programs(&mut bridge.session.library, reply);
+                bridge.matcher = Some(matcher);
+                if let Err(e) = bridge.refresh_manual_album(&id) {
+                    bridge.session.error = e;
+                    bridge.changed();
+                }
+                if bridge.manual_selection.is_none()
+                    && bridge
+                        .manual_context
+                        .as_ref()
+                        .is_some_and(|(album, _)| album == &id)
+                {
+                    if let Err(e) = bridge.load_manual_choices() {
+                        bridge.manual_error = e;
+                    }
+                    if bridge.manual_selection.is_none() {
+                        bridge.manual_error =
+                            match bridge.matcher.as_ref().and_then(|m| m.program_outcome(&id)) {
+                                Some(music_library::album_program::Outcome::Deferred(e)) => {
+                                    format!("Provider unavailable; queued for retry: {e}")
+                                }
+                                Some(music_library::album_program::Outcome::Error(e)) => e.clone(),
+                                _ => String::new(),
+                            };
+                    }
+                    bridge.manual_changed();
+                }
+                bridge.matching_changed();
+            }
+        }
+    })
+}
 fn recording_presentation(outcome: Option<&music_library::recording::Outcome>) -> (String, String) {
     use music_library::recording::{Outcome, TrackOutcome};
     match outcome {
@@ -655,6 +1060,7 @@ fn recording_presentation(outcome: Option<&music_library::recording::Outcome>) -
         }
     }
 }
+#[cfg(all(test, feature = "gstreamer"))]
 fn recording_callback(
     weak: qmetaobject::QPointer<Bridge>,
 ) -> impl Fn(music_library::recording::Reply) + Send + 'static {
@@ -1436,6 +1842,48 @@ mod event_delivery_tests {
         return matchingList.contentY + "|" + matchingList.currentIndex + "|"
             + matchingList.currentItem.rowData.albumId + "|" + matchingList.currentItem.activeFocus;
     }
+    function testTrackExpansion(rows) {
+        const index = matchingList.currentIndex;
+        const row = JSON.parse(JSON.stringify(matchingModel.get(index).rowData));
+        row.tracks = rows;
+        matchingModel.setProperty(index, "rowData", row);
+        matchingModel.setProperty(index, "expanded", true);
+        matchingList.forceLayout();
+        const labels = [];
+        function visit(item) {
+            if (item.objectName && item.objectName.indexOf("program-track-") === 0) labels.push(item.text);
+            if (item.children) for (const child of item.children) visit(child);
+        }
+        visit(matchingList.currentItem);
+        matchingModel.setProperty(index, "expanded", false);
+        matchingList.forceLayout();
+        matchingModel.setProperty(index, "expanded", true);
+        const refreshed = [];
+        for (let i = 0; i < matchingModel.count; ++i) refreshed.push(matchingModel.get(i).rowData);
+        refreshed[0].status = "Unrelated background completion";
+        syncMatchingRows(refreshed);
+        return matchingModel.get(index).expanded + "|" + labels.join("|");
+    }
+    function testManualDialog() {
+        const index = matchingList.currentIndex;
+        const anchor = matchingModel.get(index).albumKey;
+        const y = matchingList.contentY;
+        manualTrackDialog.open();
+        const initial = manualTrackChoice.currentIndex + "|" + manualTrackConfirm.enabled;
+        manualTrackDialog.close();
+        matchingList.forceLayout();
+        return initial + "|" + (anchor === matchingModel.get(index).albumKey)
+            + "|" + matchingModel.get(index).expanded + "|" + (y === matchingList.contentY);
+    }
+    function testManualConfirm() {
+        manualTrackDialog.open();
+        const initial = manualTrackChoice.currentIndex + "|" + manualTrackConfirm.enabled;
+        manualTrackChoice.currentIndex = 0;
+        const enabled = manualTrackConfirm.enabled;
+        manualTrackConfirm.clicked();
+        return initial + "|" + enabled + "|" + manualTrackDialog.visible;
+    }
+    function testClearManual(album, track) { window.bridge.clear_track_choice(album, track); }
     function changedMatchingRowStatus() {
         for (let i = 0; i < matchingModel.count; ++i) {
             if (matchingModel.get(i).albumKey === "scroll-1")
@@ -1598,6 +2046,75 @@ mod event_delivery_tests {
             "unrelated completion must retain viewport, selection and focus"
         );
         assert!(after.ends_with("|true"), "focused delegate: {after}");
+        {
+            use music_library::{
+                album_program::{Match, Outcome, TrackOutcome},
+                domain::{RecordingId, TrackId},
+                edition::{LocalTrackEvidence, RecordingEvidence, TrackEvidence},
+            };
+            let local = LocalTrackEvidence {
+                track_id: TrackId("ui-track".into()),
+                recording_id: RecordingId("ui-recording".into()),
+                evidence: TrackEvidence {
+                    title: Some("Feel Good Inc".into()),
+                    ..Default::default()
+                },
+            };
+            let outcome = Outcome::Complete(vec![(
+                local.clone(),
+                TrackOutcome::Matched(Match {
+                    title: "Feel Good Inc.".into(),
+                    recording: RecordingEvidence::default(),
+                    recording_status: music_library::album_program::RecordingStatus::Ambiguous,
+                    occurrences: vec![],
+                    explanation: "fixture".into(),
+                }),
+            )]);
+            let rows = program_rows(std::slice::from_ref(&local), Some(&outcome), &[]);
+            let rendered = engine
+                .borrow_mut()
+                .invoke_method("testTrackExpansion".into(), &[rows.into()])
+                .to_qstring()
+                .to_string();
+            assert_eq!(
+                rendered,
+                "true|Local: Feel Good Inc → Matched: Feel Good Inc. (Matched; Recording: Ambiguous)"
+            );
+            assert_eq!(
+                engine
+                    .borrow_mut()
+                    .invoke_method("testManualDialog".into(), &[])
+                    .to_qstring()
+                    .to_string(),
+                "-1|false|true|true|true",
+                "opening/cancelling must not confirm, collapse or move the Album"
+            );
+            let manual = music_library::manual_track::Association {
+                track_id: local.track_id.clone(),
+                album: music_library::domain::ExternalIdentity {
+                    provider: "fixture".into(),
+                    kind: "album".into(),
+                    external_id: "known".into(),
+                },
+                candidate: music_library::manual_track::Candidate {
+                    evidence: TrackEvidence {
+                        title: Some("Chosen provider title".into()),
+                        ..Default::default()
+                    },
+                    supporting_programs: 2,
+                },
+            };
+            let rows = program_rows(&[local], Some(&Outcome::Pending), &[manual]);
+            assert_eq!(
+                engine
+                    .borrow_mut()
+                    .invoke_method("testTrackExpansion".into(), &[rows.into()])
+                    .to_qstring()
+                    .to_string(),
+                "true|Local: Feel Good Inc → Matched: Chosen provider title (Manual; Recording: NotProvided)",
+                "stored manual presentation survives pending automatic refresh"
+            );
+        }
         assert_eq!(
             engine
                 .borrow_mut()
@@ -1614,6 +2131,202 @@ mod event_delivery_tests {
                 .to_string(),
             "No confident match"
         );
+        // Exercise the real explicit-confirm handler with a generic occurrence-only
+        // candidate. Preparation/confirmation themselves perform no provider work.
+        let (album, track) = {
+            use music_library::{
+                album_program::{Program, Programs},
+                domain::ExternalIdentity,
+                edition::TrackEvidence,
+            };
+            let pinned = bridge.pinned();
+            let mut state = pinned.borrow_mut();
+            let row = state.session.rows[0].clone();
+            let album = state
+                .session
+                .library
+                .album_for_release(&row.release_id)
+                .unwrap()
+                .album_id;
+            let identity = ExternalIdentity {
+                provider: "manual-ui-fixture".into(),
+                kind: "album".into(),
+                external_id: "known".into(),
+            };
+            state
+                .session
+                .library
+                .attach_album_external_identity(&album, &identity)
+                .unwrap();
+            let programs = Programs {
+                album: identity,
+                programs: vec![Program {
+                    identity: None,
+                    complete: true,
+                    tracks: vec![TrackEvidence {
+                        title: Some("Explicitly chosen song".into()),
+                        identities: vec![ExternalIdentity {
+                            provider: "manual-ui-fixture".into(),
+                            kind: "song".into(),
+                            external_id: "chosen".into(),
+                        }],
+                        ..Default::default()
+                    }],
+                }],
+                note: String::new(),
+            };
+            state.manual_selection = Some(
+                state
+                    .session
+                    .library
+                    .prepare_manual_track(&album, &row.track_id, &programs)
+                    .unwrap(),
+            );
+            state.manual_context = Some((album.clone(), row.track_id.clone()));
+            state.manual_changed();
+            (album, row.track_id)
+        };
+        assert_eq!(
+            engine
+                .borrow_mut()
+                .invoke_method("testManualConfirm".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "-1|false|true|false"
+        );
+        {
+            let pinned = bridge.pinned();
+            let mut state = pinned.borrow_mut();
+            let choices = state
+                .session
+                .library
+                .manual_track_associations(&album)
+                .unwrap();
+            assert_eq!(choices.len(), 1);
+            assert_eq!(
+                choices[0].candidate.evidence.title.as_deref(),
+                Some("Explicitly chosen song")
+            );
+            state
+                .session
+                .library
+                .clear_manual_track(&album, &track)
+                .unwrap();
+        }
+        clear_manual_program_flow(&engine, &bridge);
         drop(engine); // Destroy QML bindings while their QObject still exists.
+    }
+
+    fn clear_manual_program_flow(engine: &Rc<RefCell<QmlEngine>>, bridge: &QObjectBox<Bridge>) {
+        use music_library::{
+            album_matching::AlbumMatcher, album_program::*, catalog::*, domain::ExternalIdentity,
+        };
+        struct Provider(Programs);
+        impl CatalogProvider for Provider {
+            fn album_program_namespaces(&self) -> Vec<(String, String)> {
+                vec![(self.0.album.provider.clone(), self.0.album.kind.clone())]
+            }
+            fn album_programs(&mut self, _: &ExternalIdentity) -> Result<Programs, CatalogError> {
+                Ok(self.0.clone())
+            }
+            fn search_albums(
+                &mut self,
+                _: &str,
+                _: u32,
+            ) -> Result<Page<AlbumCandidate>, CatalogError> {
+                panic!("Album already known")
+            }
+            fn releases(
+                &mut self,
+                _: &ExternalIdentity,
+                _: u32,
+            ) -> Result<Page<ReleaseCandidate>, CatalogError> {
+                panic!()
+            }
+            fn release(&mut self, _: &ExternalIdentity) -> Result<Release, CatalogError> {
+                panic!()
+            }
+        }
+        let (album, track, programs) = {
+            let pinned = bridge.pinned();
+            let mut state = pinned.borrow_mut();
+            let (album, tracks) = state
+                .matching_tracks
+                .iter()
+                .find(|(_, rows)| !rows.is_empty())
+                .unwrap();
+            let album = album.clone();
+            let tracks = tracks.clone();
+            let track = tracks[0].track_id.clone();
+            let identity = state
+                .session
+                .library
+                .list_album_external_identities(&album)
+                .unwrap()[0]
+                .clone();
+            let programs = Programs {
+                album: identity,
+                programs: vec![Program {
+                    identity: None,
+                    complete: true,
+                    tracks: tracks.iter().map(|t| t.evidence.clone()).collect(),
+                }],
+                note: String::new(),
+            };
+            let selection = state
+                .session
+                .library
+                .prepare_manual_track(&album, &track, &programs)
+                .unwrap();
+            state
+                .session
+                .library
+                .confirm_manual_track(&selection, 0)
+                .unwrap();
+            state.refresh_manual_album(&album).unwrap();
+            (album, track, programs)
+        };
+        let deliver = program_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
+        let quit = engine.clone();
+        let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
+        bridge.pinned().borrow_mut().matcher = Some(
+            AlbumMatcher::new_with_programs(
+                Provider(programs),
+                |_| panic!(),
+                move |reply| {
+                    deliver(reply);
+                    done(());
+                },
+                |_| {},
+            )
+            .unwrap(),
+        );
+        engine.borrow_mut().invoke_method(
+            "testClearManual".into(),
+            &[
+                QString::from(album.as_ref()).into(),
+                QString::from(track.as_ref()).into(),
+            ],
+        );
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .matcher
+                .as_ref()
+                .unwrap()
+                .program_outcome(&album),
+            Some(&Outcome::Pending)
+        );
+        engine.borrow().exec();
+        let pinned = bridge.pinned();
+        let state = pinned.borrow();
+        assert!(
+            matches!(state.matcher.as_ref().unwrap().program_outcome(&album),Some(Outcome::Complete(rows)) if !rows.is_empty())
+        );
+        assert_eq!(state.matcher.as_ref().unwrap().pending_count(), 0);
+        assert!(state.manual_associations[&album].is_empty());
+        // Join while the test's main-thread engine owner still exists.
+        bridge.pinned().borrow_mut().matcher.take();
     }
 }

@@ -93,14 +93,19 @@ ISRCs and verified recording-level mappings may coexist. Catalog Track/Song IDs
 must not be assumed to identify a Recording; their provider semantics may instead
 require Track-level association. Generic
 attachment is idempotent and reverse resolution returns zero or more Recording IDs.
-An exact MusicBrainz Recording identity triggers canonical reuse: prefer its existing
+Catalog import and the legacy Recording-search path use exact MusicBrainz Recording
+identity to trigger canonical reuse: prefer its existing
 owner, choosing binary internal-ID order if several exist. The atomic provider-neutral
 `merge_recording` primitive transfers identities, rewrites indexed Track references,
 and deletes the source Recording. Different MusicBrainz Recording MBIDs veto the
 merge and roll back. ISRC alone never triggers consolidation. Ordinary Track deletion
 does not delete the underlying Recording or its mappings.
 
-After Album identity commits, Recording enrichment joins the existing serial matching
+The retained legacy unordered Recording-search capability is described below; normal
+diagnostic enrichment now uses [Album-scoped Track programs](#album-scoped-track-programs)
+and deliberately does not consolidate Recordings.
+
+After Album identity commits, legacy Recording enrichment joins the existing serial matching
 queue. `new_with_recordings` supplies a second owner-thread completion callback on
 the same worker, limiter, outage circuit and cooldown; the Album-only constructor
 remains available for clients without Recording discovery. An already-resolved Album
@@ -1240,13 +1245,110 @@ QML shows local/matched Album names, with edition browsing behind **Editions…*
 its `AlbumAmbiguous` result concerns competing Albums, not competing pressings.
 
 Existing provider limitations remain distinct from edition certainty: the current
-automatic matcher recognizes MusicBrainz Artist/Release Group identities, Recording
-discovery is scoped to a MusicBrainz Release Group, and the catalog-import DTO requires
+Artist/Album matcher recognizes MusicBrainz Artist/Release Group identities, and the catalog-import DTO requires
 an external Album identity. These are current MusicBrainz workflow constraints, not
 requirements on future providers. The capability/import boundary must allow missing
 external groupings before adding a concrete-only provider. Normal MusicBrainz Add Album
 still looks up a representative Release to obtain Tracks; that is catalog retrieval,
 not proof that local files came from that edition.
+
+### Album-scoped Track programs
+
+The FIFO work unit is one Album: Artist/Album discovery commits its identity, then
+Track/program enrichment continues for that Album before the next Album starts.
+The continuation uses the same worker and provider instance, retaining bounded
+program caches; it does not assert an exact edition. Already-known Albums enter
+directly at enrichment. Artist/Album ambiguity or no-match finishes that attempt
+without blocking later Albums; individual unresolved Tracks also finish normally.
+Provider outages preserve the current phase at the front for existing cooldown/
+probe recovery. New imports and explicit manual retries keep their existing FIFO
+placement; only the current Album's enrichment is an immediate continuation.
+
+Manual correction follows automatic Artist → Album → Track matching. A user may
+explicitly choose a Track within the known Album's bounded cached programs, without
+global search or exact-edition selection. Equal strong Recording identity sets
+deduplicate candidates; occurrence-only providers use equal occurrence identity
+sets instead. Distinct Recording identities remain separate choices.
+
+Migration 11 stores one `manual_track_association` per local Track, including the
+accepted Album context and a provider-neutral candidate snapshot for offline display.
+Occurrence IDs and ISRCs remain association evidence, not new canonical Recording
+or release-specific Track identities. Strong Recording identities are confirmed
+canonically. `recording_manual_identity` marks identities supported solely by this
+feature; `manual_track_recording_claim` retains each manual supporter. Independent
+canonical attachment removes the marker. Clear deletes only identities still marked
+solely manual and lacking other manual supporters, then reevaluates current embedded
+provenance. Existing conflicting canonical identities require a future explicit
+replacement operation; this chooser refuses to overwrite them.
+
+Automatic refresh, retagging and outages preserve the manual association. Clear is
+explicit, leaves membership/metadata intact, and permits automatic reevaluation.
+The diagnostic retains four Albums' programs; an evicted entry is requested through
+the existing worker/circuit. A cached choice needs no network request. These are
+durable user decisions, not edition assertions or persisted confidence scores.
+
+A known Album can have confidently identified Tracks while its exact edition remains
+unknown. `CatalogProvider::album_programs` accepts an already-established opaque
+Album identity and returns application-owned ordered `Program` evidence. Providers
+advertise their supported Album identity namespaces; a concrete Album/tracklist
+provider needs no Release Group, external edition or Recording entity. Discovery
+remains adapter-owned. The optional legacy unordered Recording-search API remains
+available for older callers/probes; the diagnostic's normal enrichment uses programs.
+
+Local Tracks, canonical Recording/occurrence identities and ordered Artist credits
+are batch-loaded for the affected Album. Each present Track is compared independently:
+full local completeness and equal Track counts are unnecessary. Exact normalized
+titles precede a one-character typo allowance (both titles at least five characters,
+compatible position required). Comparison lowercases Unicode, folds whitespace and
+punctuation, treats standalone `and`/`&` as comparison-only equivalents, and
+preserves semantic version words. Known Artist conflicts veto metadata
+matching.
+File-derived Track Artist names are read in a source-scoped batch when effective
+credits are absent. Exact local credited-name agreement can reuse the Album's
+established Artist evidence without creating Track credits; conflicting source
+credits block metadata-only acceptance. Artist names are not fuzzy-matched.
+A three-second duration tolerance supports weaker metadata matches. A unique exact
+normalized title within a retained known-Album program, or shared trusted Recording
+identity, outranks duration disagreement, which remains diagnostic.
+ISRC intersections are supporting evidence, never positive identity by themselves.
+Disc/track positions and flattened provider order support alignment; a unique exact
+title can align partial multidisc music without pretending its missing positions exist.
+
+Program fit uses only present local Tracks. A program contradicting established
+Recording identity is excluded when another complete, supported program has no
+identity contradictions. Otherwise preference requires at least three distinct
+exact title/position agreements, strictly more than the alternative, no weaker
+per-Track evidence (trusted Recording, exact position/title, positional typo,
+exact title, absent), and no additional duration mismatches. Ties remain available;
+an advantage on one Track cannot compensate for a disadvantage on another.
+This selects mapping templates, never the user's exact edition or completeness.
+
+Track association and Recording certainty are independent. Equally fitting programs
+may identify the Album Track while disagreeing on its Recording. A unique exact
+title association also establishes Recording identity regardless of duration when
+the title is unique within each contributing program and their identities agree.
+Position supports this decision but is not required. Duplicate-title and near-title
+inference retain the three-second tolerance. Unresolved rows show Recording `Ambiguous` or
+`DurationMismatch`; no disputed identity or ISRC is written. Different fuzzy titles
+without an exact local-title anchor or shared identity remain Track-ambiguous.
+All retained plausible mappings must agree before a strong Recording identity is
+accepted. An unresolved conflict with an existing canonical identity remains
+`ConflictingIdentity`. Incomplete provider programs fail conservatively. Successful
+provider matches attach/confirm Recording identities independently, including clearing
+local-provenance ownership markers; they never merge Recordings or Tracks. Occurrence-only
+matches remain useful ephemeral associations, not invented Recording identities.
+No missing Tracks, membership, sources, metadata, or exact edition IDs are changed.
+
+MusicBrainz uses one lightweight Official/media browse (one unfiltered fallback if
+empty), then up to three representative Release lookups using existing ranking and
+required import includes, without labels. These are sampled musical programs, not
+claims of complete edition coverage or the user's pressing. Paging is not expanded.
+The client caches the last four completed program sets in memory. The same owned
+matching worker, limiter, retry/cooldown circuit and FIFO queue handle this stage;
+an outage never revokes Album success. No request is issued per local Track.
+The opt-in probe reports program identities, whole-program fit, and every candidate's
+positions, comparison/display titles, durations, identities and consideration reason.
+See [the three-case audit](album-track-matching-audit.md) for concrete examples.
 
 ### Durable local embedded observations
 
@@ -1519,6 +1621,14 @@ scores cannot resolve ambiguity. Incomplete pages remain unaccepted.
 See the [MusicBrainz Artist search fields](https://musicbrainz.org/doc/MusicBrainz_API/Search/ArtistSearch)
 for primary/alias discovery; local comparison retains diacritics and punctuation
 even where the search index folds them.
+
+External Album-title comparison additionally equates ASCII hyphen-minus (`U+002D`),
+Unicode hyphen (`U+2010`) and non-breaking hyphen (`U+2011`). This is comparison-only:
+the hyphen remains present, local/provider display values are preserved, and Artist
+name matching and indexed local-library normalization are unchanged. En/em dashes
+and mathematical minus signs are not folded. This permits short titles such as
+`by-` / `by‐` to agree exactly without weakening the short-title typo safeguard;
+multiple equivalent Album candidates still remain ambiguous.
 
 Before requesting manual resolution of an ambiguous Artist page, the matcher
 makes one bounded Release Group search with `(arid:A OR arid:B ...)` and the

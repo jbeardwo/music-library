@@ -25,6 +25,7 @@ static NEXT_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 pub struct MusicBrainz {
     agent: ureq::Agent,
     base: Url,
+    programs: Vec<music_library::album_program::Programs>,
 }
 impl Default for MusicBrainz {
     fn default() -> Self {
@@ -38,6 +39,7 @@ impl MusicBrainz {
     fn at(base: Url) -> Self {
         Self {
             base,
+            programs: vec![],
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(30)))
                 .max_redirects(0)
@@ -383,6 +385,78 @@ impl MusicBrainz {
     }
 }
 impl CatalogProvider for MusicBrainz {
+    fn album_program_namespaces(&self) -> Vec<(String, String)> {
+        vec![("musicbrainz".into(), "release_group".into())]
+    }
+    fn album_programs(
+        &mut self,
+        album: &ExternalIdentity,
+    ) -> Result<music_library::album_program::Programs, CatalogError> {
+        use music_library::album_program::{Program, Programs};
+        require_identity(album, "release_group")?;
+        if let Some(cached) = self.programs.iter().find(|p| &p.album == album) {
+            return Ok(cached.clone());
+        }
+        let page = self.representative_releases(album)?;
+        let mut candidates = page.items;
+        let context = catalog::AlbumCandidate {
+            identity: album.clone(),
+            title: String::new(),
+            artist: String::new(),
+            date: candidates
+                .iter()
+                .filter(|r| !r.date.is_empty())
+                .map(|r| r.date.clone())
+                .min()
+                .unwrap_or_default(),
+            credits: vec![],
+            primary_type: String::new(),
+            secondary_types: vec![],
+            comment: String::new(),
+            score: None,
+        };
+        let mut programs = vec![];
+        // Existing representative ranking, bounded page; never one lookup per local Track.
+        for _ in 0..3 {
+            let Some(candidate) = catalog::representative_release(&context, &candidates) else {
+                break;
+            };
+            let id = candidate.identity.clone();
+            candidates.retain(|c| c.identity != id);
+            let release: FullRelease = self.request(
+                &format!("release/{}", id.external_id),
+                &[(
+                    "inc",
+                    "release-groups+recordings+artist-credits+isrcs+media".into(),
+                )],
+            )?;
+            if release.id != id.external_id || release.group.id != album.external_id {
+                return Err(CatalogError::Other(
+                    "program belongs to another Album/Release".into(),
+                ));
+            }
+            let evidence = edition_evidence(release)?;
+            programs.push(Program {
+                identity: Some(id),
+                tracks: evidence.tracks,
+                complete: evidence.tracklist_complete,
+            });
+        }
+        let result = Programs {
+            album: album.clone(),
+            note: format!(
+                "{} sampled programs; edition identity remains unknown; browse has further pages: {}",
+                programs.len(),
+                page.next_offset.is_some()
+            ),
+            programs,
+        };
+        if self.programs.len() == 4 {
+            self.programs.remove(0);
+        }
+        self.programs.push(result.clone());
+        Ok(result)
+    }
     fn recordings(
         &mut self,
         group: &ExternalIdentity,
@@ -987,6 +1061,50 @@ mod tests {
     const GROUPS: &str = include_str!("../tests/fixtures/groups.json");
     const EDITIONS: &str = include_str!("../tests/fixtures/editions.json");
     const RELEASE: &str = include_str!("../tests/fixtures/release.json");
+    #[test]
+    fn album_program_discovery_is_bounded_and_cached_with_many_editions() {
+        let mut release: serde_json::Value = serde_json::from_str(RELEASE).unwrap();
+        let group = release["release-group"]["id"].as_str().unwrap().to_owned();
+        let mut browse: serde_json::Value = serde_json::from_str(EDITIONS).unwrap();
+        let base = browse["releases"][0].clone();
+        browse["release-count"] = 1000.into();
+        browse["releases"] = serde_json::Value::Array(
+            (2..102)
+                .map(|n| {
+                    let mut r = base.clone();
+                    r["id"] = format!("00000000-0000-4000-8000-{n:012}").into();
+                    r
+                })
+                .collect(),
+        );
+        let browse = browse.to_string();
+        let bodies: Vec<_> = (2..5)
+            .map(|n| {
+                release["id"] = format!("00000000-0000-4000-8000-{n:012}").into();
+                release.to_string()
+            })
+            .collect();
+        let (mut client, requests, server) = mock(vec![
+            (200, &browse),
+            (200, &bodies[0]),
+            (200, &bodies[1]),
+            (200, &bodies[2]),
+        ]);
+        let album = identity("release_group", &group);
+        let result = client.album_programs(&album).unwrap();
+        assert_eq!(result.programs.len(), 3);
+        assert!(result.programs.iter().all(|p| !p.tracks.is_empty()));
+        assert_eq!(client.album_programs(&album).unwrap(), result);
+        server.join().unwrap();
+        let calls: Vec<_> = requests.try_iter().collect();
+        assert_eq!(calls.len(), 4);
+        assert!(calls[0].1.contains("status=official"));
+        assert!(
+            calls[1..]
+                .iter()
+                .all(|r| r.1.contains("/release/") && !r.1.contains("labels"))
+        );
+    }
     #[test]
     fn generic_edition_lookup_separates_occurrence_and_recording_evidence() {
         use music_library::edition::EditionProvider;

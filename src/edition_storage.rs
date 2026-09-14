@@ -28,7 +28,7 @@ fn snapshot(db: &Connection, release: &ReleaseId) -> Result<LocalEditionEvidence
     let (album,title,album_title,year): (String,String,String,Option<i32>) = db.query_row("SELECT r.album_id,m.title,a.title,m.year FROM release r JOIN release_application_metadata m ON m.release_id=r.id JOIN album_application_metadata a ON a.album_id=r.album_id WHERE r.id=?1",[release.as_ref()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
     let mut tracks = db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.release_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?
         .query_map([release.as_ref()], |r| Ok(LocalTrackEvidence {track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence {disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),..Default::default()} }))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    load_track_evidence(db, release, &mut tracks)?;
+    load_track_evidence(db, &mut tracks)?;
     let mut evidence = LocalEditionEvidence {
         provenance: Default::default(),
         grouping_identities: identities(db, "album", &album)?,
@@ -52,11 +52,17 @@ fn snapshot(db: &Connection, release: &ReleaseId) -> Result<LocalEditionEvidence
 
 /// Batch the existing accepted identities/credits as well as the new observations:
 /// reconstruction must not add queries as the local Track count grows.
-fn load_track_evidence(
+pub(crate) fn load_track_evidence(
     db: &Connection,
-    release: &ReleaseId,
     tracks: &mut [LocalTrackEvidence],
 ) -> Result<()> {
+    let ids = serde_json::to_string(
+        &tracks
+            .iter()
+            .map(|t| t.track_id.as_ref())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
     let indexes: std::collections::HashMap<_, _> = tracks
         .iter()
         .enumerate()
@@ -68,8 +74,8 @@ fn load_track_evidence(
         } else {
             "track_external_identity i ON i.track_id=t.id"
         };
-        let mut statement = db.prepare(&format!("SELECT t.id,i.provider,i.kind,i.external_id FROM track t JOIN {join} WHERE t.release_id=?1 ORDER BY t.id,i.provider,i.kind,i.external_id"))?;
-        for row in statement.query_map([release.as_ref()], |r| {
+        let mut statement = db.prepare(&format!("SELECT t.id,i.provider,i.kind,i.external_id FROM track t JOIN {join} WHERE t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.id,i.provider,i.kind,i.external_id"))?;
+        for row in statement.query_map([&ids], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 ExternalIdentity {
@@ -95,9 +101,9 @@ fn load_track_evidence(
     let mut statement = db.prepare("SELECT t.id,c.position,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,''),i.provider,i.kind,i.external_id
         FROM track t JOIN track_artist_credit c ON c.track_id=t.id JOIN artist a ON a.id=c.artist_id
         LEFT JOIN artist_external_identity i ON i.artist_id=a.id
-        WHERE t.release_id=?1 ORDER BY t.id,c.position,i.provider,i.kind,i.external_id")?;
+        WHERE t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.id,c.position,i.provider,i.kind,i.external_id")?;
     let mut last = None;
-    for row in statement.query_map([release.as_ref()], |r| {
+    for row in statement.query_map([&ids], |r| {
         Ok((
             r.get::<_, String>(0)?,
             r.get::<_, i64>(1)?,

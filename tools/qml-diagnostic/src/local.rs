@@ -16,7 +16,10 @@ pub fn load(
         return Err("local audio input must be a folder".into());
     }
     let temp = TempDir::new()?;
-    let mut library = Library::open(temp.path().join("local-audio.sqlite"))?;
+    let database = std::env::var_os("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| temp.path().join("local-audio.sqlite"));
+    let mut library = Library::open(database)?;
     let root = library.register_local_root(&folder)?;
     library.scan_local_root(&root, &mut LoftyMetadataExtractor)?;
     let mut after = None;
@@ -28,6 +31,9 @@ pub fn load(
         }
         for candidate in candidates {
             after = Some(candidate.source_id.clone());
+            if !candidate.path.starts_with(&folder) {
+                continue;
+            }
             // Group tagged files within one directory. Never infer cross-directory edition identity.
             let title = candidate
                 .metadata
@@ -65,9 +71,9 @@ pub fn load(
             });
         }
     }
-    let mut imported = Vec::new();
     for request in groups.into_values() {
-        imported.push(library.import_release(&request)?);
+        library.import_release(&request)?;
     }
+    let imported = library.local_releases_for_root(&root)?;
     Ok((temp, library, imported))
 }

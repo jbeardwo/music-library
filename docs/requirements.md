@@ -2,6 +2,19 @@
 
 ## Product Goal
 
+Automatic matching finishes each Album's Artist/Album resolution and available
+Track enrichment before advancing to the next Album. Ambiguous/manual cases and
+unresolved Tracks do not block later Albums. Provider-wide outages retain the
+existing pause/recovery policy. Album identity is usable before enrichment finishes.
+
+Unresolved Tracks in an established Album may be manually associated with a song
+from that provider's bounded Album programs after automatic matching. Confirmation
+is explicit and survives restart, rescans and automatic refresh. Recording
+refinement is optional; providers exposing only song/occurrence identity remain
+usable. Manual selection neither claims exact edition nor creates missing Tracks.
+Global Track search is outside this workflow. Clearing a choice preserves unrelated
+canonical identities and user metadata, and allows automatic matching again.
+
 The application is a source-agnostic personal music library.
 
 Users must be able to build, organize, search, and preserve a music library without having any music stored locally.
@@ -133,6 +146,20 @@ The library must support music that has no currently playable source.
 ### Album interaction model
 
 * Album is the normal user-facing grouping for album-oriented music.
+* After Album identity is established, identify present local Tracks from bounded
+  provider Album programs without exact-edition or completeness requirements. Partial
+  Albums are normal. Agreement across examined programs may establish Recording
+  identity; edition disagreement must not invalidate the Album. Providers lacking
+  Recordings remain useful through occurrence-level association evidence. Never turn
+  occurrence IDs or ISRC alone into Recording identity, merge Tracks, create missing
+  Tracks, or change membership as a side effect. Diagnostic Album entries should
+  expand to show local/provider Track names and independent per-Track outcomes.
+  Track association may succeed while Recording identity remains ambiguous or
+  unsupported by duration evidence. Whole-program fit may prefer a demonstrably
+  better mapping template using present Tracks only, without accepting an exact
+  edition. Tied programs retain their genuine Recording disagreements. Standalone
+  `and`/`&` equivalence is comparison-only; local/provider display text and semantic
+  version qualifiers are preserved.
 * Local embedded identities are provenance observations, not automatically canonical
   mappings. After extraction their scopes and semantics are provider-neutral;
   providers need not expose MusicBrainz-like groupings or Recordings. Missing tags
@@ -208,10 +235,14 @@ The library must support music that has no currently playable source.
   requires independently trusted complete ordered content; partial local music cannot
   establish it. Exact edition identity requires trusted explicit edition identifiers,
   and conflicting strong evidence must not be overridden by metadata similarity.
-* Recording enrichment operates only inside a resolved Album, uses exact qualified
-  Track titles with compatible Artist/duration evidence, and never claims an exact
+* Recording enrichment operates only inside a resolved Album, prefers exact qualified
+  Track titles before tiny position-supported title differences, and never claims an exact
   Release or merges release-specific Tracks. Ambiguous/incomplete candidates remain
-  unmatched. It shares the post-import queue and outage handling, independently of
+  unmatched. Within an established Album, a unique exact normalized Track title
+  accepts the provider Recording identity unless strong identity conflicts or competing
+  mappings remain. Duration disagreement is diagnostic for this case and for trusted
+  Recording identity; weaker title inference retains its duration tolerance.
+  It shares the post-import queue and outage handling, independently of
   local import/playback.
 
 ### Local-file import and catalog matching

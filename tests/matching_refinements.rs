@@ -35,6 +35,64 @@ fn album(key: &str, title: &str, kind: &str) -> ArtistAlbumCandidate {
     }
 }
 #[test]
+fn album_hyphen_typography_matches_short_titles_without_fuzzy_artist_matching() {
+    let artist_id = id("artist", "a");
+    for title in ["by-", "by\u{2010}", "by\u{2011}"] {
+        let candidates = page(vec![album("by", title, "Album")]);
+        assert_eq!(
+            accepted_album("by-", &artist_id, &candidates),
+            MatchOutcome::Matched(id("release_group", "by"))
+        );
+        assert_eq!(
+            candidates.items[0].title, title,
+            "provider presentation stays original"
+        );
+    }
+    for title in [
+        "by",
+        "by+",
+        "by\u{2013}",
+        "by\u{2014}",
+        "by\u{2212}",
+        "by- Live",
+    ] {
+        assert_eq!(
+            accepted_album(
+                "by-",
+                &artist_id,
+                &page(vec![album("other", title, "Album")])
+            ),
+            MatchOutcome::NoConfidentMatch,
+            "{title}"
+        );
+    }
+    assert!(matches!(
+        accepted_album(
+            "by-",
+            &artist_id,
+            &page(vec![
+                album("one", "by-", "Album"),
+                album("two", "by\u{2010}", "Album")
+            ])
+        ),
+        MatchOutcome::AlbumAmbiguous(_)
+    ));
+    assert_eq!(
+        resolve_artist("by-", &page(vec![artist("a", "by\u{2010}", &[])])),
+        Err(MatchOutcome::NoConfidentMatch)
+    );
+    assert_eq!(
+        music_library::matching::normalize("by\u{2010}"),
+        "by\u{2010}",
+        "general/local indexed normalization stays unchanged"
+    );
+    assert!(
+        !close_album_title("by-", "byx"),
+        "short-title typo guard stays intact"
+    );
+}
+
+#[test]
 fn exact_primary_alias_and_competitor_veto() {
     let local = "The Speed of Sound in Seawater";
     let alias = artist("a", "tsosis", &[local]);

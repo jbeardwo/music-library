@@ -316,7 +316,15 @@ impl Store {
             ));
         }
         let mut results = vec![];
+        let manual: std::collections::HashSet<_> =
+            crate::manual_track::load(&tx, &reply.input.album_id)?
+                .into_iter()
+                .map(|m| m.track_id)
+                .collect();
         for track in &current.tracks {
+            if manual.contains(&track.track_id) {
+                continue;
+            }
             let outcome = compare(track, &page);
             if let TrackOutcome::Matched(candidate) = &outcome {
                 // Prior Tracks in this transaction may already have consolidated this Recording.
