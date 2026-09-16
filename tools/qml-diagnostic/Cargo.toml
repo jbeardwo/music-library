@@ -9,6 +9,7 @@ gstreamer = ["dep:music-library-gstreamer"]
 
 [dependencies]
 music-library-musicbrainz = { path = "../../adapters/musicbrainz" }
+music-library-spotify = { path = "../../adapters/spotify" }
 music-library-gstreamer = { path = "../../adapters/gstreamer", optional = true }
 music-library = { path = "../.." }
 qmetaobject = "0.2.10"

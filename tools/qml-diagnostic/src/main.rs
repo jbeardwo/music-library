@@ -3,6 +3,8 @@ mod catalog;
 mod local;
 mod sample;
 mod session;
+mod spotify_playback;
+mod spotify_resolution;
 
 use qmetaobject::prelude::*;
 use qmetaobject::{QVariantList, QVariantMap};
@@ -11,6 +13,222 @@ use session::Session;
 #[derive(QObject)]
 struct Bridge {
     base: qt_base_class!(trait QObject),
+    spotify_resolution_worker: Option<spotify_resolution::Worker>,
+    spotify_resolution_generation: u64,
+    spotify_resolution_selection: Option<music_library::song_resolution::Selection>,
+    spotify_resolution_pending: bool,
+    spotify_resolution_message: String,
+    spotify_resolution_counts: (u64, u64),
+    spotify_resolve: qt_method!(
+        fn spotify_resolve(&mut self, action: String, index: i32) {
+            if action == "cancel" {
+                self.spotify_resolution_generation += 1;
+                self.spotify_resolution_selection = None;
+                self.spotify_resolution_pending = false;
+                self.spotify_resolution_message =
+                    "Selection canceled; no association changed".into();
+                self.spotify_playback_changed();
+                return;
+            }
+            if action == "confirm" {
+                let result = self
+                    .spotify_resolution_selection
+                    .as_ref()
+                    .ok_or_else(|| "Search and explicitly select a candidate first".to_owned())
+                    .and_then(|selection| {
+                        self.session
+                            .library
+                            .confirm_song_resolution(selection, index as usize)
+                            .map_err(|e| e.to_string())
+                    });
+                match result {
+                    Ok(id) => {
+                        self.spotify_playback_song =
+                            music_library_spotify::playback::Song::from_associations(&[id]).ok();
+                        self.spotify_resolution_selection = None;
+                        self.spotify_resolution_message =
+                            "Spotify song manually confirmed; ready to play".into();
+                        self.spotify_playback_state.error = None;
+                    }
+                    Err(error) => self.spotify_resolution_message = error,
+                }
+                self.spotify_playback_changed();
+                return;
+            }
+            if action != "search" || self.spotify_resolution_pending {
+                return;
+            }
+            let Some(track) = self.spotify_playback_track.clone() else {
+                return;
+            };
+            if self
+                .session
+                .library
+                .track_provider_occurrences(&track, "spotify")
+                .is_ok_and(|ids| !ids.is_empty())
+            {
+                self.spotify_resolution_message =
+                    "Already associated; replacement is not supported here".into();
+                self.spotify_playback_changed();
+                return;
+            }
+            let input = match self.session.library.song_resolution_input(&track) {
+                Ok(input) => input,
+                Err(error) => {
+                    self.spotify_resolution_message = error.to_string();
+                    self.spotify_playback_changed();
+                    return;
+                }
+            };
+            if self.spotify_resolution_worker.is_none() {
+                let weak = qmetaobject::QPointer::from(&*self);
+                let callback = qmetaobject::queued_callback(
+                    move |reply: spotify_resolution::Reply| {
+                        if let Some(pinned) = weak.as_pinned() {
+                            let mut b = pinned.borrow_mut();
+                            b.spotify_resolution_counts = reply.counts;
+                            if reply.generation == b.spotify_resolution_generation {
+                                b.spotify_resolution_pending = false;
+                                match reply.result {
+                                    Ok(page) => {
+                                        b.spotify_resolution_message = if page.items.is_empty() {
+                                            "No candidates on this bounded page".into()
+                                        } else if page.next_offset.is_some() {
+                                            "First 10 results only; choose explicitly. More provider results exist.".into()
+                                        } else {
+                                            "Choose explicitly; no candidate is automatically accepted".into()
+                                        };
+                                        b.spotify_resolution_selection =
+                                            Some(music_library::song_resolution::Selection::new(
+                                                reply.input,
+                                                page.items,
+                                            ));
+                                    }
+                                    Err(error) => b.spotify_resolution_message = error.to_string(),
+                                }
+                            }
+                            b.spotify_playback_changed();
+                        }
+                    },
+                );
+                self.spotify_resolution_worker = Some(spotify_resolution::Worker::new(callback));
+            }
+            self.spotify_resolution_generation += 1;
+            self.spotify_resolution_selection = None;
+            self.spotify_resolution_pending = self
+                .spotify_resolution_worker
+                .as_ref()
+                .unwrap()
+                .search(self.spotify_resolution_generation, input);
+            self.spotify_resolution_message = if self.spotify_resolution_pending {
+                "Searching Spotify catalog using Client Credentials…".into()
+            } else {
+                "Catalog worker busy; retry after current request finishes".into()
+            };
+            self.spotify_playback_changed();
+        }
+    ),
+    spotify_playback_worker: Option<spotify_playback::Worker>,
+    spotify_playback_state: music_library_spotify::playback::Snapshot,
+    spotify_playback_song: Option<music_library_spotify::playback::Song>,
+    spotify_playback_track: Option<music_library::domain::TrackId>,
+    spotify_playback_title: String,
+    spotify_playback_snapshot: qt_property!(QVariantMap; READ spotify_playback_value NOTIFY spotify_playback_changed),
+    spotify_playback_changed: qt_signal!(),
+    spotify_playback_action: qt_method!(
+        fn spotify_playback_action(&mut self, action: String, value: String) {
+            use spotify_playback::Command;
+            if action == "track" {
+                self.spotify_resolution_generation += 1;
+                self.spotify_resolution_selection = None;
+                self.spotify_resolution_pending = false;
+                self.spotify_resolution_message.clear();
+                self.spotify_playback_track = Some(music_library::domain::TrackId(value.clone()));
+                self.spotify_playback_title = self
+                    .session
+                    .rows
+                    .iter()
+                    .find(|r| r.track_id.as_ref() == value)
+                    .map(|r| format!("{} — {} [{}]", r.artist_names, r.title, r.release_title))
+                    .unwrap_or_else(|| value.clone());
+                self.spotify_playback_song = self
+                    .session
+                    .library
+                    .track_provider_occurrences(&music_library::domain::TrackId(value), "spotify")
+                    .ok()
+                    .and_then(|ids| {
+                        music_library_spotify::playback::Song::from_associations(&ids).ok()
+                    });
+                self.spotify_playback_state.error = self
+                    .spotify_playback_song
+                    .is_none()
+                    .then_some(music_library_spotify::playback::Error::NoAssociation);
+                self.spotify_playback_changed();
+                return;
+            }
+            if self.spotify_playback_worker.is_none() {
+                let weak = qmetaobject::QPointer::from(&*self);
+                let callback = qmetaobject::queued_callback(move |snapshot| {
+                    if let Some(pinned) = weak.as_pinned() {
+                        let mut bridge = pinned.borrow_mut();
+                        bridge.spotify_playback_state = snapshot;
+                        bridge.spotify_playback_changed();
+                    }
+                });
+                self.spotify_playback_worker = Some(spotify_playback::Worker::new(callback));
+            }
+            let command = match action.as_str() {
+                "connect" => Command::Connect,
+                "cancel" => Command::Cancel,
+                "refresh" => Command::Refresh,
+                "device" => Command::Select(value),
+                "visible" => Command::Visible(value == "true"),
+                "pause" => Command::Pause,
+                "seek" => {
+                    let Ok(ms) = value.parse() else {
+                        return;
+                    };
+                    Command::Seek(ms)
+                }
+                "play" => {
+                    // Re-read accepted evidence, respecting manual clear/change since
+                    // the row was selected. No catalog call or global library scan.
+                    self.spotify_playback_song = self
+                        .spotify_playback_track
+                        .as_ref()
+                        .and_then(|track| {
+                            self.session
+                                .library
+                                .track_provider_occurrences(track, "spotify")
+                                .ok()
+                        })
+                        .and_then(|ids| {
+                            music_library_spotify::playback::Song::from_associations(&ids).ok()
+                        });
+                    let Some(song) = self.spotify_playback_song.clone() else {
+                        self.spotify_playback_state.error =
+                            Some(music_library_spotify::playback::Error::NoAssociation);
+                        self.spotify_playback_changed();
+                        return;
+                    };
+                    Command::Play(song)
+                }
+                _ => return,
+            };
+            if !self.spotify_playback_worker.as_ref().unwrap().send(command) {
+                self.spotify_playback_state.error =
+                    Some(music_library_spotify::playback::Error::Configuration);
+                self.spotify_playback_worker = None;
+                self.spotify_playback_changed();
+            }
+        }
+    ),
+    spotify: bool,
+    catalog_providers: Vec<String>,
+    stored_programs: std::collections::HashMap<
+        music_library::domain::AlbumId,
+        music_library::album_program::Outcome,
+    >,
     snapshot: qt_property!(QVariantMap; READ snapshot_value NOTIFY changed),
     changed: qt_signal!(),
     catalog_snapshot: qt_property!(QVariantMap; READ catalog_snapshot_value NOTIFY catalog_changed),
@@ -93,10 +311,11 @@ struct Bridge {
     clear_track_choice: qt_method!(
         fn clear_track_choice(&mut self, album: String, track: String) {
             let album = music_library::domain::AlbumId(album);
+            let provider = self.provider_for(&album);
             let result = self
                 .session
                 .library
-                .clear_manual_track(&album, &music_library::domain::TrackId(track))
+                .clear_manual_track_for(&album, &music_library::domain::TrackId(track), &provider)
                 .map_err(|e| e.to_string())
                 .and_then(|_| self.refresh_manual_album(&album));
             if let Err(e) = result {
@@ -173,7 +392,7 @@ struct Bridge {
             }
         }
     ),
-    matcher: Option<music_library::album_matching::AlbumMatcher>,
+    matcher: Option<music_library::provider_chain::ProviderChain>,
     matching_tracks: std::collections::HashMap<
         music_library::domain::AlbumId,
         Vec<music_library::edition::LocalTrackEvidence>,
@@ -283,6 +502,21 @@ impl Bridge {
     fn new(session: Session) -> Self {
         Self {
             base: Default::default(),
+            spotify_resolution_worker: None,
+            spotify_resolution_generation: 0,
+            spotify_resolution_selection: None,
+            spotify_resolution_pending: false,
+            spotify_resolution_message: String::new(),
+            spotify_resolution_counts: (0, 0),
+            spotify_resolve: Default::default(),
+            spotify_playback_worker: None,
+            spotify_playback_state: Default::default(),
+            spotify_playback_song: None,
+            spotify_playback_track: None,
+            spotify_playback_title: String::new(),
+            spotify_playback_snapshot: Default::default(),
+            spotify_playback_changed: Default::default(),
+            spotify_playback_action: Default::default(),
             snapshot: Default::default(),
             changed: Default::default(),
             catalog_snapshot: Default::default(),
@@ -299,6 +533,9 @@ impl Bridge {
             manual_selection: None,
             manual_error: String::new(),
             manual_associations: Default::default(),
+            spotify: false,
+            catalog_providers: vec!["musicbrainz".into()],
+            stored_programs: Default::default(),
             matching_provider: Default::default(),
             retry_matching: Default::default(),
             retry_match: Default::default(),
@@ -323,18 +560,200 @@ impl Bridge {
         }
     }
 
+    fn spotify_playback_value(&self) -> QVariantMap {
+        let s = &self.spotify_playback_state;
+        let choices: QVariantList = self
+            .spotify_resolution_selection
+            .as_ref()
+            .map(|selection| {
+                selection
+                    .candidates()
+                    .iter()
+                    .map(|c| {
+                        string(format!(
+                            "{} — {} | {} ({}) | {}:{:02} | disc {} track {} | {}",
+                            c.title,
+                            c.artist,
+                            c.album,
+                            c.date,
+                            c.duration_ms / 60000,
+                            (c.duration_ms / 1000) % 60,
+                            c.disc,
+                            c.number,
+                            c.identity.external_id
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let devices: QVariantList = s
+            .devices
+            .iter()
+            .map(|d| -> QVariant {
+                QVariantMap::from_iter([
+                    ("id", string(d.id.as_deref().unwrap_or_default())),
+                    (
+                        "label",
+                        string(format!(
+                            "{} ({}){}{}",
+                            d.name,
+                            d.kind,
+                            if d.is_active { " · active" } else { "" },
+                            if d.is_restricted {
+                                " · restricted"
+                            } else {
+                                ""
+                            }
+                        )),
+                    ),
+                    ("selectable", (d.id.is_some() && !d.is_restricted).into()),
+                ])
+                .into()
+            })
+            .collect();
+        QVariantMap::from_iter([
+            ("resolutionChoices", choices.into()),
+            (
+                "resolutionGeneration",
+                string(self.spotify_resolution_generation.to_string()),
+            ),
+            ("resolutionPending", self.spotify_resolution_pending.into()),
+            (
+                "resolutionMessage",
+                string(&self.spotify_resolution_message),
+            ),
+            (
+                "resolutionCounts",
+                string(format!(
+                    "Explicit catalog resolution: {} token / {} API requests",
+                    self.spotify_resolution_counts.0, self.spotify_resolution_counts.1
+                )),
+            ),
+            (
+                "songUri",
+                string(
+                    self.spotify_playback_song
+                        .as_ref()
+                        .map(|s| s.uri())
+                        .unwrap_or_default(),
+                ),
+            ),
+            ("status", string(format!("{:?}", s.authorization))),
+            (
+                "error",
+                string(
+                    s.error
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                ),
+            ),
+            (
+                "url",
+                string(s.authorization_url.as_deref().unwrap_or_default()),
+            ),
+            ("devices", devices.into()),
+            (
+                "selected",
+                string(s.selected_device.as_deref().unwrap_or_default()),
+            ),
+            ("title", string(&self.spotify_playback_title)),
+            ("available", self.spotify_playback_song.is_some().into()),
+            (
+                "observed",
+                string(format!(
+                    "{} · {} · {} ms · {}",
+                    s.state.title,
+                    if s.state.playing {
+                        "playing"
+                    } else {
+                        "paused/no playback"
+                    },
+                    s.state.progress_ms,
+                    s.state
+                        .device
+                        .as_ref()
+                        .map(|d| d.name.as_str())
+                        .unwrap_or("no active device")
+                )),
+            ),
+            (
+                "requests",
+                string(format!(
+                    "Playback token: {}; playback API: {}",
+                    s.token_requests, s.api_requests
+                )),
+            ),
+        ])
+    }
     fn ensure_matcher(&mut self) -> Result<(), String> {
         if self.matcher.is_none() {
+            if self.catalog_providers.len() > 1 {
+                let mut slots = vec![];
+                for (index, name) in self.catalog_providers.iter().enumerate() {
+                    let callback = matching_callback(qmetaobject::QPointer::from(&*self));
+                    let programs = program_callback(qmetaobject::QPointer::from(&*self));
+                    let retry =
+                        matching_retry_callback_for(qmetaobject::QPointer::from(&*self), index);
+                    let scope = if name == "spotify" {
+                        music_library_spotify::matching_scope()
+                    } else {
+                        music_library::catalog::MatchingScope::musicbrainz()
+                    };
+                    let matcher = if name == "spotify" {
+                        music_library_spotify::Spotify::from_env()
+                            .map_err(|e| e.to_string())
+                            .and_then(|p| {
+                                music_library::album_matching::AlbumMatcher::for_provider(
+                                    p,
+                                    scope.clone(),
+                                    callback,
+                                    programs,
+                                    retry,
+                                )
+                                .map_err(|e| e.to_string())
+                            })
+                    } else {
+                        music_library::album_matching::AlbumMatcher::for_provider(
+                            music_library_musicbrainz::MusicBrainz::new(),
+                            scope.clone(),
+                            callback,
+                            programs,
+                            retry,
+                        )
+                        .map_err(|e| e.to_string())
+                    };
+                    slots.push(music_library::provider_chain::ProviderSlot { scope, matcher });
+                }
+                self.matcher = Some(
+                    music_library::provider_chain::ProviderChain::new(slots)
+                        .map_err(|e| e.to_string())?,
+                );
+                return Ok(());
+            }
             let weak = qmetaobject::QPointer::from(&*self);
             let callback = matching_callback(weak);
+            let programs = program_callback(qmetaobject::QPointer::from(&*self));
+            let retry = matching_retry_callback(qmetaobject::QPointer::from(&*self));
             self.matcher = Some(
-                music_library::album_matching::AlbumMatcher::new_with_programs(
-                    music_library_musicbrainz::MusicBrainz::new(),
-                    callback,
-                    program_callback(qmetaobject::QPointer::from(&*self)),
-                    matching_retry_callback(qmetaobject::QPointer::from(&*self)),
-                )
-                .map_err(|e| e.to_string())?,
+                if self.spotify {
+                    music_library::album_matching::AlbumMatcher::for_provider(
+                        music_library_spotify::Spotify::from_env().map_err(|e| e.to_string())?,
+                        music_library_spotify::matching_scope(),
+                        callback,
+                        programs,
+                        retry,
+                    )
+                } else {
+                    music_library::album_matching::AlbumMatcher::new_with_programs(
+                        music_library_musicbrainz::MusicBrainz::new(),
+                        callback,
+                        programs,
+                        retry,
+                    )
+                }
+                .map_err(|e| e.to_string())?
+                .into(),
             );
         }
         Ok(())
@@ -352,30 +771,22 @@ impl Bridge {
                 .album_for_release(&import.release_id)
                 .map_err(|e| e.to_string())?;
             if !self.matching_rows.iter().any(|r| r.0 == album.album_id) {
-                self.manual_associations.insert(
-                    album.album_id.clone(),
-                    self.session
-                        .library
-                        .manual_track_associations(&album.album_id)
-                        .map_err(|e| e.to_string())?,
-                );
-                self.matching_tracks.insert(
-                    album.album_id.clone(),
-                    self.session
-                        .library
-                        .local_album_tracks(&album.album_id)
-                        .map_err(|e| e.to_string())?,
-                );
                 self.matching_rows.push((
-                    album.album_id,
+                    album.album_id.clone(),
                     album.title,
                     MatchOutcome::Disabled,
                     album.artist_names,
                 ));
+                self.refresh_manual_album(&album.album_id)?;
             }
         }
         if enabled && !imports.is_empty() {
-            self.ensure_matcher()?;
+            if let Err(error) = self.ensure_matcher() {
+                self.session.error = error;
+                self.changed();
+                self.matching_changed();
+                return Ok(());
+            }
             let outcomes = self
                 .matcher
                 .as_mut()
@@ -390,6 +801,40 @@ impl Bridge {
         }
         self.matching_changed();
         Ok(())
+    }
+    fn provider_for(&self, album: &music_library::domain::AlbumId) -> String {
+        if let Some(m) = &self.matcher
+            && m.outcome(album).is_some()
+        {
+            return m.provider(album).to_owned();
+        }
+        if self.catalog_providers.len() > 1 {
+            let identities = self
+                .session
+                .library
+                .list_album_external_identities(album)
+                .unwrap_or_default();
+            if let Some(provider) = self.catalog_providers.iter().find(|p| {
+                self.manual_associations
+                    .get(album)
+                    .is_some_and(|a| a.iter().any(|a| &a.album.provider == *p))
+            }) {
+                return provider.clone();
+            }
+            if let Some(provider) = self
+                .catalog_providers
+                .iter()
+                .find(|p| identities.iter().any(|i| &i.provider == *p))
+            {
+                return provider.clone();
+            }
+            return self.catalog_providers[0].clone();
+        }
+        if self.spotify {
+            "spotify".into()
+        } else {
+            "musicbrainz".into()
+        }
     }
     fn refresh_manual_album(
         &mut self,
@@ -408,6 +853,34 @@ impl Bridge {
                 .library
                 .local_album_tracks(album)
                 .map_err(|e| e.to_string())?,
+        );
+        let provider = self.provider_for(album);
+        self.manual_associations
+            .get_mut(album)
+            .unwrap()
+            .retain(|a| a.album.provider == provider);
+        let stored = self
+            .session
+            .library
+            .provider_track_associations(album, &provider)
+            .map_err(|e| e.to_string())?;
+        let rows = self.matching_tracks[album]
+            .iter()
+            .filter_map(|t| {
+                stored
+                    .iter()
+                    .find(|(id, _)| *id == t.track_id)
+                    .map(|(_, m)| {
+                        (
+                            t.clone(),
+                            music_library::album_program::TrackOutcome::AlreadyMatched(m.clone()),
+                        )
+                    })
+            })
+            .collect();
+        self.stored_programs.insert(
+            album.clone(),
+            music_library::album_program::Outcome::Complete(rows),
         );
         Ok(())
     }
@@ -512,15 +985,41 @@ impl Bridge {
             .matcher
             .as_ref()
             .is_some_and(|m| matches!(m.circuit_state(), CircuitState::Unavailable(_)));
-        let message = match self.matcher.as_ref().map(|m| m.circuit_state()) {
-            Some(CircuitState::Unavailable(error)) => {
-                format!(
-                    "MusicBrainz unavailable — matching paused; retrying automatically: {error}"
-                )
+        let message = if self.catalog_providers.len() > 1 {
+            self.matcher
+                .as_ref()
+                .map(|m| m.provider_messages().join("; "))
+                .unwrap_or_default()
+        } else {
+            match self.matcher.as_ref().map(|m| m.circuit_state()) {
+                Some(CircuitState::Unavailable(error)) => {
+                    format!(
+                        "{} unavailable — matching paused; retrying automatically: {error}",
+                        if self.spotify {
+                            "Spotify"
+                        } else {
+                            "MusicBrainz"
+                        }
+                    )
+                }
+                _ => String::new(),
             }
-            _ => String::new(),
         };
         values.insert("paused".into(), paused.into());
+        values.insert(
+            "name".into(),
+            string(if self.catalog_providers.len() > 1 {
+                self.catalog_providers.join(" → ")
+            } else {
+                if self.spotify {
+                    "Spotify"
+                } else {
+                    "MusicBrainz"
+                }
+                .to_owned()
+            }),
+        );
+        values.insert("catalogAddSupported".into(), (!self.spotify).into());
         values.insert(
             "processing".into(),
             self.matcher
@@ -556,7 +1055,10 @@ impl Bridge {
                 let program = self.matcher.as_ref().and_then(|m| m.program_outcome(id));
                 let track_rows = program_rows(
                     self.matching_tracks.get(id).map_or(&[], Vec::as_slice),
-                    program,
+                    match program {
+                        Some(music_library::album_program::Outcome::Complete(_)) => program,
+                        _ => self.stored_programs.get(id).filter(|o| matches!(o, music_library::album_program::Outcome::Complete(rows) if !rows.is_empty())).or(program),
+                    },
                     self.manual_associations.get(id).map_or(&[], Vec::as_slice),
                 );
                 let (mut recording_summary, recording_details) = recording_presentation(
@@ -577,7 +1079,7 @@ impl Bridge {
                     };
                 }
                 let status = match outcome {
-                    MatchOutcome::Pending => "Pending MusicBrainz matching…".into(),
+                    MatchOutcome::Pending => format!("Pending {} matching…", provider_label(self.matcher.as_ref().map(|m|m.provider(id)).unwrap_or(if self.spotify { "spotify" } else { "musicbrainz" }))),
                     MatchOutcome::Matched(identity) => format!("Matched: {}", identity.external_id),
                     MatchOutcome::MatchedClose(identity) => {
                         format!("Matched close title: {}", identity.external_id)
@@ -605,12 +1107,14 @@ impl Bridge {
                             .join("; ")
                     ),
                     MatchOutcome::AlreadyMatched => "Already matched".into(),
+                    MatchOutcome::AlbumEquivalent { .. } => "Album and Tracks supported; provider catalog identity unresolved".into(),
                     MatchOutcome::Disabled => "Automatic matching disabled; Retry available".into(),
                     MatchOutcome::Skipped => {
                         "Skipped: insufficient or changed local metadata".into()
                     }
                     MatchOutcome::NoConfidentMatch => "No confident match".into(),
                     MatchOutcome::Error(error) => format!("Error: {error}"),
+                    MatchOutcome::ConfigurationError(error) => format!("Configuration error: {error}"),
                     MatchOutcome::Deferred(error) => {
                         format!("Deferred — provider unavailable: {error}")
                     }
@@ -635,7 +1139,15 @@ impl Bridge {
                         .collect(),
                     _ => QVariantList::default(),
                 };
+                let (equivalent_title, equivalent_artist) = if let MatchOutcome::AlbumEquivalent { candidates, .. } = &outcome {
+                    let titles: std::collections::BTreeSet<_> = candidates.iter().map(|c| c.title.as_str()).collect();
+                    let artists: std::collections::BTreeSet<_> = candidates.iter().map(|c| c.artist.as_str()).collect();
+                    (titles.into_iter().collect::<Vec<_>>().join(" / "), artists.into_iter().collect::<Vec<_>>().join(" / "))
+                } else { (String::new(), String::new()) };
                 QVariantMap::from_iter([
+                    ("provider",string(provider_label(self.matcher.as_ref().map(|m|m.provider(id)).unwrap_or(if self.spotify {"spotify"}else{"musicbrainz"})))),
+                    ("providerHistory",string(self.matcher.as_ref().map(|m|m.attempts(id).iter().map(|a|format!("{}: {}",a.provider,attempt_label(&a.outcome))).collect::<Vec<_>>().join("; ")).unwrap_or_default())),
+                    ("equivalent", matches!(outcome,MatchOutcome::AlbumEquivalent{..}).into()),
                     ("albumId", string(id.as_ref())),
                     ("tracks", track_rows.into()),
                     ("artists", artists.into()),
@@ -645,11 +1157,11 @@ impl Bridge {
                     ("localArtist", string(local_artist)),
                     (
                         "matchedTitle",
-                        string(matched.map_or("", |c| c.title.as_str())),
+                        string(matched.map_or(equivalent_title.as_str(), |c| c.title.as_str())),
                     ),
                     (
                         "matchedArtist",
-                        string(matched.map_or("", |c| c.artist.as_str())),
+                        string(matched.map_or(equivalent_artist.as_str(), |c| c.artist.as_str())),
                     ),
                     (
                         "matchedClose",
@@ -664,6 +1176,12 @@ impl Bridge {
     }
 
     fn start_catalog(&mut self, action: &str, value: &str) -> Result<(), String> {
+        if self.spotify {
+            return Err(
+                "Spotify supports local Album/Track matching; catalog Add Album is not implemented"
+                    .into(),
+            );
+        }
         self.catalog.timing = Some(music_library::catalog::Timing::new(format!(
             "qml.{action}.button_to_completion"
         )));
@@ -878,13 +1396,40 @@ fn time_label(ms: Option<u64>) -> String {
         |ms| format!("{:02}:{:02}", ms / 60_000, (ms / 1000) % 60),
     )
 }
+fn provider_label(name: &str) -> &str {
+    match name {
+        "musicbrainz" => "MusicBrainz",
+        "spotify" => "Spotify",
+        other => other,
+    }
+}
+fn attempt_label(outcome: &music_library::album_matching::MatchOutcome) -> String {
+    use music_library::album_matching::MatchOutcome;
+    match outcome {
+        MatchOutcome::NoConfidentMatch => "no confident match".into(),
+        MatchOutcome::ArtistAmbiguous(_) => "Artist ambiguous".into(),
+        MatchOutcome::AlbumAmbiguous(_) => "Album ambiguous".into(),
+        MatchOutcome::Deferred(e) => format!("unavailable: {e}"),
+        MatchOutcome::ConfigurationError(e) => format!("configuration: {e}"),
+        MatchOutcome::Error(e) => e.clone(),
+        _ => "Album supported".into(),
+    }
+}
 
 fn matching_retry_callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(u64) + Send + 'static {
+    matching_retry_callback_for(weak, 0)
+}
+fn matching_retry_callback_for(
+    weak: qmetaobject::QPointer<Bridge>,
+    provider: usize,
+) -> impl Fn(u64) + Send + 'static {
     qmetaobject::queued_callback(move |token: u64| {
         if let Some(pinned) = weak.as_pinned() {
             let mut bridge = pinned.borrow_mut();
             if let Some(mut matcher) = bridge.matcher.take() {
-                if let Err(error) = matcher.cooldown_elapsed(&bridge.session.library, token) {
+                if let Err(error) =
+                    matcher.cooldown_provider(&bridge.session.library, provider, token)
+                {
                     bridge.session.error = error.to_string();
                     bridge.changed();
                 }
@@ -949,11 +1494,16 @@ fn program_rows(
             };
             QVariantMap::from_iter([
                 ("trackId", string(t.track_id.as_ref())),
+                ("songIdentityAmbiguous", matches!(result,Some(TrackOutcome::Matched(m)|TrackOutcome::AlreadyMatched(m)) if m.recording_status==music_library::album_program::RecordingStatus::NotProvided && m.occurrences.is_empty()).into()),
                 ("manual", (status == "Manual").into()),
                 (
                     "canChoose",
-                    (status != "Manual" && status != "Pending" && recording_status != "Identified")
-                        .into(),
+                    (status != "Manual"
+                        && status != "Pending"
+                        && recording_status != "Identified"
+                        && !(recording_status == "NotProvided"
+                            && matches!(status, "Matched" | "AlreadyMatched")))
+                    .into(),
                 ),
                 (
                     "storedIdentity",
@@ -1131,6 +1681,51 @@ fn engine_callback(
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args: Vec<_> = std::env::args_os().skip(1).collect();
+    let providers = if let Some(index) = args.iter().position(|a| a == "--catalog-providers") {
+        if args.iter().any(|a| a == "--catalog-provider") {
+            return Err("Choose --catalog-provider or --catalog-providers, not both".into());
+        }
+        let value = args
+            .get(index + 1)
+            .and_then(|s| s.to_str())
+            .ok_or("--catalog-providers requires an ordered comma-separated list")?;
+        let providers: Vec<String> = value.split(',').map(str::to_owned).collect();
+        let mut seen = std::collections::HashSet::new();
+        if providers
+            .iter()
+            .any(|p| !matches!(p.as_str(), "spotify" | "musicbrainz") || !seen.insert(p.clone()))
+        {
+            return Err(
+                "Configure distinct spotify/musicbrainz providers in the desired order".into(),
+            );
+        }
+        args.drain(index..=index + 1);
+        Some(providers)
+    } else {
+        None
+    };
+    let spotify = if let Some(index) = args.iter().position(|a| a == "--catalog-provider") {
+        let value = args
+            .get(index + 1)
+            .ok_or("--catalog-provider requires musicbrainz or spotify")?;
+        let spotify = match value.to_str() {
+            Some("spotify") => true,
+            Some("musicbrainz") => false,
+            _ => return Err("--catalog-provider requires musicbrainz or spotify".into()),
+        };
+        args.drain(index..=index + 1);
+        spotify
+    } else {
+        false
+    };
+    let providers = providers.unwrap_or_else(|| {
+        vec![if spotify {
+            "spotify".into()
+        } else {
+            "musicbrainz".into()
+        }]
+    });
+    let spotify = providers[0] == "spotify";
     let auto_match = !args.iter().any(|a| a == "--no-auto-match");
     args.retain(|a| a != "--no-auto-match");
     let (smoke, folder) = match args.as_slice() {
@@ -1142,7 +1737,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: qml-diagnostic [--no-auto-match] [--smoke-test | --gstreamer FOLDER [--smoke-test]]".into(),
+                "usage: qml-diagnostic [--catalog-provider musicbrainz|spotify | --catalog-providers spotify,musicbrainz] [--no-auto-match] [--smoke-test | --gstreamer FOLDER [--smoke-test]]".into(),
             );
         }
     };
@@ -1164,6 +1759,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Pin before exposing to QML, and keep the QObject alive until QML destruction.
     let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+    bridge.pinned().borrow_mut().spotify = spotify;
+    bridge.pinned().borrow_mut().catalog_providers = providers;
     let mut engine = QmlEngine::new();
     #[cfg(feature = "gstreamer")]
     if folder.is_some() {
@@ -1206,6 +1803,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })();
     bridge.pinned().borrow_mut().matcher.take();
     bridge.pinned().borrow_mut().catalog.worker.take();
+    bridge.pinned().borrow_mut().spotify_playback_worker.take();
+    bridge
+        .pinned()
+        .borrow_mut()
+        .spotify_resolution_worker
+        .take();
     // Join the audio worker while Qt and its callback target still exist, even on QML load failure.
     #[cfg(feature = "gstreamer")]
     bridge.pinned().borrow_mut().session.shutdown_audio();
@@ -1464,7 +2067,8 @@ mod event_delivery_tests {
                 },
                 matching_retry_callback(qmetaobject::QPointer::from(bridge.pinned().borrow())),
             )
-            .unwrap(),
+            .unwrap()
+            .into(),
         );
         bridge
             .pinned()
@@ -1533,7 +2137,7 @@ mod event_delivery_tests {
             .to_string();
         assert_eq!(
             displayed,
-            "Local: Local Album — Artist\nMatched (close): local albums — Canonical Artist"
+            "Local: Local Album — Artist\nMatched (close): local albums — Canonical Artist [MusicBrainz]"
         );
         assert_eq!(
             bridge
@@ -1884,6 +2488,12 @@ mod event_delivery_tests {
         return initial + "|" + enabled + "|" + manualTrackDialog.visible;
     }
     function testClearManual(album, track) { window.bridge.clear_track_choice(album, track); }
+    function testSpotifySongChoice(action) {
+        if (action === "select") spotifySongChoice.currentIndex = 0;
+        if (action === "confirm") window.bridge.spotify_resolve("confirm", spotifySongChoice.currentIndex);
+        if (action === "cancel") window.bridge.spotify_resolve("cancel", -1);
+        return spotifySongChoice.currentIndex + "|" + window.spotifyPlayback.available;
+    }
     function changedMatchingRowStatus() {
         for (let i = 0; i < matchingModel.count; ++i) {
             if (matchingModel.get(i).albumKey === "scroll-1")
@@ -1995,6 +2605,7 @@ mod event_delivery_tests {
         assert_eq!(report(&engine), failed);
         catalog_flow(&engine, &bridge);
         matching_flow(&engine, &bridge);
+        spotify_song_resolution_ui(&engine, &bridge);
         // A real queued QObject notification updates B while the user inspects Q.
         {
             let pinned = bridge.pinned();
@@ -2104,6 +2715,35 @@ mod event_delivery_tests {
                     supporting_programs: 2,
                 },
             };
+            let song_outcome = Outcome::Complete(vec![(
+                local.clone(),
+                TrackOutcome::Matched(music_library::album_program::Match {
+                    title: "Feel Good Inc.".into(),
+                    recording: RecordingEvidence::default(),
+                    recording_status: music_library::album_program::RecordingStatus::NotProvided,
+                    occurrences: vec![music_library::domain::ExternalIdentity {
+                        provider: "spotify".into(),
+                        kind: "track".into(),
+                        external_id: "song".into(),
+                    }],
+                    explanation: "Album-scoped song".into(),
+                }),
+            )]);
+            let rows = program_rows(std::slice::from_ref(&local), Some(&song_outcome), &[]);
+            assert!(
+                !rows[0]
+                    .to_qvariantmap()
+                    .value("canChoose".into(), QVariant::default())
+                    .to_bool()
+            );
+            assert_eq!(
+                engine
+                    .borrow_mut()
+                    .invoke_method("testTrackExpansion".into(), &[rows.into()])
+                    .to_qstring()
+                    .to_string(),
+                "true|Local: Feel Good Inc → Matched: Feel Good Inc. (Matched; provider song identified)"
+            );
             let rows = program_rows(&[local], Some(&Outcome::Pending), &[manual]);
             assert_eq!(
                 engine
@@ -2111,7 +2751,7 @@ mod event_delivery_tests {
                     .invoke_method("testTrackExpansion".into(), &[rows.into()])
                     .to_qstring()
                     .to_string(),
-                "true|Local: Feel Good Inc → Matched: Chosen provider title (Manual; Recording: NotProvided)",
+                "true|Local: Feel Good Inc → Matched: Chosen provider title (Manual; provider song identified)",
                 "stored manual presentation survives pending automatic refresh"
             );
         }
@@ -2121,7 +2761,7 @@ mod event_delivery_tests {
                 .invoke_method("providerPresentationText".into(), &[])
                 .to_qstring()
                 .to_string(),
-            "Local: Album 20 — Local Artist\nMatched (close): Provider Album — tsosis"
+            "Local: Album 20 — Local Artist\nMatched (close): Provider Album — tsosis [MusicBrainz]"
         );
         assert_eq!(
             engine
@@ -2217,6 +2857,101 @@ mod event_delivery_tests {
         drop(engine); // Destroy QML bindings while their QObject still exists.
     }
 
+    fn spotify_song_resolution_ui(engine: &Rc<RefCell<QmlEngine>>, bridge: &QObjectBox<Bridge>) {
+        use music_library::{
+            domain::SearchRequest,
+            song_resolution::{Candidate, Selection},
+        };
+        let selection = {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            let row = b
+                .session
+                .library
+                .search(&SearchRequest {
+                    limit: 1,
+                    ..Default::default()
+                })
+                .unwrap()
+                .remove(0);
+            b.spotify_playback_action("track".into(), row.track_id.as_ref().into());
+            let input = b
+                .session
+                .library
+                .song_resolution_input(&row.track_id)
+                .unwrap();
+            Selection::new(
+                input,
+                vec![Candidate {
+                    identity: music_library::domain::ExternalIdentity {
+                        provider: "spotify".into(),
+                        kind: "track".into(),
+                        external_id: "1234567890123456789012".into(),
+                    },
+                    title: "Provider Song".into(),
+                    artist: "Artist".into(),
+                    album: "Album variant".into(),
+                    date: "2020".into(),
+                    duration_ms: 200000,
+                    disc: 1,
+                    number: 1,
+                }],
+            )
+        };
+        let publish = || {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.spotify_resolution_selection = Some(selection.clone());
+            b.spotify_playback_changed();
+        };
+        let action = |action: &str| {
+            engine
+                .borrow_mut()
+                .invoke_method("testSpotifySongChoice".into(), &[string(action)])
+                .to_qstring()
+                .to_string()
+        };
+        publish();
+        assert_eq!(action(""), "-1|false");
+        assert_eq!(action("select"), "0|false");
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.spotify_playback_state.state.progress_ms = 9000;
+            b.spotify_playback_changed();
+        }
+        assert_eq!(
+            action(""),
+            "0|false",
+            "unrelated playback notification must preserve selection"
+        );
+        assert_eq!(action("cancel"), "-1|false");
+        assert!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .track_provider_occurrences(&selection.input().track_id, "spotify")
+                .unwrap()
+                .is_empty()
+        );
+        publish();
+        action("select");
+        assert_eq!(action("confirm"), "-1|true");
+        let pinned = bridge.pinned();
+        let b = pinned.borrow();
+        assert_eq!(
+            b.session
+                .library
+                .track_provider_occurrences(&selection.input().track_id, "spotify")
+                .unwrap(),
+            vec![selection.candidates()[0].identity.clone()]
+        );
+        assert!(b.spotify_resolution_worker.is_none());
+        assert!(b.spotify_playback_worker.is_none());
+        assert_eq!(b.spotify_resolution_counts, (0, 0));
+    }
     fn clear_manual_program_flow(engine: &Rc<RefCell<QmlEngine>>, bridge: &QObjectBox<Bridge>) {
         use music_library::{
             album_matching::AlbumMatcher, album_program::*, catalog::*, domain::ExternalIdentity,
@@ -2289,16 +3024,28 @@ mod event_delivery_tests {
         let deliver = program_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
         let quit = engine.clone();
         let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
+        bridge.pinned().borrow_mut().catalog_providers =
+            vec!["spotify".into(), "musicbrainz".into()];
         bridge.pinned().borrow_mut().matcher = Some(
-            AlbumMatcher::new_with_programs(
-                Provider(programs),
-                |_| panic!(),
-                move |reply| {
-                    deliver(reply);
-                    done(());
+            music_library::provider_chain::ProviderChain::new(vec![
+                music_library::provider_chain::ProviderSlot {
+                    scope: music_library_spotify::matching_scope(),
+                    matcher: Err("Unconfigured diagnostic provider".into()),
                 },
-                |_| {},
-            )
+                music_library::provider_chain::ProviderSlot {
+                    scope: music_library::catalog::MatchingScope::musicbrainz(),
+                    matcher: Ok(AlbumMatcher::new_with_programs(
+                        Provider(programs),
+                        |_| panic!(),
+                        move |reply| {
+                            deliver(reply);
+                            done(());
+                        },
+                        |_| {},
+                    )
+                    .unwrap()),
+                },
+            ])
             .unwrap(),
         );
         engine.borrow_mut().invoke_method(

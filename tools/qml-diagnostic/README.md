@@ -481,3 +481,53 @@ writes the library. A third explicit Artist MBID uses the manual-confirmation
 threshold. Its optional exact-title control adds a diagnostic request beyond the
 normal two-search flow. The latest Tabar probe exhausted three HTTP 503 attempts
 with Retry-After 0; deterministic tests cover both cases without the live service.
+# Spotify matching (selected provider)
+
+An ordered chain is also available:
+
+```sh
+MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-library-provider-fallback.sqlite cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- --catalog-providers spotify,musicbrainz --gstreamer /mnt/f/music
+```
+
+Reverse the list for MusicBrainz-first. Do not combine the plural flag with the
+existing single-provider flag. Only configured providers participate. Accepted
+Album identities (including those accepted from embedded tags) avoid rediscovery;
+otherwise bounded failure/ambiguity/unavailability permits fallback. The first
+confident Album provider supplies Track enrichment, and the row shows its name.
+No secondary enrichment or exact-edition selection is required. Missing Spotify
+credentials remain diagnostic while configured MusicBrainz can continue.
+Use fresh isolated databases for live discovery tests and the same database only
+for restart tests; see [the request-count audit](../../docs/provider-fallback-audit.md).
+
+MusicBrainz remains the default. `--catalog-provider spotify` selects Spotify for
+the entire Artist → Album → Track job and uses the same expandable matching UI,
+manual chooser and cooldown worker. See [Spotify setup](../../adapters/spotify/README.md)
+for credentials, explicit market, current access limitations and request counts.
+
+```sh
+export SPOTIFY_CLIENT_ID='your-client-id'
+export SPOTIFY_CLIENT_SECRET='your-client-secret'
+export SPOTIFY_MARKET='US'
+MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-library-spotify.sqlite cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- --catalog-provider spotify --gstreamer /mnt/f/music
+```
+
+Relaunch with the same database to inspect durable automatic/manual song associations.
+The provider name appears in **Local Album matches…**. A Spotify song match is
+successful without Recording identity. Local display metadata remains alongside
+matched provider titles. MusicBrainz-only **Catalog…** add/browse is disabled for
+this run; local search/import/playback remain available. Single-provider mode never
+invokes another provider; chains invoke another only on fallback. Missing credentials appear as an actionable error without invalidating
+the imported local library.
+
+## Spotify user playback
+
+The **Spotify Playback…** diagnostic controls a user-selected Spotify Connect
+desktop device independently from GStreamer and catalog authentication. Use
+**Spotify…** beside a library Track to select its persisted song association;
+if it has no association, **Search Spotify for this Track** provides a bounded
+catalog candidate chooser requiring explicit confirmation. Catalog-added Tracks
+work without a local file or a Spotify Album identity. No search occurs on Play.
+See [setup, exact redirect, restricted token storage and
+manual test](../../adapters/spotify/PLAYBACK.md). Local queue and automatic source
+selection are unchanged. The backend/probe requires only `SPOTIFY_CLIENT_ID` for
+playback OAuth; catalog matching keeps its existing separate credentials.

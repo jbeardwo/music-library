@@ -18,6 +18,179 @@ ApplicationWindow {
     readonly property var view: window.bridge.snapshot
     readonly property var matchingView: window.bridge.matching_snapshot
     readonly property var catalogView: window.bridge.catalog_snapshot
+    readonly property var spotifyPlayback: window.bridge.spotify_playback_snapshot
+    property string openedSpotifyAuthorization: ""
+    property string spotifyChoicesSignature: ""
+    property var spotifyChoices: []
+    onSpotifyPlaybackChanged: {
+        const signature = spotifyPlayback.resolutionGeneration + JSON.stringify(spotifyPlayback.resolutionChoices);
+        if (signature !== spotifyChoicesSignature) {
+            spotifyChoicesSignature = signature;
+            spotifyChoices = spotifyPlayback.resolutionChoices;
+            spotifySongChoice.currentIndex = -1;
+        }
+        if (spotifyPlayback.url.length > 0 && spotifyPlayback.url !== openedSpotifyAuthorization) {
+            openedSpotifyAuthorization = spotifyPlayback.url;
+            Qt.openUrlExternally(spotifyPlayback.url);
+        }
+    }
+
+    Dialog {
+        id: spotifyPlaybackDialog
+        title: "Spotify Playback — separate from catalog and local audio"
+        width: Math.min(780, window.width - 30)
+        anchors.centerIn: parent
+        modal: false
+        standardButtons: Dialog.Close
+        onOpened: window.bridge.spotify_playback_action("visible", "true")
+        onClosed: {
+            window.bridge.spotify_playback_action("visible", "false");
+            window.bridge.spotify_resolve("cancel", -1);
+        }
+        ColumnLayout {
+            width: parent.width
+            RowLayout {
+                Button {
+                    text: "Connect Spotify Playback"
+                    enabled: window.spotifyPlayback.status !== "Authorizing"
+                    onClicked: window.bridge.spotify_playback_action("connect", "")
+                }
+                Button {
+                    text: "Cancel authorization"
+                    visible: window.spotifyPlayback.status === "Authorizing"
+                    onClicked: window.bridge.spotify_playback_action("cancel", "")
+                }
+                Label { text: "Status: " + window.spotifyPlayback.status }
+            }
+            Label {
+                text: window.spotifyPlayback.error
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            Button {
+                text: "Open authorization in browser"
+                visible: window.spotifyPlayback.url.length > 0
+                onClicked: Qt.openUrlExternally(window.spotifyPlayback.url)
+            }
+            TextArea {
+                visible: window.spotifyPlayback.url.length > 0
+                text: window.spotifyPlayback.url
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.WrapAnywhere
+                Layout.fillWidth: true
+                Layout.maximumHeight: 110
+            }
+            Label {
+                text: "Open Spotify on this computer, then explicitly select its desktop device."
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                ComboBox {
+                    id: spotifyDevice
+                    Layout.fillWidth: true
+                    model: window.spotifyPlayback.devices
+                    textRole: "label"
+                    currentIndex: -1
+                    displayText: {
+                        for (let i = 0; i < window.spotifyPlayback.devices.length; ++i) {
+                            if (window.spotifyPlayback.devices[i].id === window.spotifyPlayback.selected)
+                                return window.spotifyPlayback.devices[i].label;
+                        }
+                        return "Select a Spotify device…";
+                    }
+                    onActivated: {
+                        const device = window.spotifyPlayback.devices[currentIndex];
+                        window.bridge.spotify_playback_action("device", device.id);
+                    }
+                }
+                Button {
+                    text: "Refresh devices"
+                    onClicked: window.bridge.spotify_playback_action("refresh", "")
+                }
+            }
+            Label {
+                text: "Selected library Track: " + (window.spotifyPlayback.title || "Use Spotify… beside a library Track")
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            Label {
+                text: window.spotifyPlayback.available ? "Spotify association: available" : "No Spotify playback association"
+            }
+            Label {
+                text: window.spotifyPlayback.songUri
+                visible: window.spotifyPlayback.available
+                textFormat: Text.PlainText
+            }
+            Button {
+                text: window.spotifyPlayback.resolutionPending ? "Searching Spotify catalog…" : "Search Spotify for this Track"
+                enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
+                onClicked: window.bridge.spotify_resolve("search", -1)
+            }
+            Label {
+                text: window.spotifyPlayback.resolutionMessage
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            ComboBox {
+                id: spotifySongChoice
+                Layout.fillWidth: true
+                model: window.spotifyChoices
+                currentIndex: -1
+                visible: window.spotifyChoices.length > 0
+                displayText: currentIndex < 0 ? "Choose a Spotify song explicitly…" : currentText
+            }
+            Label {
+                visible: spotifySongChoice.currentIndex >= 0
+                text: spotifySongChoice.currentText
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            RowLayout {
+                visible: window.spotifyChoices.length > 0 || window.spotifyPlayback.resolutionPending
+                Button {
+                    text: "Confirm Spotify association"
+                    enabled: spotifySongChoice.currentIndex >= 0 && !window.spotifyPlayback.resolutionPending
+                    onClicked: window.bridge.spotify_resolve("confirm", spotifySongChoice.currentIndex)
+                }
+                Button {
+                    text: "Cancel selection"
+                    onClicked: window.bridge.spotify_resolve("cancel", -1)
+                }
+            }
+            Label { text: window.spotifyPlayback.resolutionCounts }
+            RowLayout {
+                Button {
+                    text: "Play / Resume"
+                    enabled: window.spotifyPlayback.available && window.spotifyPlayback.selected.length > 0
+                    onClicked: window.bridge.spotify_playback_action("play", "")
+                }
+                Button {
+                    text: "Pause"
+                    enabled: window.spotifyPlayback.selected.length > 0
+                    onClicked: window.bridge.spotify_playback_action("pause", "")
+                }
+                SpinBox { id: spotifySeek; from: 0; to: 86400; editable: true }
+                Button {
+                    text: "Seek (seconds)"
+                    enabled: window.spotifyPlayback.selected.length > 0
+                    onClicked: window.bridge.spotify_playback_action("seek", String(spotifySeek.value * 1000))
+                }
+            }
+            Label {
+                text: "Observed: " + window.spotifyPlayback.observed
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                Layout.fillWidth: true
+            }
+            Label { text: window.spotifyPlayback.requests }
+        }
+    }
 
     // Keep delegate identity and display order independent from queue completion.
     ListModel {
@@ -60,6 +233,10 @@ ApplicationWindow {
                 onClicked: matchingDialog.open()
             }
             Button {
+                text: "Spotify Playback…"
+                onClicked: spotifyPlaybackDialog.open()
+            }
+            Button {
                 text: window.bridge.matching_provider.probe ? "Retrying…" : "Retry Matching"
                 visible: window.bridge.matching_provider.paused
                 enabled: !window.bridge.matching_provider.probe
@@ -67,7 +244,7 @@ ApplicationWindow {
             }
             Label {
                 visible: window.bridge.matching_provider.paused || window.bridge.matching_provider.queued > 0
-                text: window.bridge.matching_provider.paused ? window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)" : "MusicBrainz matching: " + window.bridge.matching_provider.queued + " queued/running"
+                text: window.bridge.matching_provider.paused ? window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)" : window.bridge.matching_provider.name + " matching: " + window.bridge.matching_provider.queued + " queued/running"
                 Layout.maximumWidth: 550
                 wrapMode: Text.Wrap
             }
@@ -78,7 +255,7 @@ ApplicationWindow {
     }
     Dialog {
         id: matchingDialog
-        title: "Local Album matching — " + (window.bridge.matching_provider.paused ? "MusicBrainz unavailable; retrying automatically" : window.bridge.matching_provider.processing ? "processing; " + (window.bridge.matching_provider.queued - 1) + " waiting" : window.bridge.matching_provider.queued > 0 ? window.bridge.matching_provider.queued + " waiting" : "queue idle")
+        title: "Local Album matching [" + window.bridge.matching_provider.name + "] — " + (window.bridge.matching_provider.paused ? "unavailable; retrying automatically" : window.bridge.matching_provider.processing ? "processing; " + (window.bridge.matching_provider.queued - 1) + " waiting" : window.bridge.matching_provider.queued > 0 ? window.bridge.matching_provider.queued + " waiting" : "queue idle")
         width: Math.min(window.width - 40, 900)
         height: 400
         anchors.centerIn: parent
@@ -146,12 +323,12 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             textFormat: Text.PlainText
                             wrapMode: Text.Wrap
-                            text: "Local: " + trackRow.modelData.localTitle + " → " + (trackRow.modelData.matchedTitle ? "Matched: " + trackRow.modelData.matchedTitle + " (" + trackRow.modelData.status + "; Recording: " + trackRow.modelData.recordingStatus + ")" : trackRow.modelData.status + (trackRow.modelData.storedIdentity ? " [" + trackRow.modelData.storedIdentity + "]" : ""))
+                            text: "Local: " + trackRow.modelData.localTitle + " → " + (trackRow.modelData.matchedTitle ? "Matched: " + trackRow.modelData.matchedTitle + " (" + trackRow.modelData.status + (trackRow.modelData.songIdentityAmbiguous ? "; provider song identity unresolved" : trackRow.modelData.recordingStatus === "NotProvided" ? "; provider song identified" : "; Recording: " + trackRow.modelData.recordingStatus) + ")" : trackRow.modelData.status + (trackRow.modelData.storedIdentity ? " [" + trackRow.modelData.storedIdentity + "]" : ""))
                         }
                         Button {
                             objectName: "choose-track-" + trackRow.modelData.trackId
                             text: trackRow.modelData.matchedTitle ? "Choose Recording" : "Choose Match"
-                            visible: !!trackRow.modelData.canChoose
+                            visible: !!trackRow.modelData.canChoose && !matchRow.rowData.equivalent
                             onClicked: {
                                 manualTrackDialog.albumKey = matchRow.rowData.albumId;
                                 manualTrackDialog.trackKey = trackRow.modelData.trackId;
@@ -279,10 +456,10 @@ ApplicationWindow {
     function matchingLabel(row) {
         const local = row.title + (row.localArtist ? " — " + row.localArtist : "");
         if (!row.matchedTitle)
-            return local + " — " + row.status;
+            return local + " — " + row.status + (row.providerHistory ? "\n" + row.providerHistory : "");
         const provider = row.matchedTitle + (row.matchedArtist ? " — " + row.matchedArtist : "");
         const label = row.matchedClose ? "Matched (close): " : "Matched: ";
-        return "Local: " + local + "\n" + label + provider;
+        return "Local: " + local + "\n" + label + provider + (row.provider ? " [" + row.provider + "]" : "");
     }
 
     Dialog {
@@ -413,6 +590,12 @@ ApplicationWindow {
                 throw new Error(message);
         }
         try {
+            check(window.spotifyPlayback.status === "Disconnected", "playback OAuth independent from catalog");
+            window.bridge.spotify_playback_action("track", view.rows[0].trackId);
+            check(!window.spotifyPlayback.available, "no playback lookup/search without persisted association");
+            check(window.spotifyPlayback.resolutionCounts === "Explicit catalog resolution: 0 token / 0 API requests", "selecting Track does not search catalog");
+            check(spotifySongChoice.currentIndex === -1, "song chooser requires explicit selection");
+            check(view.status === "Stopped", "Spotify selection does not control local playback");
             check(view.volume === 1 && volumeSlider.value === 100, "default volume");
             volumeSlider.value = 35;
             volumeSlider.moved();
@@ -521,6 +704,7 @@ ApplicationWindow {
         RowLayout {
             Button {
                 text: "Catalog…"
+                enabled: window.bridge.matching_provider.catalogAddSupported
                 onClicked: catalogDialog.open()
             }
             TextField {
@@ -580,6 +764,13 @@ ApplicationWindow {
                 Button {
                     text: "Add to queue"
                     onClicked: window.bridge.enqueue_row(resultRow.modelData.trackId)
+                }
+                Button {
+                    text: "Spotify…"
+                    onClicked: {
+                        window.bridge.spotify_playback_action("track", resultRow.modelData.trackId);
+                        spotifyPlaybackDialog.open();
+                    }
                 }
                 Button {
                     text: "Replace queue & play"

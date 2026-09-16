@@ -826,6 +826,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "music-library-spotify"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "music-library",
+ "ring",
+ "serde",
+ "serde_json",
+ "ureq",
+ "url",
+]
+
+[[package]]
 name = "num-integer"
 version = "0.1.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -958,6 +971,7 @@ dependencies = [
  "music-library",
  "music-library-gstreamer",
  "music-library-musicbrainz",
+ "music-library-spotify",
  "qmetaobject",
  "rusqlite",
  "tempfile",

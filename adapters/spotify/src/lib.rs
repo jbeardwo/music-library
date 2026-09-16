@@ -95,6 +95,7 @@ pub struct Spotify {
     programs: Vec<Programs>,
     configuration_error: Option<CatalogError>,
     candidate_counts: HashMap<String, u32>,
+    request_counts: (u64, u64),
 }
 impl std::fmt::Debug for Spotify {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -125,6 +126,7 @@ impl Spotify {
             programs: vec![],
             configuration_error: None,
             candidate_counts: HashMap::new(),
+            request_counts: (0, 0),
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(30)))
                 .max_redirects(0)
@@ -141,6 +143,10 @@ impl Spotify {
             result = result.replace(&token.value, "[REDACTED]");
         }
         result.chars().take(400).collect()
+    }
+    /// Catalog token and API HTTP requests, excluding the independent playback client.
+    pub fn request_counts(&self) -> (u64, u64) {
+        self.request_counts
     }
     fn response<T: DeserializeOwned>(
         &self,
@@ -218,6 +224,7 @@ impl Spotify {
                 "{}:{}",
                 self.config.client_id, self.config.client_secret
             ));
+            self.request_counts.0 += 1;
             let response = self
                 .agent
                 .post(self.token_url.as_str())
@@ -262,6 +269,7 @@ impl Spotify {
         for retry in 0..=1 {
             let token = self.token()?.to_owned();
             let _timing = Timing::new(format!("spotify.{path}.http"));
+            self.request_counts.1 += 1;
             let response = self
                 .agent
                 .get(url.as_str())
@@ -493,6 +501,77 @@ struct Song {
     external_ids: HashMap<String, String>,
     #[serde(default)]
     is_local: bool,
+}
+#[derive(Deserialize)]
+struct SearchSong {
+    #[serde(flatten)]
+    song: Song,
+    album: Album,
+}
+#[derive(Deserialize)]
+struct SongSearch {
+    tracks: Paging<SearchSong>,
+}
+impl music_library::song_resolution::SongSearch for Spotify {
+    fn search_songs(
+        &mut self,
+        input: &music_library::song_resolution::Input,
+    ) -> Result<Page<music_library::song_resolution::Candidate>, CatalogError> {
+        if input.title.trim().is_empty() || input.artist.trim().is_empty() {
+            return Err(CatalogError::Other(
+                "Song resolution needs a Track title and credited Artist".into(),
+            ));
+        }
+        // Native search shares the existing catalog get/token/market/error path.
+        // Album remains presentation evidence rather than an exact-edition filter.
+        let query = format!(
+            "track:{} artist:{}",
+            quoted(&input.title),
+            quoted(&input.artist)
+        );
+        let response: SongSearch = self.get(
+            "search",
+            &[
+                ("q", query),
+                ("type", "track".into()),
+                ("limit", "10".into()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        let more = response.tracks.more();
+        let mut seen = std::collections::HashSet::new();
+        let items = response
+            .tracks
+            .items
+            .into_iter()
+            .take(10)
+            .filter_map(|entry| {
+                let s = entry.song;
+                let key = s.id?;
+                if s.is_local
+                    || key.len() != 22
+                    || !key.bytes().all(|b| b.is_ascii_alphanumeric())
+                    || !seen.insert(key.clone())
+                {
+                    return None;
+                }
+                Some(music_library::song_resolution::Candidate {
+                    identity: id("track", &key),
+                    title: s.name,
+                    artist: display(&s.artists),
+                    album: entry.album.name,
+                    date: entry.album.release_date,
+                    duration_ms: s.duration_ms,
+                    disc: s.disc_number,
+                    number: s.track_number,
+                })
+            })
+            .collect();
+        Ok(Page {
+            items,
+            next_offset: more.then_some(10),
+        })
+    }
 }
 impl CatalogProvider for Spotify {
     fn album_candidate_programs(&self) -> bool {

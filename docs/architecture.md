@@ -1362,7 +1362,13 @@ are rediscovered, not durable source/application identities. User authorization,
 account capability, device availability and catalog association are distinct.
 
 An indexed Track/provider lookup exposes accepted occurrence evidence with manual
-precedence. No playback-time catalog search or canonical identity write occurs.
+precedence. Play and polling perform no catalog search or canonical identity write.
+An explicit **Search Spotify for this Track** action may separately obtain a bounded
+candidate page from current Track/Artist metadata using catalog Client Credentials.
+Only explicit confirmation attaches the selected song ID to `track_external_identity`;
+it does not establish Album, edition or Recording identity. This also works for
+source-less catalog Tracks without a Spotify Album association. Existing associations
+are protected from replacement in this first chooser.
 Playback tokens live outside SQLite in a restricted diagnostic credential file;
 production should use platform secret storage. Expired/revoked authorization does
 not affect catalog matching or local playback. Polling is confined to an open,

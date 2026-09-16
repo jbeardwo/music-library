@@ -1,4 +1,5 @@
 use super::*;
+use music_library::song_resolution::SongSearch as _;
 use serde_json::{Value, json};
 use std::{
     io::{Read, Write},
@@ -25,6 +26,57 @@ fn artists() -> (u16, Value, Option<&'static str>) {
         json!({"artists":{"items":[{"id":"artist1","name":"Artist"}],"total":1,"offset":0,"next":null}}),
         None,
     )
+}
+#[test]
+fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurrences() {
+    let item = json!({"id":"1234567890123456789012","name":"Song & Title","disc_number":1,"track_number":2,"duration_ms":123456,"artists":[{"id":"artist1","name":"Artist"}],"album":{"id":"album1","name":"Album Deluxe","artists":[],"release_date":"2020"},"external_ids":{"isrc":"example"}});
+    let page = (
+        200,
+        json!({"tracks":{"items":[item.clone(),item],"total":50,"offset":0,"next":"untrusted-next"}}),
+        None,
+    );
+    let mut mock = Mock::new(vec![token(), page.clone(), page]);
+    assert_eq!(mock.client.request_counts(), (0, 0));
+    let input = music_library::song_resolution::Input {
+        track_id: music_library::domain::TrackId("application-track".into()),
+        title: "Song \"Title\"".into(),
+        artist: "Artist".into(),
+        album: "Album".into(),
+    };
+    let found = mock.client.search_songs(&input).unwrap();
+    assert_eq!(found.items.len(), 1);
+    assert_eq!(found.next_offset, Some(10));
+    assert_eq!(
+        found.items[0].identity,
+        id("track", "1234567890123456789012")
+    );
+    assert_eq!(found.items[0].album, "Album Deluxe");
+    assert_eq!(
+        playback::Song::from_associations(&[found.items[0].identity.clone()])
+            .unwrap()
+            .uri(),
+        "spotify:track:1234567890123456789012"
+    );
+    mock.client.search_songs(&input).unwrap();
+    assert_eq!(mock.client.request_counts(), (1, 2));
+    let requests = mock.finish();
+    assert!(requests[0].contains("grant_type=client_credentials"));
+    let line = requests[1].lines().next().unwrap();
+    let url = Url::parse(&format!(
+        "http://mock{}",
+        line.split_whitespace().nth(1).unwrap()
+    ))
+    .unwrap();
+    let params: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    assert_eq!(params["type"], "track");
+    assert_eq!(params["limit"], "10");
+    assert_eq!(params["offset"], "0");
+    assert_eq!(params["market"], "US");
+    assert_eq!(
+        params["q"],
+        "track:\"Song \\\"Title\\\"\" artist:\"Artist\""
+    );
+    assert!(!requests.iter().any(|r| r.contains("me/player")));
 }
 impl Mock {
     fn new(responses: Vec<(u16, Value, Option<&str>)>) -> Self {

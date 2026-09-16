@@ -17,6 +17,7 @@ pub mod provenance_acceptance;
 mod provenance_storage;
 pub mod provider_chain;
 pub mod recording;
+pub mod song_resolution;
 pub mod storage;
 
 pub use application::Library;

@@ -53,12 +53,58 @@ hostname matching is intentionally absent. Restricted devices cannot receive
 commands. If no devices appear, open/make the desktop Spotify client available.
 
 In the library results, **Spotify…** selects that application Track without
-starting audio. **Play / Resume** sends its already-persisted Spotify song URI to
+starting audio or searching the catalog. **Play / Resume** sends its persisted Spotify song URI to
 the selected device. Missing/ambiguous associations produce **NoAssociation**,
 without a catalog request. Manual song associations take precedence. Play observes
 current state first: the same song on the selected device resumes, otherwise it
 sends exactly one URI. Pause and seek explicitly target that device. No Album
 context, queue entries, shuffle or repeat changes are sent.
+
+## Explicit resolution of catalog-added Tracks
+
+A Track added through MusicBrainz or another catalog need not have a local file
+or a Spotify Album identity. Select it with **Spotify…**, then explicitly click
+**Search Spotify for this Track**. This uses the existing Spotify catalog client,
+Client Credentials token, market configuration, query escaping and error handling.
+Playback OAuth is neither used nor required to search.
+
+Discovery is one `GET /search?type=track&limit=10&offset=0` using quoted `track:` and
+`artist:` terms from current effective Track metadata. Release Artist credit is
+used if Track Artist credit is absent. Local Album text is retained for context;
+it is not an exact-edition filter. No automatic pagination, per-candidate lookup,
+or alternate-query retry is added. Extra results beyond the first page are reported
+as a bound, not silently enumerated. Artist/title metadata is not rewritten.
+
+Choose explicitly from titles, Artists, Album names, dates, durations, disc/Track
+positions and diagnostic IDs; then click **Confirm Spotify association**.
+Identical Spotify IDs are deduplicated, while distinct catalog song IDs remain
+separate choices. No candidate is selected automatically. **Cancel selection**,
+closing the panel or selecting another application Track invalidates the pending
+choice; a late HTTP reply cannot attach anything. Playback polling does not reset
+the selected candidate or trigger another search.
+
+Confirmation attaches `spotify | track | <song ID>` to the existing application
+Track through `track_external_identity`, as independently accepted evidence.
+It does not establish a Spotify Album, Release or Recording identity. Existing
+MusicBrainz identities remain intact. The operation rechecks local metadata and
+existing associations in a short transaction. No network or file read occurs in
+that transaction. No schema migration is needed.
+
+The playback lookup gives existing manual Album-track choices precedence, then
+independently accepted Track mappings, then automatic provider-program mappings.
+An existing association disables new resolution; replacing/clearing this new
+independent mapping is deliberately not supported by this chooser. Automatic
+matching and rescans cannot overwrite it. After confirmation, **Play / Resume**
+works immediately; after restart the persisted mapping is used with zero search.
+Provider display metadata from the search is ephemeral; the accepted URI remains
+visible offline.
+
+The panel reports **Explicit catalog resolution: token / API requests** separately
+from playback counters. First search normally needs one Client Credentials token
+request plus one search. Further explicit searches reuse that worker's in-memory
+token. Temporary failures honor a bounded cooldown before another explicit retry;
+there is no background resolution loop. Ordinary Play/polling still issues zero
+catalog requests. Catalog configuration failures are separate from playback auth.
 
 ## Storage and lifecycle
 
@@ -131,7 +177,8 @@ Play application Track
   → otherwise bounded Spotify enrichment → persist association → Spotify playback
 ```
 
-This slice does not implement that resolver, on-demand enrichment, mixed queues,
+Explicit user-requested song selection above is available. This slice does not
+implement that automatic resolver, automatic on-demand enrichment, mixed queues,
 queue takeover, next/previous integration, automatic source fallback, or provider
 identity reconciliation. Local playback and Spotify controls remain explicit and
 separate; avoid starting both unless that is what you intend to test.

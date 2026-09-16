@@ -1,6 +1,9 @@
 //! Benchmark-only access to the unchanged Store implementation and its connection.
 use domain::{SearchRequest, TrackSearchResult};
 #[allow(dead_code)]
+#[path = "../src/album_candidates.rs"]
+mod album_candidates;
+#[allow(dead_code)]
 #[path = "../src/album_matching.rs"]
 mod album_matching;
 #[allow(dead_code)]
@@ -33,6 +36,9 @@ mod provenance_storage;
 #[allow(dead_code)]
 #[path = "../src/recording.rs"]
 mod recording;
+#[allow(dead_code)]
+#[path = "../src/song_resolution.rs"]
+mod song_resolution;
 use music_library::matching;
 #[allow(dead_code)]
 #[path = "../src/application.rs"]

@@ -610,6 +610,12 @@ impl Store {
                 .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
             return Ok(candidate.evidence.identities);
         }
+        let accepted = self.connection.prepare("SELECT provider,kind,external_id FROM track_external_identity WHERE track_id=?1 AND provider=?2 ORDER BY kind,external_id")?
+            .query_map(params![track.as_ref(),provider], |r| Ok(ExternalIdentity{provider:r.get(0)?,kind:r.get(1)?,external_id:r.get(2)?}))?
+            .collect::<std::result::Result<Vec<_>,_>>()?;
+        if !accepted.is_empty() {
+            return Ok(accepted);
+        }
         let automatic: Option<String> = self.connection.query_row(
             "SELECT a.match_json FROM provider_track_association a JOIN track t ON t.id=a.track_id JOIN release r ON r.id=t.release_id JOIN album_external_identity i ON i.album_id=r.album_id AND i.provider=a.album_provider AND i.kind=a.album_kind AND i.external_id=a.album_external_id WHERE a.track_id=?1 AND a.album_provider=?2",
             params![track.as_ref(), provider], |r| r.get(0)).optional()?;

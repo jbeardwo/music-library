@@ -421,6 +421,19 @@ fn run_measurements(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
         black_box(Library::open(database)?);
         Ok(())
     })?;
+    let resolution_track = TrackId("track-123457".into());
+    measure("selected Track song metadata (200k library)", 1000, || {
+        black_box(library.song_resolution_input(&resolution_track)?);
+        Ok(())
+    })?;
+    measure(
+        "selected Track provider association (200k library)",
+        1000,
+        || {
+            black_box(library.track_provider_occurrences(&resolution_track, "spotify")?);
+            Ok(())
+        },
+    )?;
     measure("first library page (50)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
             limit: 50,

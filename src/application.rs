@@ -79,6 +79,16 @@ impl Library {
     ) -> Result<Vec<crate::domain::ExternalIdentity>> {
         self.store.track_provider_occurrences(track, provider)
     }
+    pub fn song_resolution_input(&self, track: &TrackId) -> Result<crate::song_resolution::Input> {
+        self.store.song_resolution_input(track)
+    }
+    pub fn confirm_song_resolution(
+        &mut self,
+        selection: &crate::song_resolution::Selection,
+        index: usize,
+    ) -> Result<crate::domain::ExternalIdentity> {
+        self.store.confirm_song_resolution(selection, index)
+    }
     pub fn clear_manual_track_for(
         &mut self,
         album: &AlbumId,
