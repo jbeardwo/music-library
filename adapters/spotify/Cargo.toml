@@ -1,0 +1,17 @@
+[package]
+name = "music-library-spotify"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+music-library = { path = "../.." }
+ureq = "3"
+url = "2"
+base64 = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ring = "0.17"
+
+[dev-dependencies]
+tempfile = "3"

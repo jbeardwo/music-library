@@ -1,5 +1,6 @@
 //! Frontend-independent backend for the music library.
 
+pub mod album_candidates;
 pub mod album_matching;
 pub mod album_program;
 pub mod application;
@@ -14,6 +15,7 @@ pub mod playback;
 pub mod provenance;
 pub mod provenance_acceptance;
 mod provenance_storage;
+pub mod provider_chain;
 pub mod recording;
 pub mod storage;
 

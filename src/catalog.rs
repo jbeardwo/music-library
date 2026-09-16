@@ -1,10 +1,36 @@
 //! Application-owned catalog data. Providers translate into these values.
 use crate::domain::ExternalIdentity;
 
+/// Adapter-declared identity semantics for one selected matching run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MatchingScope {
+    pub provider: String,
+    pub artist_kind: String,
+    pub album_kind: String,
+}
+impl MatchingScope {
+    /// Compatibility for existing MusicBrainz-only application callers.
+    pub fn musicbrainz() -> Self {
+        Self {
+            provider: "musicbrainz".into(),
+            artist_kind: "artist".into(),
+            album_kind: "release_group".into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CatalogError {
     #[error("{0}")]
     Other(String),
+    #[error("{message} (HTTP {status})")]
+    Configuration { status: u16, message: String },
+    #[error("{message} (HTTP {status})")]
+    RateLimited {
+        status: u16,
+        message: String,
+        retry_after: Option<String>,
+    },
     #[error("{message}")]
     ServiceUnavailable {
         message: String,
@@ -17,7 +43,7 @@ pub enum CatalogError {
 }
 impl CatalogError {
     pub fn is_provider_unavailable(&self) -> bool {
-        !matches!(self, Self::Other(_))
+        !matches!(self, Self::Other(_) | Self::Configuration { .. })
     }
 }
 
@@ -114,6 +140,15 @@ pub struct ArtistAlbumCandidate {
 
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    /// Opt-in: bounded candidate program discovery is meaningful for this provider.
+    /// Existing providers retain their request strategy unless they expose this.
+    fn album_candidate_programs(&self) -> bool {
+        false
+    }
+    /// Cheap search-result evidence; must never perform network work.
+    fn album_candidate_track_count(&self, _album: &ExternalIdentity) -> Option<u32> {
+        None
+    }
     /// Supported accepted Album identity namespaces. No fabricated external hierarchy.
     fn album_program_namespaces(&self) -> Vec<(String, String)> {
         vec![]

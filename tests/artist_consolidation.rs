@@ -193,7 +193,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 6 } else { 11 }
+            if fail { 6 } else { 12 }
         );
         for table in [
             "album_artist_credit",

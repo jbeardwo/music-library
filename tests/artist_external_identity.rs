@@ -84,7 +84,7 @@ fn v5_upgrade_and_failed_migration_are_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 5 } else { 11 }
+            if fail { 5 } else { 12 }
         );
         assert_eq!(
             db.query_row("SELECT name FROM artist WHERE id='legacy'", [], |r| r

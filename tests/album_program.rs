@@ -212,6 +212,14 @@ fn duplicate_exact_titles_do_not_gain_the_unique_title_duration_exception() {
         matched(compare(&l, &p)).recording_status,
         RecordingStatus::DurationMismatch
     );
+    for track in &mut p.programs[0].tracks {
+        track.recording.identities.clear();
+    }
+    assert_eq!(
+        matched(compare(&l, &p)).recording_status,
+        RecordingStatus::NotProvided,
+        "an occurrence-only provider's successful positional Track association has no Recording claim to withhold"
+    );
 }
 
 fn variant_fixture() -> (Vec<LocalTrackEvidence>, Programs) {

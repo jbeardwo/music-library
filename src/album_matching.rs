@@ -25,10 +25,20 @@ pub enum MatchOutcome {
     MatchedClose(ExternalIdentity),
     ArtistAmbiguous(Vec<ArtistCandidate>),
     AlbumAmbiguous(Vec<ArtistAlbumCandidate>),
+    /// Human Album/Track support without selecting an arbitrary catalog object.
+    /// No Album or Track external identity is persisted from this ephemeral state.
+    AlbumEquivalent {
+        candidates: Vec<ArtistAlbumCandidate>,
+        tracks: Vec<(
+            crate::edition::LocalTrackEvidence,
+            crate::album_program::TrackOutcome,
+        )>,
+    },
     AlreadyMatched,
     Skipped,
     NoConfidentMatch,
     Error(String),
+    ConfigurationError(String),
     Deferred(crate::catalog::CatalogError),
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,8 +82,8 @@ pub fn resolve_artist(
     let key = normalize(name);
     let mut candidates = Vec::<ArtistCandidate>::new();
     for candidate in &page.items {
-        if candidate.identity.provider == "musicbrainz"
-            && candidate.identity.kind == "artist"
+        if !candidate.identity.provider.is_empty()
+            && !candidate.identity.kind.is_empty()
             && !candidate.identity.external_id.is_empty()
             && !candidates.iter().any(|c| c.identity == candidate.identity)
         {
@@ -288,15 +298,14 @@ pub fn accepted_album_confirmed(
     page: &Page<ArtistAlbumCandidate>,
     manual: bool,
 ) -> MatchOutcome {
-    if artist.provider != "musicbrainz" || artist.kind != "artist" || artist.external_id.is_empty()
-    {
+    if artist.provider.is_empty() || artist.kind.is_empty() || artist.external_id.is_empty() {
         return MatchOutcome::NoConfidentMatch;
     }
     let mut candidates = Vec::<ArtistAlbumCandidate>::new();
     for c in &page.items {
         if c.artist_ids.as_slice() == std::slice::from_ref(artist)
-            && c.identity.provider == "musicbrainz"
-            && c.identity.kind == "release_group"
+            && c.identity.provider == artist.provider
+            && !c.identity.kind.is_empty()
             && !c.identity.external_id.is_empty()
             && !candidates.iter().any(|v| v.identity == c.identity)
         {
@@ -375,7 +384,9 @@ pub enum CircuitState {
     Unavailable(crate::catalog::CatalogError),
 }
 fn provider_outcome(error: crate::catalog::CatalogError) -> MatchOutcome {
-    if error.is_provider_unavailable() {
+    if matches!(error, crate::catalog::CatalogError::Configuration { .. }) {
+        MatchOutcome::ConfigurationError(error.to_string())
+    } else if error.is_provider_unavailable() {
         MatchOutcome::Deferred(error)
     } else {
         MatchOutcome::Error(error.to_string())
@@ -408,7 +419,8 @@ impl Cooldown {
         let base = Duration::from_secs(15 << self.failures.min(3));
         self.failures = self.failures.saturating_add(1);
         let header = match error {
-            crate::catalog::CatalogError::ServiceUnavailable { retry_after, .. } => {
+            crate::catalog::CatalogError::ServiceUnavailable { retry_after, .. }
+            | crate::catalog::CatalogError::RateLimited { retry_after, .. } => {
                 retry_after.as_deref()
             }
             _ => None,
@@ -436,7 +448,7 @@ impl Cooldown {
 }
 enum WorkerCommand {
     Programs(crate::album_program::Input),
-    Match(MatchInput),
+    Match(MatchInput, Vec<crate::edition::LocalTrackEvidence>),
     Recordings(crate::recording::Input),
     Arm { token: u64, deadline: Instant },
     Cancel,
@@ -473,6 +485,9 @@ impl WorkerTimer {
 /// One owned serial worker, session-only deduplication and explicit completion on
 /// the application owner thread. Drop cancels queued work and joins in-flight HTTP.
 pub struct AlbumMatcher {
+    candidate_programs: bool,
+    candidate_input: Option<Vec<crate::edition::LocalTrackEvidence>>,
+    scope: crate::catalog::MatchingScope,
     program_namespaces: Vec<(String, String)>,
     program_enabled: bool,
     program_outcomes: HashMap<AlbumId, crate::album_program::Outcome>,
@@ -491,6 +506,18 @@ pub struct AlbumMatcher {
     manual_artists: HashMap<AlbumId, ExternalIdentity>,
 }
 impl AlbumMatcher {
+    pub fn scope(&self) -> &crate::catalog::MatchingScope {
+        &self.scope
+    }
+    pub(crate) fn has_manual_artist(&self, album: &AlbumId) -> bool {
+        self.manual_artists.contains_key(album)
+    }
+    /// The chain coordinator owns deferred work once an attempt yields. Timers
+    /// only notify the owner; removing this continuation cannot start HTTP.
+    pub(crate) fn yield_album(&mut self, id: &AlbumId) {
+        assert!(!self.active);
+        self.queue.retain(|work| work.album_id() != id);
+    }
     /// Both callbacks must enqueue onto the application owner thread. Deliver
     /// replies to `complete` and timer tokens to `cooldown_elapsed`; neither callback
     /// may block the worker waiting for the owner.
@@ -519,6 +546,18 @@ impl AlbumMatcher {
     ) -> std::io::Result<Self> {
         Self::with_callbacks(provider, emit, None, Some(Box::new(programs)), retry_due)
     }
+    /// Selected-provider entry point; the older constructors retain MB compatibility.
+    pub fn for_provider(
+        provider: impl CatalogProvider + 'static,
+        scope: crate::catalog::MatchingScope,
+        emit: impl Fn(MatchReply) + Send + 'static,
+        programs: impl Fn(crate::album_program::Reply) + Send + 'static,
+        retry_due: impl Fn(u64) + Send + 'static,
+    ) -> std::io::Result<Self> {
+        let mut matcher = Self::new_with_programs(provider, emit, programs, retry_due)?;
+        matcher.scope = scope;
+        Ok(matcher)
+    }
     fn with_callbacks(
         mut provider: impl CatalogProvider + 'static,
         emit: impl Fn(MatchReply) + Send + 'static,
@@ -529,6 +568,7 @@ impl AlbumMatcher {
         let recording_enabled = recordings.is_some();
         let program_enabled = programs.is_some();
         let program_namespaces = provider.album_program_namespaces();
+        let candidate_programs = provider.album_candidate_programs();
         let (sender, receiver) = mpsc::channel::<WorkerCommand>();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -538,6 +578,7 @@ impl AlbumMatcher {
                 // Cache only independently resolved, complete primary/alias Artist searches.
                 // Bounded session cache; canonical identity reassignment happens on completion.
                 let mut artists = HashMap::<String, ExternalIdentity>::new();
+                let mut candidate_cache = Vec::<crate::album_program::Programs>::new();
                 let mut timer = WorkerTimer::default();
                 loop {
                     if stopped.load(Ordering::Acquire) {
@@ -561,9 +602,14 @@ impl AlbumMatcher {
                     if stopped.load(Ordering::Acquire) {
                         break;
                     }
-                    let input = match command {
+                    let (input, local) = match command {
                         WorkerCommand::Programs(input) => {
-                            let result = provider.album_programs(&input.album);
+                            let result = candidate_cache
+                                .iter()
+                                .find(|p: &&crate::album_program::Programs| p.album == input.album)
+                                .cloned()
+                                .map(Ok)
+                                .unwrap_or_else(|| provider.album_programs(&input.album));
                             if !stopped.load(Ordering::Acquire)
                                 && let Some(emit) = &programs
                             {
@@ -579,7 +625,7 @@ impl AlbumMatcher {
                             timer.0 = None;
                             continue;
                         }
-                        WorkerCommand::Match(input) => input,
+                        WorkerCommand::Match(input, local) => (input, local),
                         WorkerCommand::Recordings(input) => {
                             let result = provider.recordings(&input.group);
                             if !stopped.load(Ordering::Acquire)
@@ -641,12 +687,16 @@ impl AlbumMatcher {
                             };
                             let outcome = response
                                 .map(|page| {
-                                    let outcome = accepted_album_confirmed(
+                                    let outcome = crate::album_candidates::resolve(
+                                        &mut provider,
                                         &input.title,
                                         &id,
                                         &page,
                                         input.manual_artist,
-                                    );
+                                        &local,
+                                        &mut candidate_cache,
+                                    )
+                                    .unwrap_or_else(provider_outcome);
                                     selected_album = matched_album(&outcome, &page);
                                     outcome
                                 })
@@ -665,6 +715,8 @@ impl AlbumMatcher {
                 }
             })?;
         Ok(Self {
+            candidate_programs,
+            candidate_input: None,
             program_namespaces,
             program_enabled,
             program_outcomes: HashMap::new(),
@@ -672,6 +724,7 @@ impl AlbumMatcher {
             sender: Some(sender),
             thread: Some(thread),
             stop,
+            scope: crate::catalog::MatchingScope::musicbrainz(),
             outcomes: HashMap::new(),
             matched_albums: HashMap::new(),
             queue: VecDeque::new(),
@@ -722,7 +775,7 @@ impl AlbumMatcher {
         if self.outcomes.get(id) == Some(&MatchOutcome::Pending) {
             return Ok(MatchOutcome::Pending);
         }
-        let outcome = match library.prepare_album_match(id)? {
+        let outcome = match library.prepare_album_match_for(id, &self.scope)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(input) => {
                 if !self.queue.iter().any(|i| i.album_id() == id) {
@@ -744,6 +797,18 @@ impl AlbumMatcher {
         album: &AlbumId,
         index: usize,
     ) -> Result<MatchOutcome> {
+        let outcome = self.select_artist_local(library, album, index)?;
+        if outcome != MatchOutcome::NoConfidentMatch {
+            return Ok(outcome);
+        }
+        self.match_album(library, album)
+    }
+    pub(crate) fn select_artist_local(
+        &mut self,
+        library: &mut Library,
+        album: &AlbumId,
+        index: usize,
+    ) -> Result<MatchOutcome> {
         let Some(MatchOutcome::ArtistAmbiguous(candidates)) = self.outcomes.get(album) else {
             return Err(crate::storage::Error::Invalid(
                 "No Artist choices for this Album".into(),
@@ -753,26 +818,40 @@ impl AlbumMatcher {
             .get(index)
             .ok_or_else(|| crate::storage::Error::Invalid("Stale Artist selection".into()))?
             .clone();
-        let input = match library.prepare_album_match(album)? {
+        let input = match library.prepare_album_match_for(album, &self.scope)? {
             Preparation::Ready(input) => input,
             Preparation::Done(outcome) => return Ok(outcome),
         };
-        let outcome = library.complete_album_match(MatchReply {
-            input,
-            artist: Some(candidate.identity.clone()),
-            outcome: MatchOutcome::NoConfidentMatch,
-            matched_album: None,
-        })?;
+        let outcome = library.complete_album_match_for(
+            MatchReply {
+                input,
+                artist: Some(candidate.identity.clone()),
+                outcome: MatchOutcome::NoConfidentMatch,
+                matched_album: None,
+            },
+            &self.scope,
+        )?;
         self.outcomes.insert(album.clone(), outcome.clone());
         if outcome != MatchOutcome::NoConfidentMatch {
             return Ok(outcome);
         }
         self.manual_artists
             .insert(album.clone(), candidate.identity);
-        self.match_album(library, album)
+        Ok(MatchOutcome::NoConfidentMatch)
     }
     /// Revalidate eligibility/metadata and existing identity before the short attachment transaction.
-    pub fn complete(&mut self, library: &mut Library, reply: MatchReply) -> MatchOutcome {
+    pub fn complete(&mut self, library: &mut Library, mut reply: MatchReply) -> MatchOutcome {
+        if let Some(input) = self.candidate_input.take()
+            && !matches!(reply.outcome, MatchOutcome::Deferred(_))
+            && library
+                .local_album_tracks(&reply.input.album_id)
+                .ok()
+                .as_ref()
+                != Some(&input)
+        {
+            reply.outcome = MatchOutcome::NoConfidentMatch;
+            reply.matched_album = None;
+        }
         let id = reply.input.album_id.clone();
         let presentation = reply.matched_album.clone();
         let unavailable = match &reply.outcome {
@@ -782,7 +861,7 @@ impl AlbumMatcher {
         let mut retry = reply.input.clone();
         retry.known_artist = reply.artist.clone().or(retry.known_artist);
         let outcome = library
-            .complete_album_match(reply)
+            .complete_album_match_for(reply, &self.scope)
             .unwrap_or_else(|e| MatchOutcome::Error(e.to_string()));
         self.active = false;
         self.matched_albums.remove(&id);
@@ -812,6 +891,12 @@ impl AlbumMatcher {
         if let Err(error) = self.continue_album_enrichment(library, &id) {
             self.recording_outcomes
                 .insert(id, crate::recording::Outcome::Error(error.to_string()));
+        }
+        if let MatchOutcome::AlbumEquivalent { tracks, .. } = &outcome {
+            self.program_outcomes.insert(
+                retry.album_id.clone(),
+                crate::album_program::Outcome::Complete(tracks.clone()),
+            );
         }
         if let Err(error) = self.dispatch(library, false) {
             return MatchOutcome::Error(error.to_string());
@@ -1070,7 +1155,7 @@ impl AlbumMatcher {
                 continue;
             }
             // Refresh identities after prior completions/consolidation or manual selection.
-            let preparation = library.prepare_album_match(work.album_id())?;
+            let preparation = library.prepare_album_match_for(work.album_id(), &self.scope)?;
             let id = work.album_id().clone();
             match preparation {
                 Preparation::Done(outcome) => {
@@ -1083,10 +1168,16 @@ impl AlbumMatcher {
                         .manual_artists
                         .get(&id)
                         .is_some_and(|identity| input.known_artist.as_ref() == Some(identity));
+                    let tracks = if self.candidate_programs {
+                        library.local_album_tracks(&id)?
+                    } else {
+                        vec![]
+                    };
+                    self.candidate_input = self.candidate_programs.then(|| tracks.clone());
                     self.sender
                         .as_ref()
                         .unwrap()
-                        .send(WorkerCommand::Match(input))
+                        .send(WorkerCommand::Match(input, tracks))
                         .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
                     self.queue.pop_front();
                     self.active = true;

@@ -60,11 +60,25 @@ impl Store {
         &self,
         id: &crate::domain::AlbumId,
     ) -> Result<crate::album_matching::Preparation> {
-        prepare_album_match(&self.connection, id)
+        self.prepare_album_match_for(id, &crate::catalog::MatchingScope::musicbrainz())
+    }
+    pub fn prepare_album_match_for(
+        &self,
+        id: &crate::domain::AlbumId,
+        scope: &crate::catalog::MatchingScope,
+    ) -> Result<crate::album_matching::Preparation> {
+        prepare_album_match(&self.connection, id, scope)
     }
     pub fn complete_album_match(
         &mut self,
         reply: crate::album_matching::MatchReply,
+    ) -> Result<crate::album_matching::MatchOutcome> {
+        self.complete_album_match_for(reply, &crate::catalog::MatchingScope::musicbrainz())
+    }
+    pub fn complete_album_match_for(
+        &mut self,
+        reply: crate::album_matching::MatchReply,
+        scope: &crate::catalog::MatchingScope,
     ) -> Result<crate::album_matching::MatchOutcome> {
         use crate::album_matching::{MatchOutcome, Preparation};
         let tx = self
@@ -72,13 +86,13 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let mut canonical = reply.input.artist_id.clone();
         if let Some(identity) = &reply.artist {
-            if identity.provider != "musicbrainz"
-                || identity.kind != "artist"
+            if identity.provider != scope.provider
+                || identity.kind != scope.artist_kind
                 || identity.external_id.is_empty()
             {
                 return Err(Error::Invalid("invalid Artist matching identity".into()));
             }
-            let current = match prepare_album_match(&tx, &reply.input.album_id)? {
+            let current = match prepare_album_match(&tx, &reply.input.album_id, scope)? {
                 Preparation::Ready(current) => current,
                 Preparation::Done(outcome) => return Ok(outcome),
             };
@@ -92,14 +106,14 @@ impl Store {
             {
                 return Ok(MatchOutcome::Skipped);
             }
-            canonical = canonical_musicbrainz_artist(
+            canonical = canonical_external_artist(
                 &tx,
                 Some(&current.artist_id),
                 &current.artist,
                 identity,
             )?;
         }
-        let outcome = match prepare_album_match(&tx, &reply.input.album_id)? {
+        let outcome = match prepare_album_match(&tx, &reply.input.album_id, scope)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(current)
                 if current.title != reply.input.title
@@ -111,8 +125,8 @@ impl Store {
             Preparation::Ready(_) => match &reply.outcome {
                 MatchOutcome::Matched(identity) | MatchOutcome::MatchedClose(identity) => {
                     if reply.artist.is_none()
-                        || identity.provider != "musicbrainz"
-                        || identity.kind != "release_group"
+                        || identity.provider != scope.provider
+                        || identity.kind != scope.album_kind
                         || identity.external_id.is_empty()
                     {
                         return Err(Error::Invalid("invalid Album matching identity".into()));
@@ -154,7 +168,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 11 {
+        } else if version > 12 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -233,6 +247,11 @@ impl Store {
         if version < 11 {
             connection.execute_batch(include_str!(
                 "../migrations/0011_manual_track_associations.sql"
+            ))?;
+        }
+        if version < 12 {
+            connection.execute_batch(include_str!(
+                "../migrations/0012_provider_track_associations.sql"
             ))?;
         }
         Ok(Self {
@@ -1697,6 +1716,7 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
 fn prepare_album_match(
     db: &Connection,
     id: &crate::domain::AlbumId,
+    scope: &crate::catalog::MatchingScope,
 ) -> Result<crate::album_matching::Preparation> {
     use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
     let (title, artist): (String, String) = db.query_row(
@@ -1704,7 +1724,7 @@ fn prepare_album_match(
         [id.as_ref()],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider='musicbrainz' AND kind='release_group')", [id.as_ref()], |r|r.get::<_,bool>(0))? {
+    if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3)", params![id.as_ref(),scope.provider,scope.album_kind], |r|r.get::<_,bool>(0))? {
         return Ok(Preparation::Done(MatchOutcome::AlreadyMatched));
     }
     if !crate::album_matching::eligible_text(&title, &artist) {
@@ -1720,7 +1740,7 @@ fn prepare_album_match(
         return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
     }
     let artist_id = ArtistId(artist_id.clone());
-    let mut known = artist_matching_identities(db, &artist_id)?;
+    let mut known = artist_identities_for(db, &artist_id, &scope.provider, &scope.artist_kind)?;
     if known.len() > 1 {
         return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(
             known
@@ -1762,7 +1782,15 @@ fn prepare_album_match(
 }
 
 fn artist_matching_identities(db: &Connection, id: &ArtistId) -> Result<Vec<ExternalIdentity>> {
-    Ok(db.prepare("SELECT external_id FROM artist_external_identity WHERE artist_id=?1 AND provider='musicbrainz' AND kind='artist'")?.query_map([id.as_ref()], |r|Ok(ExternalIdentity { provider:"musicbrainz".into(),kind:"artist".into(),external_id:r.get(0)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    artist_identities_for(db, id, "musicbrainz", "artist")
+}
+fn artist_identities_for(
+    db: &Connection,
+    id: &ArtistId,
+    provider: &str,
+    kind: &str,
+) -> Result<Vec<ExternalIdentity>> {
+    Ok(db.prepare("SELECT external_id FROM artist_external_identity WHERE artist_id=?1 AND provider=?2 AND kind=?3")?.query_map(params![id.as_ref(),provider,kind], |r|Ok(ExternalIdentity { provider:provider.into(),kind:kind.into(),external_id:r.get(0)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 // Generic explicit reassignment. Only the known exclusive MB Artist namespace
@@ -1803,7 +1831,7 @@ fn merge_artist_tx(tx: &Transaction<'_>, source: &ArtistId, canonical: &ArtistId
     Ok(true)
 }
 
-fn canonical_musicbrainz_artist(
+fn canonical_external_artist(
     tx: &Transaction<'_>,
     current: Option<&ArtistId>,
     name: &str,
@@ -1829,7 +1857,7 @@ fn canonical_musicbrainz_artist(
         .chain(current)
         .chain(std::iter::once(&canonical))
     {
-        if artist_matching_identities(tx, id)?
+        if artist_identities_for(tx, id, &identity.provider, &identity.kind)?
             .iter()
             .any(|i| i != identity)
         {
@@ -1862,7 +1890,7 @@ fn insert_catalog_credits(
                     && identity.kind == "artist"
                     && !identity.external_id.is_empty() =>
             {
-                canonical_musicbrainz_artist(tx, None, &credit.name, identity)?
+                canonical_external_artist(tx, None, &credit.name, identity)?
             }
             _ => {
                 let id = ArtistId::new();

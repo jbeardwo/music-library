@@ -593,7 +593,7 @@ fn migration_and_reconstruction_use_targeted_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
             .unwrap(),
-        11
+        12
     );
     let plan:Vec<String>=db.prepare("EXPLAIN QUERY PLAN SELECT m.track_id FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN manual_track_association m ON m.track_id=t.id WHERE r.album_id=?1").unwrap().query_map([f.album.as_ref()],|r|r.get(3)).unwrap().map(Result::unwrap).collect();
     assert!(plan.iter().any(|s| s.contains("release_album")));

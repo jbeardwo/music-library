@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::domain::{
-    CatalogReleaseInput, DiscoveryCandidate, ExternalIdentity, ImportReleaseRequest,
+    AlbumId, CatalogReleaseInput, DiscoveryCandidate, ExternalIdentity, ImportReleaseRequest,
     ImportedRelease, PlayableSource, ReleaseId, RootId, ScanReport, SearchRequest, SourceId,
     TrackId, TrackSearchResult,
 };
@@ -62,6 +62,30 @@ impl Library {
         album: &crate::domain::AlbumId,
     ) -> Result<Vec<crate::manual_track::Association>> {
         self.store.manual_track_associations(album)
+    }
+    pub fn provider_track_associations(
+        &self,
+        album: &AlbumId,
+        provider: &str,
+    ) -> Result<Vec<(TrackId, crate::album_program::Match)>> {
+        self.store.provider_track_associations(album, provider)
+    }
+    /// Accepted song/occurrence evidence for one Track. Manual decisions take
+    /// precedence; availability and playback authorization are separate concerns.
+    pub fn track_provider_occurrences(
+        &self,
+        track: &TrackId,
+        provider: &str,
+    ) -> Result<Vec<crate::domain::ExternalIdentity>> {
+        self.store.track_provider_occurrences(track, provider)
+    }
+    pub fn clear_manual_track_for(
+        &mut self,
+        album: &AlbumId,
+        track: &TrackId,
+        provider: &str,
+    ) -> Result<bool> {
+        self.store.clear_manual_track_for(album, track, provider)
     }
     pub fn prepare_manual_track(
         &self,
@@ -131,6 +155,20 @@ impl Library {
         id: &crate::domain::AlbumId,
     ) -> Result<crate::album_matching::Preparation> {
         self.store.prepare_album_match(id)
+    }
+    pub fn prepare_album_match_for(
+        &self,
+        id: &crate::domain::AlbumId,
+        scope: &crate::catalog::MatchingScope,
+    ) -> Result<crate::album_matching::Preparation> {
+        self.store.prepare_album_match_for(id, scope)
+    }
+    pub fn complete_album_match_for(
+        &mut self,
+        reply: crate::album_matching::MatchReply,
+        scope: &crate::catalog::MatchingScope,
+    ) -> Result<crate::album_matching::MatchOutcome> {
+        self.store.complete_album_match_for(reply, scope)
     }
     pub fn complete_album_match(
         &mut self,

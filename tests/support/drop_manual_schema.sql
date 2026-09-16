@@ -3,3 +3,4 @@ DROP TRIGGER manual_recording_claim_removed;
 DROP TABLE manual_track_recording_claim;
 DROP TABLE recording_manual_identity;
 DROP TABLE manual_track_association;
+DROP TABLE IF EXISTS provider_track_association;

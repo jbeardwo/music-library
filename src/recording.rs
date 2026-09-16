@@ -319,6 +319,7 @@ impl Store {
         let manual: std::collections::HashSet<_> =
             crate::manual_track::load(&tx, &reply.input.album_id)?
                 .into_iter()
+                .filter(|m| m.album.provider == reply.input.group.provider)
                 .map(|m| m.track_id)
                 .collect();
         for track in &current.tracks {

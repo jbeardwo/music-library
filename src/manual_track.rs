@@ -176,10 +176,9 @@ impl Store {
             album: selection.album.clone(),
             candidate: candidate.clone(),
         };
-        if let Some(existing) = load(&tx, &selection.album_id)?
-            .into_iter()
-            .find(|a| a.track_id == selection.track_id)
-        {
+        if let Some(existing) = load(&tx, &selection.album_id)?.into_iter().find(|a| {
+            a.track_id == selection.track_id && a.album.provider == selection.album.provider
+        }) {
             if existing == association {
                 return Ok(existing);
             }
@@ -211,19 +210,35 @@ impl Store {
                 tx.execute("INSERT INTO recording_external_identity(recording_id,provider,kind,external_id) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![recording.as_ref(),id.provider,id.kind,id.external_id])?;
                 tx.execute("INSERT INTO recording_manual_identity(recording_id,provider,kind,external_id) VALUES(?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![recording.as_ref(),id.provider,id.kind,id.external_id])?;
             }
-            tx.execute("INSERT INTO manual_track_recording_claim(track_id,recording_id,provider,kind,external_id) VALUES(?1,?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![selection.track_id.as_ref(),recording.as_ref(),id.provider,id.kind,id.external_id])?;
+            tx.execute("INSERT INTO manual_track_recording_claim(track_id,album_provider,recording_id,provider,kind,external_id) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT DO NOTHING",params![selection.track_id.as_ref(),selection.album.provider,recording.as_ref(),id.provider,id.kind,id.external_id])?;
         }
         tx.commit()?;
         Ok(association)
     }
     pub fn clear_manual_track(&mut self, album: &AlbumId, track: &TrackId) -> Result<bool> {
+        self.clear_manual_track_scoped(album, track, None)
+    }
+    pub fn clear_manual_track_for(
+        &mut self,
+        album: &AlbumId,
+        track: &TrackId,
+        provider: &str,
+    ) -> Result<bool> {
+        self.clear_manual_track_scoped(album, track, Some(provider))
+    }
+    fn clear_manual_track_scoped(
+        &mut self,
+        album: &AlbumId,
+        track: &TrackId,
+        provider: Option<&str>,
+    ) -> Result<bool> {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         context(&tx, album, track)?;
         let changed = tx.execute(
-            "DELETE FROM manual_track_association WHERE track_id=?1",
-            [track.as_ref()],
+            "DELETE FROM manual_track_association WHERE track_id=?1 AND (?2 IS NULL OR album_provider=?2)",
+            params![track.as_ref(),provider],
         )? > 0;
         // Triggers release solely manual canonical claims, retaining independent
         // confirmations and claims held by other manually associated Tracks.

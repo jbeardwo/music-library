@@ -34,7 +34,7 @@ pub struct Reply {
     pub input: Input,
     pub result: std::result::Result<Programs, CatalogError>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Match {
     pub title: String,
     pub recording: RecordingEvidence,
@@ -42,7 +42,7 @@ pub struct Match {
     pub occurrences: Vec<ExternalIdentity>,
     pub explanation: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RecordingStatus {
     Identified,
     Ambiguous,
@@ -446,14 +446,16 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
     {
         return TrackOutcome::Ambiguous;
     }
-    let recording_status = if recording_disagreement {
+    let recording_status = if mappings.iter().all(|c| c.recording.identities.is_empty()) {
+        // A provider without Recording identity has no Recording certainty to
+        // withhold. The Track association above has already passed its checks.
+        RecordingStatus::NotProvided
+    } else if recording_disagreement {
         RecordingStatus::Ambiguous
     } else if duration_blocks_recording {
         RecordingStatus::DurationMismatch
     } else if !identities.is_empty() {
         RecordingStatus::Identified
-    } else if mappings.iter().all(|c| c.recording.identities.is_empty()) {
-        RecordingStatus::NotProvided
     } else {
         RecordingStatus::Ambiguous
     };
@@ -594,6 +596,32 @@ fn local_tracks(
     Ok((tracks, artist_conflicts))
 }
 impl Store {
+    pub fn track_provider_occurrences(
+        &self,
+        track: &TrackId,
+        provider: &str,
+    ) -> Result<Vec<ExternalIdentity>> {
+        use rusqlite::OptionalExtension;
+        let manual: Option<String> = self.connection.query_row(
+            "SELECT candidate_json FROM manual_track_association WHERE track_id=?1 AND album_provider=?2",
+            params![track.as_ref(), provider], |r| r.get(0)).optional()?;
+        if let Some(json) = manual {
+            let candidate: crate::manual_track::Candidate = serde_json::from_str(&json)
+                .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+            return Ok(candidate.evidence.identities);
+        }
+        let automatic: Option<String> = self.connection.query_row(
+            "SELECT a.match_json FROM provider_track_association a JOIN track t ON t.id=a.track_id JOIN release r ON r.id=t.release_id JOIN album_external_identity i ON i.album_id=r.album_id AND i.provider=a.album_provider AND i.kind=a.album_kind AND i.external_id=a.album_external_id WHERE a.track_id=?1 AND a.album_provider=?2",
+            params![track.as_ref(), provider], |r| r.get(0)).optional()?;
+        automatic
+            .map(|json| {
+                serde_json::from_str::<Match>(&json)
+                    .map(|m| m.occurrences)
+                    .map_err(|e| crate::storage::Error::Invalid(e.to_string()))
+            })
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
     pub fn local_releases_for_root(&self, root: &RootId) -> Result<Vec<ImportedRelease>> {
         let mut releases = std::collections::BTreeMap::<String, Vec<TrackId>>::new();
         for row in self.connection.prepare("SELECT DISTINCT t.release_id,t.id,t.disc_number,t.track_number FROM local_file_observation l JOIN track_source ts ON ts.source_id=l.source_id JOIN track t ON t.id=ts.track_id WHERE l.root_id=?1 ORDER BY t.release_id,t.disc_number,t.track_number,t.id")?.query_map([root.as_ref()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
@@ -671,6 +699,7 @@ impl Store {
         let manual: std::collections::HashMap<_, _> =
             crate::manual_track::load(&tx, &reply.input.album_id)?
                 .into_iter()
+                .filter(|m| m.album.provider == reply.input.album.provider)
                 .map(|m| (m.track_id.clone(), m))
                 .collect();
         let mut comparisons: std::collections::HashMap<_, _> = eligible
@@ -721,11 +750,29 @@ impl Store {
                 for id in &m.recording.identities {
                     tx.execute("INSERT INTO recording_external_identity(recording_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![t.recording_id.as_ref(),id.provider,id.kind,id.external_id])?;
                 }
-                // Occurrences remain ephemeral association evidence. No release/Track
-                // identity is inferred from a sampled provider program.
+                // Retain the Album-scoped association, without converting sampled
+                // occurrences into exact edition or Recording identities.
+                let json = serde_json::to_string(m)
+                    .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+                tx.execute("INSERT INTO provider_track_association(track_id,album_provider,album_kind,album_external_id,match_json) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(track_id,album_provider) DO UPDATE SET album_kind=excluded.album_kind,album_external_id=excluded.album_external_id,match_json=excluded.match_json",params![t.track_id.as_ref(),reply.input.album.provider,reply.input.album.kind,reply.input.album.external_id,json])?;
+            } else if !matches!(o, TrackOutcome::ManuallyMatched(_)) {
+                tx.execute("DELETE FROM provider_track_association WHERE track_id=?1 AND album_provider=?2",params![t.track_id.as_ref(),reply.input.album.provider])?;
             }
         }
         tx.commit()?;
         Ok(Outcome::Complete(results))
+    }
+
+    /// Bounded to this Album through indexed Release/Track relationships. Does
+    /// not reopen sources or require the provider to be available after restart.
+    pub fn provider_track_associations(
+        &self,
+        album: &AlbumId,
+        provider: &str,
+    ) -> Result<Vec<(TrackId, Match)>> {
+        self.connection.prepare("SELECT a.track_id,a.match_json FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN provider_track_association a ON a.track_id=t.id AND a.album_provider=?2 JOIN album_external_identity i ON i.album_id=r.album_id AND i.provider=a.album_provider AND i.kind=a.album_kind AND i.external_id=a.album_external_id WHERE r.album_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?.query_map(params![album.as_ref(),provider], |r| Ok((TrackId(r.get(0)?),r.get::<_,String>(1)?)))?.map(|row| {
+            let (id,json) = row?;
+            Ok((id,serde_json::from_str(&json).map_err(|e| crate::storage::Error::Invalid(e.to_string()))?))
+        }).collect()
     }
 }

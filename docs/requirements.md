@@ -205,7 +205,20 @@ The library must support music that has no currently playable source.
 ### Catalog-backed additions
 
 * The user must be able to discover music through an external catalog and add it to the library without possessing a local file or other playable source.
-* MusicBrainz is the initial external catalog provider.
+* MusicBrainz and Spotify are concrete catalog matching providers. Select one or
+  an explicit ordered chain. First confident Album provider completes Track
+  enrichment; bounded no-match, ambiguity, configuration failure or unavailability
+  may fall through. Accepted configured identities avoid rediscovery. Circuits
+  remain independent; fallback never creates another application Album.
+  Enrichment from every provider and cross-provider reconciliation remain deferred.
+* Spotify Artist/Album/song objects support normal Album-first matching without
+  exact editions or Recording entities. Spotify Album identity is accepted for
+  application Album grouping, not as evidence of an exact physical pressing.
+* A confidently associated provider song with no Recording identity is successful.
+  Song associations and manual choices survive restart, remain scoped to their
+  provider, and may coexist with MusicBrainz identities without merging entities.
+* Provider authentication, market and quota policy belong in adapters; permanent
+  configuration failures must not produce endless automatic outage retries.
 * Adding a catalog Album creates/reuses its application Album, a representative or explicitly selected Release, and release-specific Tracks.
 * Library membership remains Track-level.
 * A catalog-added Track may have zero PlayableSources.
@@ -634,6 +647,13 @@ Large artwork should not be decoded or retained at full resolution for every lib
 
 ## External Metadata
 
+Provider search may return multiple catalog objects for one human Album. Filter
+structurally impossible objects before ambiguity, then use bounded program evidence
+where supported. Compare only present local Tracks; partial Albums and extra provider
+Tracks remain valid. Selecting a provider representation never proves exact edition.
+Equivalent unresolved catalog IDs must not erase useful Album/Track association;
+genuine alternatives remain ambiguous rather than choosing by search order or score.
+
 External metadata support is part of the intended architecture but is not required for the first backend vertical slice.
 
 The application must remain usable for building and organizing a library without depending on any one external provider.
@@ -771,3 +791,18 @@ The following remain intentionally open unless implementation proves one must be
 * Public skin-package specification.
 
 Deferred decisions must not be silently encoded as irreversible defaults.
+
+## Optional Spotify playback diagnostic
+
+Spotify catalog Client Credentials and user playback PKCE authorization must remain
+independent. A diagnostic user may explicitly select an available, unrestricted
+Spotify Connect device and play/pause/seek one library Track using an already
+accepted Spotify song association. No association means no playback-time search.
+Device selection must not infer physical-computer identity or silently choose
+another device. Spotify availability/authorization is not Track identity.
+
+Playback authorization may survive restart outside library storage; invalid grant
+requires reauthorization without affecting catalog matching or local playback.
+Spotify controls do not modify GStreamer queues. Automatic local/Spotify fallback,
+mixed-source queues and on-demand enrichment remain future work. See
+[diagnostic setup and token lifecycle](../adapters/spotify/PLAYBACK.md).

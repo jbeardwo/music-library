@@ -1200,9 +1200,10 @@ The expected relationship is:
 
 Album identity must remain application-owned and provider-neutral. External grouping identifiers never become application primary IDs. A provider exposing only concrete catalog Albums may map them to Releases without supplying an external grouping ID or mirroring MusicBrainz's hierarchy.
 
-Such a catalog object may also supply friendly Album metadata/evidence without its
-ID becoming an Album-grouping identifier. Spotify/Apple-style catalog objects need
-not manufacture Release Groups, and Discogs need not supply a Master when absent.
+Such a catalog object may also supply friendly Album metadata/evidence. The Spotify
+adapter accepts its Album ID as provider Album identity for normal grouping, without
+claiming a physical pressing or MusicBrainz-style Release Group. Other providers'
+mappings still require semantic review; Discogs need not supply a Master when absent.
 Providers without Recording entities may contribute occurrence/ISRC evidence according
 to verified semantics. Safe enrichment need not wait for exact local-edition resolution;
 none of this changes the conservative acceptance or persistence rules.
@@ -1244,11 +1245,11 @@ before Recording work is queued; Recording failures do not revoke the Album matc
 QML shows local/matched Album names, with edition browsing behind **Editions…**;
 its `AlbumAmbiguous` result concerns competing Albums, not competing pressings.
 
-Existing provider limitations remain distinct from edition certainty: the current
-Artist/Album matcher recognizes MusicBrainz Artist/Release Group identities, and the catalog-import DTO requires
-an external Album identity. These are current MusicBrainz workflow constraints, not
-requirements on future providers. The capability/import boundary must allow missing
-external groupings before adding a concrete-only provider. Normal MusicBrainz Add Album
+Selected-provider Artist/Album matching receives an explicit `MatchingScope`
+(provider, Artist kind, Album kind). Spotify and MusicBrainz use the same acceptance
+and Album-job orchestration; legacy constructors retain MusicBrainz defaults.
+The older catalog-import DTO still requires an external Album identity and its Add
+Album workflow remains MusicBrainz-only. Normal MusicBrainz Add Album
 still looks up a representative Release to obtain Tracks; that is catalog retrieval,
 not proof that local files came from that edition.
 
@@ -1336,7 +1337,7 @@ accepted. An unresolved conflict with an existing canonical identity remains
 `ConflictingIdentity`. Incomplete provider programs fail conservatively. Successful
 provider matches attach/confirm Recording identities independently, including clearing
 local-provenance ownership markers; they never merge Recordings or Tracks. Occurrence-only
-matches remain useful ephemeral associations, not invented Recording identities.
+matches are successful durable Album-scoped song associations, not invented Recording identities.
 No missing Tracks, membership, sources, metadata, or exact edition IDs are changed.
 
 MusicBrainz uses one lightweight Official/media browse (one unfiltered fallback if
@@ -1349,6 +1350,97 @@ an outage never revokes Album success. No request is issued per local Track.
 The opt-in probe reports program identities, whole-program fit, and every candidate's
 positions, comparison/display titles, durations, identities and consideration reason.
 See [the three-case audit](album-track-matching-audit.md) for concrete examples.
+
+### Optional Spotify user playback
+
+Spotify catalog identity and playback capability are independent. The existing
+Client Credentials catalog client remains separate from `spotify::playback`, an
+OAuth PKCE S256 Spotify Connect controller. The diagnostic worker controls one
+explicitly selected device and one persisted provider song association; it neither
+feeds Spotify URIs to GStreamer nor takes over the application queue. Device IDs
+are rediscovered, not durable source/application identities. User authorization,
+account capability, device availability and catalog association are distinct.
+
+An indexed Track/provider lookup exposes accepted occurrence evidence with manual
+precedence. No playback-time catalog search or canonical identity write occurs.
+Playback tokens live outside SQLite in a restricted diagnostic credential file;
+production should use platform secret storage. Expired/revoked authorization does
+not affect catalog matching or local playback. Polling is confined to an open,
+connected playback diagnostic, with provider-specific backoff. See
+[Spotify playback](../adapters/spotify/PLAYBACK.md).
+
+Future source resolution may choose local availability → GStreamer, otherwise a
+known Spotify association → authorized Spotify playback, otherwise bounded
+on-demand enrichment → persisted association → playback. Source resolution, mixed
+queues and playback-time enrichment are deliberately not implemented here.
+
+### Selected Spotify catalog provider
+
+Provider Album search can expose several catalog representations of one human
+Album. The additive candidate-program capability enables generic disambiguation:
+returned counts first exclude objects too small for the distinct present positions
+or largest known track number. Missing counts and extra provider Tracks are normal;
+neither completeness nor an `Album` type label is required. Exact title precedence
+remains unchanged. Up to three surviving candidates may supply bounded programs.
+A complete program is rejected for structural impossibility, trusted Recording
+conflict, two unexplained present Tracks, or two incompatible durations. One weak
+disagreement remains uncertain. A sole supported representation requires at least
+three exact position/title agreements before program evidence selects its Album ID.
+Fetched programs remain in the owned worker cache for immediate enrichment.
+
+Equally supported representations with matching Track associations remain
+`AlbumEquivalent`: the diagnostic shows Album/Track support without arbitrarily
+persisting an Album ID. Common song evidence remains visible; differing song IDs
+remain unresolved. These associations are ephemeral until a provider Album identity
+is established. No exact edition is inferred. MusicBrainz currently leaves this
+additive capability disabled, preserving its existing request bounds. See the
+[live candidate audit](spotify-album-candidates-audit.md).
+
+`adapters/spotify` is the second concrete catalog adapter. MusicBrainz remains the
+single-provider default; an explicit ordered chain enables serial fallback.
+Spotify Artist IDs attach to Artists, Album IDs to Albums;
+Track IDs remain catalog song occurrences. No Spotify Recording or exact edition is
+manufactured. Existing MusicBrainz identities coexist on the same application entities.
+
+Provider-specific JSON, authentication, market, queries and rate policy stay in the
+adapter. Spotify uses in-memory Client Credentials tokens, bounded searches and
+paginated Album Tracks. It does not use MusicBrainz's one-second limiter. Typed 429,
+5xx and transport/timeouts use the selected worker's existing cooldown circuit;
+credential/access errors stop retries and require configuration correction/restart.
+The circuit belongs to that selected worker, not a global MusicBrainz flag.
+See [Spotify setup and request bounds](../adapters/spotify/README.md).
+
+`provider_chain::ProviderChain` coordinates configured provider workers. It grants
+only one worker an Album job at a time; that provider completes Artist/Album and
+then Track enrichment before the next Album begins. Manual provider associations
+pin their provider. Otherwise the first configured provider with accepted Album
+identity takes precedence over rediscovery, even if lower in search order.
+Without an accepted identity, configured order controls bounded attempts. No-match,
+Artist/Album ambiguity, unresolved catalog representation, provider errors or an
+open circuit permit fallback; a successful Album stops fallback even if Track
+identity is incomplete. Valid Artist identities survive an unsuccessful Album attempt.
+
+Workers retain separate clients, caches, rate policies and ephemeral circuits.
+The coordinator takes ownership of yielded work so a recovered provider cannot
+silently enrich an Album already resolved elsewhere. Timer expiry grants one
+serial probe when unresolved work exists; it performs no health request without
+work and cannot run alongside another provider. Track-phase outages stay with the
+successful provider. Manual Artist selections are applied locally and their
+continuations enter the same queue. Per-Album history keeps at most one latest
+result per configured provider, in attempt order. No schema or identity-equivalence
+table is added. Automatic enrichment from every provider, cross-provider Recording
+reconciliation and metadata-only merging remain deferred. See the
+[fallback diagnostic audit](provider-fallback-audit.md).
+
+Migration 0012 adds `provider_track_association`, keyed by application Track and
+provider, with the accepted Album identity and a typed presentation/evidence snapshot.
+It supports offline restart and future linking without asserting exact-edition or
+Recording identity. Current automatic results replace only that provider's snapshot;
+network errors preserve prior results. Manual association keys and Recording claims
+are extended to coexist per provider, retaining ownership and clear semantics.
+Manual choices override automatic results only for their own provider. Recording
+confirmation remains independent of local embedded tags. No Tracks/Albums are merged.
+All reads follow the affected Album's indexed Release/Track relationships.
 
 ### Durable local embedded observations
 

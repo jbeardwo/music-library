@@ -373,7 +373,7 @@ fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        11
+        12
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -839,7 +839,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        11
+        12
     );
     f.scan();
     assert_eq!(f.extractor.reads, 1); // no forced reparse of legacy files

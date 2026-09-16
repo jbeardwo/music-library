@@ -4,6 +4,14 @@ Audited 2026-09-11. Application Artist, Album, Release, Track and Recording IDs 
 authoritative. This document and the read-only probe define an evidence boundary,
 not permission to attach exact Release identities or merge Releases.
 
+Implementation refinement (2026-09-14): the Spotify adapter uses its catalog Album
+ID as provider Album identity in the normal Album-first matching workflow. This is
+not a claim that Spotify exposes Release Groups or identifies an exact pressing.
+The matrix below concerns optional edition evidence; it does not require mapping a
+Spotify Album ID canonically to an application Release. Spotify Track IDs remain
+Album-scoped song associations, distinct from Recording identities. See
+[adapter setup and limits](../adapters/spotify/README.md).
+
 ## Provider compatibility
 
 “Available” below means the provider can expose evidence, not that every object
@@ -70,7 +78,7 @@ mandatory. A shared ISRC is evidence, not an application ID or proof of edition.
 | `storage.rs` canonical Artist and catalog credit insertion | MB Artist identity is the strong merge trigger | Intentional provider-specific safety rule, not safe to generalize to arbitrary IDs |
 | `storage.rs` catalog import | Requires external Album identity; routes MB Recording/ISRC from Track identity list | Import-boundary leak; future import DTO should explicitly separate grouping, occurrence and recording evidence |
 | `recording.rs` compare/prepare/bind | Requires MB Recording candidate, known MB group, MB Artist IDs; MBID merge conflict rule | Discovery/acceptance coupling; intentionally not reused by the edition comparator |
-| Matching worker and diagnostic frontend | One configured MusicBrainz workflow/circuit; MB labels/IDs | Current integration limitation, not a provider fallback implementation |
+| Matching worker and diagnostic frontend | Configured Spotify/MusicBrainz workers with independent circuits | Ordered Album-first fallback now coordinates them serially; provider discovery stays adapter-specific |
 | Migration 0008 | Copies historical MB Recording/ISRC evidence without merging | Legitimate compatibility migration; do not rewrite shipped history |
 
 `CatalogProvider` currently combines Album/Artist discovery, edition browse/detail,
@@ -322,9 +330,9 @@ Define edition-specific validation/promotion, barcode normalization, catalog-num
 relinking and contradictory identifiers before allowing writes. Do not infer missing
 Tracks, merge Releases or rewrite credited/local metadata.
 
-The comparator can support Spotify-first, Apple-first, Discogs-first or MB-first
-evidence today. The existing catalog import and automatic matching orchestration
-cannot yet switch providers unchanged: optional external grouping and separate
-capability/policy boundaries must be implemented when a second adapter is added.
-Fallback selection, cross-provider corroboration and per-provider circuits remain
-future orchestration work. No provider hierarchy is required by the new boundary.
+The comparator supports Spotify-first, Apple-first, Discogs-first or MB-first
+evidence. Spotify and MusicBrainz now share Album-first matching through an optional
+ordered fallback coordinator with independent provider circuits. It stops at the
+first confident Album provider; it does not reconcile cross-provider identity or
+run every provider for enrichment. No external hierarchy or exact edition is
+required. Apple/Discogs adapters and cross-provider corroboration remain deferred.
