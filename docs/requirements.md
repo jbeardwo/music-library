@@ -797,12 +797,20 @@ Deferred decisions must not be silently encoded as irreversible defaults.
 Spotify catalog Client Credentials and user playback PKCE authorization must remain
 independent. A diagnostic user may explicitly select an available, unrestricted
 Spotify Connect device and play/pause/seek one library Track using an already
-accepted Spotify song association. No association means no playback-time search.
+accepted Spotify song association. Ordinary application Play prefers a currently
+usable local file; otherwise it may use Spotify when playback capability is ready.
+If no song association exists, this explicit Play may perform one bounded catalog
+lookup. Only a unique strongly corroborated result is accepted automatically;
+ambiguous evidence uses explicit selection. Polling, browsing, opening controls and
+device refresh never search. Persisted associations bypass subsequent searches.
 Device selection must not infer physical-computer identity or silently choose
 another device. Spotify availability/authorization is not Track identity.
 
 Playback authorization may survive restart outside library storage; invalid grant
 requires reauthorization without affecting catalog matching or local playback.
-Spotify controls do not modify GStreamer queues. Automatic local/Spotify fallback,
-mixed-source queues and on-demand enrichment remain future work. See
+Missing files never invalidate Track identity or delete source observations.
+Unexpected local engine failures must not silently become remote playback.
+Explicit backend switches coordinate stop/pause to avoid overlapping output;
+local and Spotify engines remain separate. Mixed-source queue advancement, source
+preferences and broad enrichment remain future work. See
 [diagnostic setup and token lifecycle](../adapters/spotify/PLAYBACK.md).

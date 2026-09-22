@@ -714,6 +714,27 @@ impl Playback {
     pub fn pause(&mut self) -> Result<()> {
         self.command("pause", Value::Null, None)
     }
+    /// Release application-controlled audio before a local backend handoff.
+    /// A fresh observation of idle/paused playback needs no Pause command.
+    /// Do not pause another Connect target if playback has moved elsewhere.
+    pub fn pause_for_handoff(&mut self) -> Result<()> {
+        self.poll()?;
+        if !self.snapshot.state.playing {
+            return Ok(());
+        }
+        let active = self
+            .snapshot
+            .state
+            .device
+            .as_ref()
+            .and_then(|d| d.id.as_ref());
+        let selected = self.snapshot.selected_device.as_ref();
+        match (active, selected) {
+            (Some(active), Some(selected)) if active == selected => self.pause(),
+            (Some(_), Some(_)) => Ok(()),
+            _ => Err(Error::DeviceUnavailable),
+        }
+    }
     pub fn seek(&mut self, milliseconds: u64) -> Result<()> {
         self.command(
             "seek",
@@ -1041,6 +1062,67 @@ mod tests {
         assert_eq!(p.pause(), Err(Error::DeviceUnavailable));
         assert!(p.snapshot.selected_device.is_none());
         assert_eq!(s.finish().len(), 4);
+    }
+
+    #[test]
+    fn local_handoff_does_not_pause_an_idle_or_already_paused_player() {
+        for response in [(204, "", ""), (200, "", STATE)] {
+            let server = Server::new(vec![(200, "", TOKEN), response]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = client(&server, &dir);
+            authorize(&mut p);
+            p.snapshot.selected_device = Some("desktop".into());
+            // Even an old command rejection must not replace a fresh observation.
+            p.snapshot.error = Some(Error::ApiRejected(403));
+            p.pause_for_handoff().unwrap();
+            let requests = server.finish();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[1].starts_with("GET /me/player "));
+            assert!(!requests.iter().any(|r| r.contains("/pause")));
+        }
+    }
+
+    #[test]
+    fn local_handoff_pauses_only_the_selected_playing_device_and_preserves_errors() {
+        const PLAYING: &str = r#"{"is_playing":true,"device":{"id":"desktop","name":"PC","type":"Computer","is_active":true,"is_restricted":false}}"#;
+        for status in [204, 403] {
+            let server = Server::new(vec![
+                (200, "", TOKEN),
+                (200, "", DEVICES),
+                (200, "", PLAYING),
+                (status, "", "{}"),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = client(&server, &dir);
+            authorize(&mut p);
+            p.devices().unwrap();
+            p.select_device("desktop").unwrap();
+            assert_eq!(
+                p.pause_for_handoff(),
+                if status == 204 {
+                    Ok(())
+                } else {
+                    Err(Error::ApiRejected(403))
+                }
+            );
+            let requests = server.finish();
+            assert!(requests[2].starts_with("GET /me/player "));
+            assert!(requests[3].contains("PUT /me/player/pause?device_id=desktop"));
+        }
+        let server = Server::new(vec![(200, "", TOKEN), (200, "", PLAYING)]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        p.snapshot.selected_device = Some("different-device".into());
+        p.pause_for_handoff().unwrap();
+        assert_eq!(server.finish().len(), 2); // no command against someone else's target
+
+        let server = Server::new(vec![(200, "", TOKEN), (403, "", "{}")]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        assert_eq!(p.pause_for_handoff(), Err(Error::ApiRejected(403)));
+        assert_eq!(server.finish().len(), 2); // unobservable playback is not assumed silent
     }
     #[test]
     fn unauthorized_refreshes_once_then_requires_reauthorization() {

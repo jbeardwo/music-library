@@ -42,6 +42,9 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
         title: "Song \"Title\"".into(),
         artist: "Artist".into(),
         album: "Album".into(),
+        duration_ms: None,
+        disc: None,
+        number: None,
     };
     let found = mock.client.search_songs(&input).unwrap();
     assert_eq!(found.items.len(), 1);

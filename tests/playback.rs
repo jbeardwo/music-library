@@ -10,6 +10,103 @@ use music_library::{
 use rusqlite::{Connection, params};
 use tempfile::TempDir;
 
+fn remote_capability() -> music_library::playback_resolver::RemoteCapability<'static> {
+    music_library::playback_resolver::RemoteCapability {
+        provider: "remote",
+        unavailable: None,
+        catalog_available: true,
+        accepts: |id| id.kind == "song",
+    }
+}
+
+#[test]
+fn explicit_resolver_checks_all_local_sources_without_changing_durable_state() {
+    use music_library::playback_resolver::Route;
+    let f = Fixture::new();
+    f.source("a-missing", 0, true);
+    let valid = f.source("b-valid", 0, true);
+    let SourceLocation::LocalFile(path) = &valid.location else {
+        unreachable!()
+    };
+    std::fs::write(path, b"fixture").unwrap();
+    let before = f.durable_state();
+    let mut remote = remote_capability();
+    remote.unavailable = Some("not connected".into());
+    assert_eq!(
+        f.library.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::Local(valid.clone())
+    );
+    std::fs::remove_file(path).unwrap();
+    assert!(matches!(
+        f.library.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::Unavailable(_)
+    ));
+    remote.unavailable = None;
+    assert_eq!(
+        f.library.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::NeedsEnrichment
+    );
+    assert_eq!(f.durable_state(), before);
+}
+
+#[test]
+fn resolver_known_remote_never_needs_catalog_and_survives_restart() {
+    use music_library::{domain::ExternalIdentity, playback_resolver::Route};
+    let mut f = Fixture::new();
+    let id = ExternalIdentity {
+        provider: "remote".into(),
+        kind: "song".into(),
+        external_id: "opaque".into(),
+    };
+    f.library
+        .attach_track_external_identity(&f.tracks[0], &id)
+        .unwrap();
+    let mut remote = remote_capability();
+    remote.catalog_available = false;
+    assert_eq!(
+        f.library.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::Remote(id.clone())
+    );
+    remote.unavailable = Some("device unavailable".into());
+    assert!(matches!(
+        f.library.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::Unavailable(_)
+    ));
+    remote.unavailable = None;
+    let reopened = Library::open(f._temp.path().join("playback.sqlite")).unwrap();
+    assert_eq!(
+        reopened.playback_route(&f.tracks[0], &remote).unwrap(),
+        Route::Remote(id)
+    );
+}
+
+#[test]
+fn resolver_local_engine_failure_stays_an_engine_failure() {
+    use music_library::playback_resolver::Route;
+    let f = Fixture::new();
+    let source = f.source("file", 0, true);
+    let SourceLocation::LocalFile(path) = &source.location else {
+        unreachable!()
+    };
+    std::fs::write(path, b"not audio").unwrap();
+    let Route::Local(source) = f
+        .library
+        .playback_route(&f.tracks[0], &remote_capability())
+        .unwrap()
+    else {
+        panic!("local expected")
+    };
+    let state = Rc::new(RefCell::new(EngineState::default()));
+    let mut playback = Playback::new(FakeEngine(state.clone()));
+    playback.set_queue(vec![f.tracks[0].clone()]).unwrap();
+    state.borrow_mut().fail_next = true;
+    assert!(matches!(
+        playback.start_source(source),
+        Err(PlaybackError::Engine(_))
+    ));
+    assert_eq!(playback.state().status, PlaybackStatus::Failed);
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
     Volume(Volume),

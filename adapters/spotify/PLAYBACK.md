@@ -103,8 +103,9 @@ The panel reports **Explicit catalog resolution: token / API requests** separate
 from playback counters. First search normally needs one Client Credentials token
 request plus one search. Further explicit searches reuse that worker's in-memory
 token. Temporary failures honor a bounded cooldown before another explicit retry;
-there is no background resolution loop. Ordinary Play/polling still issues zero
-catalog requests. Catalog configuration failures are separate from playback auth.
+there is no background resolution loop. Polling always issues zero catalog requests.
+Ordinary Play may search only under the bounded resolver policy below. Catalog
+configuration failures are separate from playback auth.
 
 ## Storage and lifecycle
 
@@ -166,9 +167,9 @@ cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --example sp
 Do not run two authorization listeners simultaneously. The probe never searches
 the catalog or chooses a playback device automatically.
 
-## Deliberately next, not implemented
+## Unified explicit Play
 
-The future application source resolver may follow:
+In GStreamer diagnostic mode, the normal library-row **Play** action now resolves:
 
 ```text
 Play application Track
@@ -177,8 +178,46 @@ Play application Track
   → otherwise bounded Spotify enrichment → persist association → Spotify playback
 ```
 
-Explicit user-requested song selection above is available. This slice does not
-implement that automatic resolver, automatic on-demand enrichment, mixed queues,
-queue takeover, next/previous integration, automatic source fallback, or provider
-identity reconciliation. Local playback and Spotify controls remain explicit and
-separate; avoid starting both unless that is what you intend to test.
+Local preference checks all currently available sources associated with this Track,
+in stable source-ID order. A regular file must still exist and open for reading.
+Missing paths are skipped without mutating source observations; unexpected access
+or decoder errors remain local failures. No rescan, hashing or moved-file search
+occurs. If local works, neither Spotify client is invoked for this Play.
+
+Spotify requires connected playback authorization, an explicitly selected usable
+device, and no blocking playback error. Open **Spotify…** to connect/rediscover and
+select the desktop client once per launch; no device is silently selected. A known
+song association bypasses catalog configuration and search entirely.
+
+If no association exists and both capabilities are available, Play uses the same
+catalog worker/search as the explicit chooser: one page, maximum ten results, no
+follow-up queries. Automatic acceptance requires a unique eligible candidate on a
+complete page, exact Unicode-lowercase/whitespace-folded Artist, title and Album,
+and no supplied position/disc contradiction or duration difference over 3 seconds.
+No fuzzy edits, punctuation removal, semantic qualifier stripping or search-order
+selection is used. Missing optional duration/positions are not contradictions.
+The short transaction rechecks metadata and existing associations before attaching
+only the song ID. It does not establish Album, Recording or edition identity.
+
+Ambiguous or insufficiently supported plausible results open the existing chooser,
+reusing the fetched page without another search. No match reports unavailable.
+Explicit confirmation remains available and stronger than automatic inference.
+After a successful automatic acceptance, subsequent Play/restart uses the saved
+association with zero catalog requests. Stop cancels a pending automatic lookup;
+late/canceled replies cannot persist or start audio.
+
+Backend ownership is None, Local or Remote(provider). Switching waits for local
+Stop or application-controlled Spotify Pause to succeed before starting the other
+backend. A local handoff first reads fresh Spotify state: already paused/idle
+playback needs no Pause command, and playback on another device is not controlled.
+A failed first remote Play with a definite rejection does not establish remote
+ownership. Unknown remote output after a transport error retains remote ownership
+so the next local switch must establish inactivity or pause successfully. The application does not pause Spotify merely
+because local playback is chosen when it did not previously control Spotify.
+Polling remains five seconds while the Spotify panel or application-owned remote
+backend is active (first post-command observation after one second), with existing
+backoff. It never invokes catalog lookup.
+
+Mixed queue advancement, EOS/Next source switching, queue takeover, source
+preferences, moved-file discovery and cross-provider identity reconciliation remain
+deferred. The explicit Spotify panel remains available for debugging.

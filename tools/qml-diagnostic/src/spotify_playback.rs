@@ -21,6 +21,13 @@ pub enum Command {
     Pause,
     Seek(u64),
     Visible(bool),
+    /// Acknowledged commands used only by explicit application backend handoff.
+    ApplicationPlay(Song),
+    ApplicationPause,
+}
+pub struct Update {
+    pub snapshot: Snapshot,
+    pub application_command: bool,
 }
 pub struct Worker {
     sender: Option<SyncSender<Command>>,
@@ -28,7 +35,19 @@ pub struct Worker {
     stopped: Arc<AtomicBool>,
 }
 impl Worker {
-    pub fn new(notify: impl Fn(Snapshot) + Send + 'static) -> Self {
+    #[cfg(test)]
+    pub fn fake() -> (Self, Receiver<Command>) {
+        let (sender, receiver) = mpsc::sync_channel(8);
+        (
+            Self {
+                sender: Some(sender),
+                join: None,
+                stopped: Arc::new(AtomicBool::new(false)),
+            },
+            receiver,
+        )
+    }
+    pub fn new(notify: impl Fn(Update) + Send + 'static) -> Self {
         let (sender, receiver) = mpsc::sync_channel(8);
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
@@ -54,20 +73,27 @@ impl Drop for Worker {
         }
     }
 }
-fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Snapshot)) {
+fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Update)) {
     let mut playback = match Playback::from_env() {
         Ok(p) => p,
         Err(error) => {
-            notify(Snapshot {
-                error: Some(error),
-                ..Default::default()
+            notify(Update {
+                snapshot: Snapshot {
+                    error: Some(error),
+                    ..Default::default()
+                },
+                application_command: false,
             });
             return;
         }
     };
-    notify(playback.snapshot.clone());
+    notify(Update {
+        snapshot: playback.snapshot.clone(),
+        application_command: false,
+    });
     let mut auth = None;
     let mut visible = false;
+    let mut application_active = false;
     let mut next_poll = Instant::now();
     loop {
         if stopped.load(Ordering::Acquire) {
@@ -79,6 +105,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Sn
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
         let mut result = Ok(());
+        let mut application_command = false;
         if stopped.load(Ordering::Acquire) {
             return;
         }
@@ -100,6 +127,17 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Sn
                 Command::Refresh => playback.devices(),
                 Command::Select(id) => playback.select_device(&id),
                 Command::Play(song) => playback.play(&song),
+                Command::ApplicationPlay(song) => {
+                    application_command = true;
+                    application_active = true;
+                    playback.play(&song)
+                }
+                Command::ApplicationPause => {
+                    application_command = true;
+                    playback
+                        .pause_for_handoff()
+                        .inspect(|()| application_active = false)
+                }
                 Command::Pause => playback.pause(),
                 Command::Seek(ms) => playback.seek(ms),
                 Command::Visible(v) => {
@@ -132,7 +170,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Sn
                 }
             }
         }
-        if visible
+        if (visible || application_active)
             && playback.snapshot.authorization == AuthorizationState::Connected
             && Instant::now() >= next_poll
         {
@@ -154,10 +192,14 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Sn
         ) = &result
         {
             visible = false;
+            application_active = false;
         }
         if changed {
             playback.snapshot.error = result.err();
-            notify(playback.snapshot.clone());
+            notify(Update {
+                snapshot: playback.snapshot.clone(),
+                application_command,
+            });
         }
     }
 }

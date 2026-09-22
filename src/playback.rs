@@ -256,6 +256,15 @@ impl<E: PlaybackEngine> Playback<E> {
                 return Err(error);
             }
         };
+        self.start_source(source)
+    }
+
+    /// Start the resolver's already-checked source for the current queue entry.
+    /// Engine failures remain engine failures; no remote fallback occurs here.
+    pub fn start_source(&mut self, source: PlayableSource) -> Result<(), PlaybackError> {
+        if self.state.position.is_none() {
+            return Err(PlaybackError::EmptyQueue);
+        }
         if self.state.status == PlaybackStatus::Failed {
             self.stop()?;
         }

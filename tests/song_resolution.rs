@@ -55,6 +55,112 @@ fn candidate() -> Candidate {
         number: 1,
     }
 }
+
+#[test]
+fn automatic_play_acceptance_is_unique_complete_and_contradiction_sensitive() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess},
+    };
+    let mut library = Library::open_in_memory().unwrap();
+    let imported = library.add_catalog_release(&release()).unwrap();
+    let mut input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    input.duration_ms = Some(200000);
+    let mut song = candidate();
+    song.album = input.album.clone();
+    let page = |items| Page {
+        items,
+        next_offset: None,
+    };
+    assert_eq!(
+        assess(&input, &page(vec![song.clone()])),
+        Assessment::Unique(0)
+    );
+    let mut other = song.clone();
+    other.identity.external_id = "another catalog song".into();
+    assert_eq!(
+        assess(&input, &page(vec![other.clone(), song.clone()])),
+        Assessment::NeedsSelection
+    );
+    other.title = "unrelated first-ranked result".into();
+    assert_eq!(
+        assess(&input, &page(vec![other, song.clone()])),
+        Assessment::Unique(1)
+    );
+    for field in ["artist", "title", "album", "duration", "disc", "position"] {
+        let mut wrong = song.clone();
+        match field {
+            "artist" => wrong.artist = "Wrong Artist".into(),
+            "title" => wrong.title.push_str(" (Live)"),
+            "album" => wrong.album.push_str(" Deluxe"),
+            "duration" => wrong.duration_ms += 3001,
+            "disc" => {
+                input.disc = Some(1);
+                wrong.disc = 2;
+            }
+            _ => wrong.number = 2,
+        }
+        assert_ne!(
+            assess(&input, &page(vec![wrong])),
+            Assessment::Unique(0),
+            "{field}"
+        );
+    }
+    assert_eq!(assess(&input, &page(vec![])), Assessment::NoMatch);
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![song.clone()],
+                next_offset: Some(10)
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+    song.title = "  SONG  ".into();
+    song.artist = "ARTIST".into();
+    assert_eq!(assess(&input, &page(vec![song])), Assessment::Unique(0));
+}
+
+#[test]
+fn automatic_unique_song_persists_without_other_identity_changes() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("automatic.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let imported = library.add_catalog_release(&release()).unwrap();
+    let track = &imported.track_ids[0];
+    let before = library.edition_evidence(&imported.release_id).unwrap();
+    let input = library.song_resolution_input(track).unwrap();
+    let mut song = candidate();
+    song.album = input.album.clone();
+    let page = Page {
+        items: vec![song.clone()],
+        next_offset: None,
+    };
+    let Assessment::Unique(index) = assess(&input, &page) else {
+        panic!("unique")
+    };
+    library
+        .confirm_song_resolution(&Selection::new(input, page.items), index)
+        .unwrap();
+    let after = library.edition_evidence(&imported.release_id).unwrap();
+    assert_eq!(before.exact_identities, after.exact_identities);
+    assert_eq!(before.tracks[0].recording_id, after.tracks[0].recording_id);
+    drop(library);
+    let library = Library::open(&path).unwrap();
+    assert_eq!(
+        library
+            .track_provider_occurrences(track, "song-provider")
+            .unwrap(),
+        vec![song.identity]
+    );
+}
 #[test]
 fn catalog_track_explicit_selection_persists_without_album_or_recording_inference() {
     let dir = tempfile::tempdir().unwrap();

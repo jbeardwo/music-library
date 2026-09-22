@@ -363,6 +363,14 @@ impl Library {
         self.store.available_playback_source(track_id)
     }
 
+    pub fn playback_route(
+        &self,
+        track: &TrackId,
+        remote: &crate::playback_resolver::RemoteCapability<'_>,
+    ) -> Result<crate::playback_resolver::Route> {
+        self.store.playback_route(track, remote)
+    }
+
     pub fn search(&self, request: &SearchRequest) -> Result<Vec<TrackSearchResult>> {
         self.store.search(request)
     }

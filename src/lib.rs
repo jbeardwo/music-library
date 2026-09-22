@@ -12,6 +12,7 @@ pub mod filesystem;
 pub mod manual_track;
 pub mod matching;
 pub mod playback;
+pub mod playback_resolver;
 pub mod provenance;
 pub mod provenance_acceptance;
 mod provenance_storage;

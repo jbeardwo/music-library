@@ -1628,7 +1628,7 @@ fn path_to_bytes(path: &Path) -> Vec<u8> {
 }
 
 #[cfg(unix)]
-fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+pub(crate) fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     PathBuf::from(OsString::from_vec(bytes))
@@ -1644,7 +1644,7 @@ fn path_to_bytes(path: &Path) -> Vec<u8> {
 }
 
 #[cfg(windows)]
-fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
+pub(crate) fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     let wide = bytes

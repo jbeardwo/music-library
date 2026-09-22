@@ -145,3 +145,120 @@ existing Track/provider indexes and never scan the whole library.
 Replacing an existing independent song association, automatic playback-time
 enrichment, source fallback, mixed queues, next/previous integration, queue
 takeover and broad cross-provider enrichment remain deliberately deferred.
+
+## Unified explicit-Play resolver (validation completed 2026-09-22)
+
+This section supersedes the preceding slice's deferral of explicit playback-time
+source resolution. Mixed queue advancement and broad enrichment are still deferred.
+
+`Library::playback_route` returns Local(source), Remote(occurrence identity),
+NeedsEnrichment, or Unavailable(reason). An adapter supplies current capability and
+identity validation; core selection does not branch on provider name. Local-first
+selection probes only the Track's indexed available sources, in stable order. It
+checks a regular file exists and opens, with no durable availability mutation.
+Missing paths are skipped; unexpected access or engine failures are not hidden by
+Spotify playback. No filesystem or network work enters a write transaction.
+
+The existing song search gains optional duration/disc/position input. Automatic
+acceptance is exact normalized Artist/title/Album plus compatible supplied positions
+and duration (3,000 ms tolerance), unique on a complete bounded page. No fuzzy or
+version-word removal is added. The existing transaction protects prior/manual
+associations and rechecks metadata. Only a Track song ID is written; no migration,
+Album mapping, Recording identity, edition identity or membership change occurs.
+Ambiguous results reuse the existing chooser without another request. Explicit
+Stop/cancel invalidates the pending lookup. Local availability is checked again
+after a successful network response, before selecting the final backend.
+
+The QML diagnostic's normal Play uses this resolver in real-audio mode. Its separate
+Spotify debug controls remain. Local Stop acknowledgment precedes remote Play;
+remote Pause acknowledgment precedes local Start. A failed pause or stop withholds
+the destination backend. Ownership is separate from engine position/status. Remote
+polls continue while the panel or application-owned remote backend is active;
+polling never searches. Queue EOS/Next still does not resolve remote sources.
+
+### Isolated live results
+
+Used a SQLite backup of the previous disposable playback database:
+`/tmp/music-library-playback-resolver-20260916.sqlite`. The original test/library
+database and real music files were not renamed, removed or reset. Existing separate
+playback credentials were reused, and **PUHI**, Computer, unrestricted, was selected
+explicitly. No other returned device was selected.
+
+| Explicit Play case | Catalog token/search | Playback token/API | Result |
+|---|---:|---:|---|
+| Local Waitress | 0 / 0 | 0 / 0 | GStreamer confirmed Playing; remote clients never constructed |
+| Source-less Waitress, known association | 0 / 0 | 1 / 6 | Sent saved song to PUHI; observed Waitress, then paused |
+| Source-less Buddy in the Parade, no association | 1 / 1 | 0 / 6 | One complete candidate, Unique(0), persisted song, sent to PUHI, then paused |
+| Buddy in the Parade, separate-process reopen | 0 / 0 | 1 / 6 | Saved association reused; observed correct song Playing on PUHI, then paused |
+
+Automatic Buddy candidate: Hop Along / Painted Shut, disc 1 Track 2,
+227,355 ms, `spotify:track:5CjoGMN0n3tIG4XaCcseoS`. Catalog token+search took
+425 ms; persistence 305 µs; initial Play command 303 ms. Local Waitress source
+lookup/stat/open took 1.09 ms on `/mnt/f`; GStreamer played without Spotify calls.
+The reopen Play command took 411 ms; the correct Playing state was observed after
+1.566 s (including the probe's deliberate one-second wait before polling).
+Playback's token refresh was separate from catalog authentication.
+
+The original immediate post-command polls could still show the previous song.
+This was observation latency, not a wrong association: the subsequent poll showed
+the requested song. The live probe now waits/polls a bounded five times to verify
+Playing; production retains its modest existing polling cadence. The six playback
+API requests comprise discovery, pre-Play state, Play/resume, observed state, Pause,
+and paused state. These are probe counts, not a promise that visible UI polling
+will always have the same total.
+
+The QML resolver's four explicit handoffs, pause/stop failures, one-search automatic
+acceptance, reuse without search, and ambiguity → existing chooser are deterministic
+tests with fake worker channels. Live probes exercise the same core resolver,
+association persistence and real adapters. Visual GUI handoff feedback is separate
+from those automated/probe results.
+
+During subsequent GUI testing the user reported local playback stopping after about
+one second. The exact displayed error was not captured, so clean live GUI handoffs
+are **not yet confirmed**. The complete Waitress file decoded successfully to a
+silent sink; that does not rule out an audio-output or orchestration failure. The
+diagnostic now logs local engine errors with generation and application Track ID.
+No decoder policy or automatic fallback was changed to conceal this failure.
+The user will retest manually using the launch command; competing live probes were
+stopped. A GLib shutdown warning alone was insufficient to establish a cause.
+
+A subsequent report used **Replace queue & play** on an available local row after
+Spotify playback. All ten local files still existed. Inspection found that a failed
+Spotify pause withheld queue replacement (intentionally avoiding overlap), while
+the old Track's “No usable local source” error could remain visible. New explicit
+requests now clear stale errors, and handoff failures explicitly say the local
+source is usable but Spotify could not be stopped. Each route decision is logged
+with its application Track ID.
+
+The handoff now checks fresh Spotify state before Pause: idle/paused requires no
+redundant command, and a different active device is not commandeered. A definite
+rejection of a first Spotify Play does not establish remote ownership; unknown
+transport outcomes and previously owned audio remain protected. Deterministic
+tests cover these cases, failed state observation/real Pause, stale UI errors,
+queue replacement after a successful handoff, and local playback after a rejected
+remote start. Spotify tests now total 27 passed. This does not claim the live API
+rejection itself has been identified or eliminated; manual retesting is pending.
+
+### Performance and validation
+
+At 200k Tracks: complete route lookup including missing-source check and known
+remote association **23.00 µs median** (p95 26.04 µs); regular-file stat/open/metadata
+**4.90 µs** on the Linux temp filesystem; selected-Track metadata **9.68 µs**;
+provider association **25.47 µs**. EXPLAIN shows indexed Track→source, source primary
+key and local observation primary-key searches, with no global source scan. The
+broader 200k check completed; existing slower artist/availability diagnostic query
+shapes remain unrelated to the new indexed playback path.
+
+Core regression: 216 passed, 8 ignored. Spotify: 25 passed. MusicBrainz: 19 passed,
+3 ignored. GStreamer: 5 passed, 1 ignored. QML: 5 passed, 1 ignored, including the
+added handoff/automatic-resolution checks inside its existing Qt integration test.
+The sandbox initially prevented localhost mock binding/audio; reruns with the
+required access passed. The old default performance fixture was stale; validation
+used a freshly generated isolated 200k database instead.
+
+Before mixed queue advancement, define remote completion/EOS ownership and
+generation handling across sources, external Spotify changes, and queue navigation
+policy. Do not turn polling into catalog enrichment or treat Spotify identity as
+playback entitlement. Source preference, moved-file discovery, replacement/clearing
+of independent song mappings and cross-provider Recording reconciliation remain
+deferred.

@@ -1,5 +1,40 @@
 # Disposable Qt Quick diagnostic
 
+## Unified explicit Play (GStreamer mode)
+
+The normal Track **Play** button now prefers a currently readable local file.
+If none is usable, it uses a saved Spotify song association and an explicitly
+selected Spotify device. With playback ready but no association, the same Play
+request can make one bounded catalog lookup: a strong unique result is saved and
+played; ambiguity opens the existing selector with those results. Missing files
+do not remove Tracks or source observations. No queue EOS/Next source switching
+is implemented.
+
+Use **Spotify…** once to connect/refresh and select your desktop device. The normal
+row Play then chooses the backend. Source/status text reports the decision.
+Catalog and playback counters remain separate. Subsequent Play and restart reuse
+accepted song IDs without catalog requests; polling never searches.
+
+For the existing isolated resolver test state on WSLg:
+
+```sh
+env DISPLAY=:0 QT_QPA_PLATFORM=xcb QT_QUICK_BACKEND=software \
+  PULSE_SERVER=unix:/mnt/wslg/PulseServer \
+  MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-library-playback-resolver-20260916.sqlite \
+  MUSIC_LIBRARY_SPOTIFY_PLAYBACK_CREDENTIALS=/tmp/music-library-spotify-playback-auth/session.json \
+  cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- \
+  --no-auto-match --catalog-provider musicbrainz --gstreamer '/mnt/f/music/Hop Along/Painted Shut'
+```
+
+The source-less Waitress and Buddy in the Parade catalog Tracks in that test
+database already have Spotify associations. Other source-less Tracks may exercise
+automatic lookup. Available local rows exercise local-first playback. See the
+[playback setup/policy](../../adapters/spotify/PLAYBACK.md) and
+[live audit](../../docs/spotify-playback-audit.md). The test database path is
+disposable; use a persistent location outside `/tmp` for longer retention.
+
+## Album matching
+
 Matching now progresses one Album at a time: Artist/Album resolution → Track
 enrichment → next Album. The Album row shows enrichment queued/running, finished
 or deferred. Individual ambiguous Tracks remain available for manual correction

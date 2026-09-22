@@ -434,6 +434,39 @@ fn run_measurements(database: &Path) -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         },
     )?;
+    let remote = music_library::playback_resolver::RemoteCapability {
+        provider: "resolver-benchmark",
+        unavailable: None,
+        catalog_available: true,
+        accepts: |id| id.kind == "song",
+    };
+    let identity = music_library::domain::ExternalIdentity {
+        provider: "resolver-benchmark".into(),
+        kind: "song".into(),
+        external_id: "benchmark-song".into(),
+    };
+    library.attach_track_external_identity(&resolution_track, &identity)?;
+    measure(
+        "explicit Play route incl source check + known association (200k)",
+        1000,
+        || {
+            black_box(library.playback_route(&resolution_track, &remote)?);
+            Ok(())
+        },
+    )?;
+    let file = tempfile::NamedTempFile::new()?;
+    measure(
+        "regular-file stat + open + metadata (local filesystem)",
+        1000,
+        || {
+            black_box(std::fs::metadata(file.path())?);
+            black_box(std::fs::File::open(file.path())?.metadata()?);
+            Ok(())
+        },
+    )?;
+    let plan = diagnostics.prepare("EXPLAIN QUERY PLAN SELECT ps.id,l.path FROM track_source ts CROSS JOIN playable_source ps ON ps.id=ts.source_id CROSS JOIN local_file_observation l ON l.source_id=ps.id WHERE ts.track_id=?1 AND ps.kind='local_file' AND l.available=1 ORDER BY ts.source_id COLLATE BINARY")?
+        .query_map([resolution_track.as_ref()], |row| row.get::<_,String>(3))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    println!("playback source lookup plan: {plan:?}");
     measure("first library page (50)", ITERATIONS, || {
         let rows = library.search(&SearchRequest {
             limit: 50,

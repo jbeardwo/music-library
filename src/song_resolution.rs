@@ -1,5 +1,5 @@
-//! Explicit, user-confirmed catalog song resolution. Not automatic enrichment,
-//! Album acceptance, Recording reconciliation, or playback source selection.
+//! Bounded song lookup and conservative explicit-Play acceptance. Never Album,
+//! Recording, or edition acceptance.
 use crate::{
     catalog::{CatalogError, Page},
     domain::*,
@@ -13,6 +13,9 @@ pub struct Input {
     pub title: String,
     pub artist: String,
     pub album: String,
+    pub duration_ms: Option<u64>,
+    pub disc: Option<u32>,
+    pub number: Option<u32>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Candidate {
@@ -48,26 +51,76 @@ impl Selection {
     }
 }
 fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<Input> {
-    let (title, mut artist, album, release): (String, String, String, String) = db.query_row(
-            "SELECT e.title,e.artist_names,e.release_title,t.release_id FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
-            [track.as_ref()], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-    if artist.trim().is_empty() {
+    let (mut input, release) = db.query_row(
+            "SELECT e.title,e.artist_names,e.release_title,t.release_id,e.duration_ms,t.disc_number,t.track_number FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
+            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+    if input.artist.trim().is_empty() {
         let mut statement = db.prepare("SELECT COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,'') FROM release_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.release_id=?1 ORDER BY c.position")?;
         let credits = statement.query_map([release], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
         })?;
         for credit in credits {
             let (name, join) = credit?;
-            artist.push_str(&name);
-            artist.push_str(&join);
+            input.artist.push_str(&name);
+            input.artist.push_str(&join);
         }
     }
-    Ok(Input {
-        track_id: track.clone(),
-        title,
-        artist,
-        album,
-    })
+    Ok(input)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Assessment {
+    Unique(usize),
+    NeedsSelection,
+    NoMatch,
+}
+
+/// Deliberately stricter than the known-Album matcher: complete bounded page,
+/// exact conservative Artist/title/Album strings, and no supplied duration or
+/// position contradiction. No ranking, fuzzy edits, or version-word stripping.
+pub fn assess(input: &Input, page: &Page<Candidate>) -> Assessment {
+    fn normalized(s: &str) -> String {
+        s.split_whitespace()
+            .map(str::to_lowercase)
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+    let exact =
+        |left: &str, right: &str| !left.trim().is_empty() && normalized(left) == normalized(right);
+    let eligible: Vec<_> = page
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            exact(&input.title, &c.title)
+                && exact(&input.artist, &c.artist)
+                && exact(&input.album, &c.album)
+                && !input.duration_ms.is_some_and(|d| {
+                    d > 0 && c.duration_ms > 0 && d.abs_diff(c.duration_ms) > 3_000
+                })
+                && !input
+                    .disc
+                    .is_some_and(|d| d > 0 && c.disc > 0 && d != c.disc)
+                && !input
+                    .number
+                    .is_some_and(|n| n > 0 && c.number > 0 && n != c.number)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if let [index] = eligible.as_slice()
+        && page.next_offset.is_none()
+    {
+        return Assessment::Unique(*index);
+    }
+    if !page
+        .items
+        .iter()
+        .any(|c| exact(&input.title, &c.title) && exact(&input.artist, &c.artist))
+    {
+        Assessment::NoMatch
+    } else {
+        Assessment::NeedsSelection
+    }
 }
 impl Store {
     pub fn song_resolution_input(&self, track: &TrackId) -> Result<Input> {

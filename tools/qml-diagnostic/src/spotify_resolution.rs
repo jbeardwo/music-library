@@ -20,6 +20,17 @@ pub struct Worker {
     join: Option<thread::JoinHandle<()>>,
 }
 impl Worker {
+    #[cfg(test)]
+    pub fn fake() -> (Self, mpsc::Receiver<(u64, Input)>) {
+        let (send, receive) = mpsc::sync_channel(1);
+        (
+            Self {
+                send: Some(send),
+                join: None,
+            },
+            receive,
+        )
+    }
     pub fn new(emit: impl Fn(Reply) + Send + 'static) -> Self {
         let (send, recv) = mpsc::sync_channel::<(u64, Input)>(1);
         let join = thread::spawn(move || {

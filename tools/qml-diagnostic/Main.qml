@@ -22,6 +22,10 @@ ApplicationWindow {
     property string openedSpotifyAuthorization: ""
     property string spotifyChoicesSignature: ""
     property var spotifyChoices: []
+    Connections {
+        target: window.bridge
+        function onResolver_dialog_requested() { spotifyPlaybackDialog.open(); }
+    }
     onSpotifyPlaybackChanged: {
         const signature = spotifyPlayback.resolutionGeneration + JSON.stringify(spotifyPlayback.resolutionChoices);
         if (signature !== spotifyChoicesSignature) {
@@ -791,7 +795,7 @@ ApplicationWindow {
             elide: Text.ElideRight
         }
         Label {
-            text: "Track ID: " + window.view.currentId + " · Source: " + window.view.source
+            text: window.view.route.length > 0 ? window.view.route : "Track ID: " + window.view.currentId + " · Source: " + window.view.source
             textFormat: Text.PlainText
             Layout.fillWidth: true
             elide: Text.ElideRight

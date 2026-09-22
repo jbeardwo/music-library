@@ -1362,10 +1362,10 @@ are rediscovered, not durable source/application identities. User authorization,
 account capability, device availability and catalog association are distinct.
 
 An indexed Track/provider lookup exposes accepted occurrence evidence with manual
-precedence. Play and polling perform no catalog search or canonical identity write.
+precedence. Playback polling performs no catalog search or canonical identity write.
 An explicit **Search Spotify for this Track** action may separately obtain a bounded
 candidate page from current Track/Artist metadata using catalog Client Credentials.
-Only explicit confirmation attaches the selected song ID to `track_external_identity`;
+Explicit confirmation attaches the selected song ID to `track_external_identity`;
 it does not establish Album, edition or Recording identity. This also works for
 source-less catalog Tracks without a Spotify Album association. Existing associations
 are protected from replacement in this first chooser.
@@ -1375,10 +1375,30 @@ not affect catalog matching or local playback. Polling is confined to an open,
 connected playback diagnostic, with provider-specific backoff. See
 [Spotify playback](../adapters/spotify/PLAYBACK.md).
 
-Future source resolution may choose local availability → GStreamer, otherwise a
-known Spotify association → authorized Spotify playback, otherwise bounded
-on-demand enrichment → persisted association → playback. Source resolution, mixed
-queues and playback-time enrichment are deliberately not implemented here.
+The application `playback_resolver` now answers one explicit Play request with a
+checked local source, a remote occurrence identity, enrichment needed, or an
+unavailable reason. Local is preferred: indexed Track-scoped source lookup followed
+by a regular-file stat/open check, outside transactions. Missing files do not change
+identity, membership, or source observations; other access/engine failures are
+reported, not silently classified as absence. Remote adapters supply their current
+capability separately from identity. No Spotify-specific branch exists in the core
+route selection.
+
+With no usable local source or accepted song association, explicit Play may use the
+existing bounded Spotify catalog search. Automatic acceptance requires one eligible
+candidate on a complete bounded page, exact whitespace-folded Unicode-lowercase
+Artist/title/Album agreement, and no supplied disc/position or >3-second duration
+contradiction. Punctuation/version words remain intact. This writes only the Track
+song association, with existing manual/independent precedence and replacement
+protection. Ambiguity opens the existing chooser using the fetched results. Polling,
+device refresh and browsing never search. No Spotify Album identity is required.
+
+The diagnostic application coordinates explicit backend switches: local Stop must
+be acknowledged before remote Play; application-controlled Spotify Pause must
+succeed before local Start. Failed handoffs withhold the destination backend.
+Local/remote state and clocks remain separate. Local queue EOS/Next remain local;
+remote queue advancement, mixed queues, source preferences and association
+replacement are deferred.
 
 ### Selected Spotify catalog provider
 

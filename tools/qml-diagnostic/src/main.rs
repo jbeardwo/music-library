@@ -1,6 +1,7 @@
 mod catalog;
 #[cfg(feature = "gstreamer")]
 mod local;
+mod playback_route;
 mod sample;
 mod session;
 mod spotify_playback;
@@ -13,6 +14,12 @@ use session::Session;
 #[derive(QObject)]
 struct Bridge {
     base: qt_base_class!(trait QObject),
+    active_backend: music_library::playback_resolver::ActiveBackend,
+    route_pending: Option<playback_route::Pending>,
+    automatic_song_search: bool,
+    preserve_play_queue: bool,
+    route_message: String,
+    resolver_dialog_requested: qt_signal!(),
     spotify_resolution_worker: Option<spotify_resolution::Worker>,
     spotify_resolution_generation: u64,
     spotify_resolution_selection: Option<music_library::song_resolution::Selection>,
@@ -22,6 +29,7 @@ struct Bridge {
     spotify_resolve: qt_method!(
         fn spotify_resolve(&mut self, action: String, index: i32) {
             if action == "cancel" {
+                self.automatic_song_search = false;
                 self.spotify_resolution_generation += 1;
                 self.spotify_resolution_selection = None;
                 self.spotify_resolution_pending = false;
@@ -91,6 +99,14 @@ struct Bridge {
                                 b.spotify_resolution_pending = false;
                                 match reply.result {
                                     Ok(page) => {
+                                        let automatic = b.automatic_song_search;
+                                        b.automatic_song_search = false;
+                                        if automatic {
+                                            b.finish_automatic_song(reply.input, page);
+                                            b.spotify_playback_changed();
+                                            b.changed();
+                                            return;
+                                        }
                                         b.spotify_resolution_message = if page.items.is_empty() {
                                             "No candidates on this bounded page".into()
                                         } else if page.next_offset.is_some() {
@@ -104,7 +120,13 @@ struct Bridge {
                                                 page.items,
                                             ));
                                     }
-                                    Err(error) => b.spotify_resolution_message = error.to_string(),
+                                    Err(error) => {
+                                        b.automatic_song_search = false;
+                                        b.route_message =
+                                            format!("Spotify association lookup failed: {error}");
+                                        b.spotify_resolution_message = error.to_string();
+                                        b.changed();
+                                    }
                                 }
                             }
                             b.spotify_playback_changed();
@@ -138,7 +160,16 @@ struct Bridge {
     spotify_playback_action: qt_method!(
         fn spotify_playback_action(&mut self, action: String, value: String) {
             use spotify_playback::Command;
+            if self.route_pending.is_some()
+                && matches!(
+                    action.as_str(),
+                    "play" | "pause" | "seek" | "device" | "connect" | "cancel"
+                )
+            {
+                return;
+            }
             if action == "track" {
+                self.automatic_song_search = false;
                 self.spotify_resolution_generation += 1;
                 self.spotify_resolution_selection = None;
                 self.spotify_resolution_pending = false;
@@ -159,22 +190,31 @@ struct Bridge {
                     .and_then(|ids| {
                         music_library_spotify::playback::Song::from_associations(&ids).ok()
                     });
-                self.spotify_playback_state.error = self
-                    .spotify_playback_song
-                    .is_none()
-                    .then_some(music_library_spotify::playback::Error::NoAssociation);
+                if self.spotify_playback_state.error.as_ref().is_none_or(|e| {
+                    matches!(e, music_library_spotify::playback::Error::NoAssociation)
+                }) {
+                    self.spotify_playback_state.error = self
+                        .spotify_playback_song
+                        .is_none()
+                        .then_some(music_library_spotify::playback::Error::NoAssociation);
+                }
                 self.spotify_playback_changed();
                 return;
             }
             if self.spotify_playback_worker.is_none() {
                 let weak = qmetaobject::QPointer::from(&*self);
-                let callback = qmetaobject::queued_callback(move |snapshot| {
-                    if let Some(pinned) = weak.as_pinned() {
-                        let mut bridge = pinned.borrow_mut();
-                        bridge.spotify_playback_state = snapshot;
-                        bridge.spotify_playback_changed();
-                    }
-                });
+                let callback =
+                    qmetaobject::queued_callback(move |update: spotify_playback::Update| {
+                        if let Some(pinned) = weak.as_pinned() {
+                            let mut bridge = pinned.borrow_mut();
+                            bridge.spotify_playback_state = update.snapshot;
+                            if update.application_command {
+                                bridge.finish_remote_handoff();
+                            }
+                            bridge.spotify_playback_changed();
+                            bridge.changed();
+                        }
+                    });
                 self.spotify_playback_worker = Some(spotify_playback::Worker::new(callback));
             }
             let command = match action.as_str() {
@@ -191,6 +231,9 @@ struct Bridge {
                     Command::Seek(ms)
                 }
                 "play" => {
+                    if self.route_pending.is_some() {
+                        return;
+                    }
                     // Re-read accepted evidence, respecting manual clear/change since
                     // the row was selected. No catalog call or global library scan.
                     self.spotify_playback_song = self
@@ -211,6 +254,25 @@ struct Bridge {
                         self.spotify_playback_changed();
                         return;
                     };
+                    if self.real_audio {
+                        let track = self.spotify_playback_track.clone().unwrap();
+                        let ids = self
+                            .session
+                            .library
+                            .track_provider_occurrences(&track, "spotify")
+                            .unwrap_or_default();
+                        if let Some(id) = ids.into_iter().find(|id| {
+                            music_library_spotify::playback::Song::from_associations(
+                                std::slice::from_ref(id),
+                            )
+                            .is_ok()
+                        }) {
+                            self.preserve_play_queue = false;
+                            self.start_resolved_remote(track, id);
+                            self.changed();
+                        }
+                        return;
+                    }
                     Command::Play(song)
                 }
                 _ => return,
@@ -447,12 +509,47 @@ struct Bridge {
     ),
     play_row: qt_method!(
         fn play_row(&mut self, id: String) {
-            self.session.play_row(&id);
+            self.resolve_play(&id);
             self.changed();
         }
     ),
     command: qt_method!(
         fn command(&mut self, command: String) {
+            if self.real_audio {
+                if self.route_pending.is_some() {
+                    return;
+                }
+                if self.automatic_song_search {
+                    if command == "stop" {
+                        self.spotify_resolve("cancel".into(), -1);
+                    } else {
+                        self.route_message =
+                            "Spotify lookup in progress; Stop cancels this Play request".into();
+                        self.changed();
+                        return;
+                    }
+                }
+                if command == "play"
+                    && let Some(track) = self.session.playback.state().current_track().cloned()
+                {
+                    self.resolve_current_play(track.as_ref());
+                    self.changed();
+                    return;
+                }
+                if matches!(
+                    self.active_backend,
+                    music_library::playback_resolver::ActiveBackend::Remote(_)
+                ) {
+                    if matches!(command.as_str(), "pause" | "stop") {
+                        self.spotify_playback_action("pause".into(), String::new());
+                        self.route_message = "Spotify pause requested".into();
+                    } else {
+                        self.route_message = "Remote queue advancement is not implemented; select a Track and press Play".into();
+                    }
+                    self.changed();
+                    return;
+                }
+            }
             self.session.command(&command);
             self.changed();
         }
@@ -502,6 +599,12 @@ impl Bridge {
     fn new(session: Session) -> Self {
         Self {
             base: Default::default(),
+            active_backend: Default::default(),
+            route_pending: None,
+            automatic_song_search: false,
+            preserve_play_queue: false,
+            route_message: String::new(),
+            resolver_dialog_requested: Default::default(),
             spotify_resolution_worker: None,
             spotify_resolution_generation: 0,
             spotify_resolution_selection: None,
@@ -1309,6 +1412,10 @@ impl Bridge {
     fn snapshot_value(&self) -> QVariantMap {
         let s = &self.session;
         let state = s.playback.state();
+        let remote_active = matches!(
+            self.active_backend,
+            music_library::playback_resolver::ActiveBackend::Remote(_)
+        );
         let rows: QVariantList = s.rows.iter().map(row_value).collect();
         let queue: QVariantList = state
             .queue
@@ -1340,7 +1447,18 @@ impl Bridge {
                 string(state.current_track().map_or("", |id| id.as_ref())),
             ),
             ("position", (state.position.map_or(-1, |i| i as i32)).into()),
-            ("status", string(format!("{:?}", state.status))),
+            (
+                "status",
+                string(if remote_active {
+                    if self.spotify_playback_state.state.playing {
+                        "Playing (Spotify)".into()
+                    } else {
+                        "Paused / awaiting Spotify state".into()
+                    }
+                } else {
+                    format!("{:?}", state.status)
+                }),
+            ),
             (
                 "pending",
                 string(
@@ -1351,16 +1469,32 @@ impl Bridge {
             ),
             ("volume", state.volume.get().into()),
             ("realAudio", self.real_audio.into()),
+            ("route", string(&self.route_message)),
+            (
+                "activeBackend",
+                string(format!("{:?}", self.active_backend)),
+            ),
             (
                 "time",
                 string(format!(
                     "{} / {}",
-                    time_label(Some(state.media_position_ms)),
-                    time_label(state.duration_ms)
+                    time_label(Some(if remote_active {
+                        self.spotify_playback_state.state.progress_ms
+                    } else {
+                        state.media_position_ms
+                    })),
+                    time_label(if remote_active {
+                        None
+                    } else {
+                        state.duration_ms
+                    })
                 )),
             ),
-            ("canNext", state.can_next().into()),
-            ("canPrevious", state.can_previous().into()),
+            ("canNext", (!remote_active && state.can_next()).into()),
+            (
+                "canPrevious",
+                (!remote_active && state.can_previous()).into(),
+            ),
             (
                 "source",
                 string(state.source.as_ref().map_or("—", |s| s.source_id.as_ref())),
@@ -1669,10 +1803,19 @@ fn engine_callback(
 ) -> impl Fn(music_library::playback::EngineEvent) + Send + Sync + 'static {
     bridge.get_or_create_cpp_object();
     let weak = qmetaobject::QPointer::from(bridge.borrow());
-    qmetaobject::queued_callback(move |event| {
+    qmetaobject::queued_callback(move |event: music_library::playback::EngineEvent| {
         if let Some(bridge) = weak.as_pinned() {
             let mut bridge = bridge.borrow_mut();
+            if let music_library::playback::EngineEventKind::Error(error) = &event.kind {
+                eprintln!(
+                    "local-playback error generation={} track={:?}: {}",
+                    event.generation,
+                    bridge.session.playback.state().current_track(),
+                    error
+                );
+            }
             if bridge.session.engine_event(event) {
+                bridge.continue_local_stop();
                 bridge.changed();
             }
         }
@@ -2606,6 +2749,7 @@ mod event_delivery_tests {
         catalog_flow(&engine, &bridge);
         matching_flow(&engine, &bridge);
         spotify_song_resolution_ui(&engine, &bridge);
+        playback_route::test_handoffs();
         // A real queued QObject notification updates B while the user inspects Q.
         {
             let pinned = bridge.pinned();

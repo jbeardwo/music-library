@@ -25,6 +25,9 @@ mod edition_storage;
 #[path = "../src/manual_track.rs"]
 mod manual_track;
 #[allow(dead_code)]
+#[path = "../src/playback_resolver.rs"]
+mod playback_resolver;
+#[allow(dead_code)]
 #[path = "../src/provenance.rs"]
 mod provenance;
 #[allow(dead_code)]
