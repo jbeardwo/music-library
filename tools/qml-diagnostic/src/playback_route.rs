@@ -10,6 +10,10 @@ use music_library::{
 use music_library_spotify::playback::{AuthorizationState, Error, Song};
 
 pub enum Pending {
+    ClearAfterRemote,
+    PageAfterRemote,
+    QueueAfterLocal(Option<usize>),
+    QueueAfterRemote(Option<usize>),
     StopLocal {
         track: TrackId,
         identity: ExternalIdentity,
@@ -76,7 +80,7 @@ pub(crate) fn test_handoffs() {
     assert_eq!(b.session.playback.state().status, PlaybackStatus::Stopped);
     assert!(matches!(
         commands.try_recv().unwrap(),
-        Command::ApplicationPlay(_)
+        Command::ApplicationPlay(..)
     ));
     b.finish_remote_handoff();
     assert_eq!(b.active_backend, ActiveBackend::Remote("spotify".into()));
@@ -84,7 +88,7 @@ pub(crate) fn test_handoffs() {
     b.resolve_play(remote.as_ref()); // Spotify -> Spotify
     assert!(matches!(
         commands.try_recv().unwrap(),
-        Command::ApplicationPlay(_)
+        Command::ApplicationPlay(..)
     ));
     b.finish_remote_handoff();
     b.resolve_play(local.as_ref()); // Spotify -> Local waits for Pause ack
@@ -153,7 +157,7 @@ pub(crate) fn test_handoffs() {
     );
     assert!(matches!(
         commands.try_recv().unwrap(),
-        Command::ApplicationPlay(_)
+        Command::ApplicationPlay(..)
     ));
     b.finish_remote_handoff();
     assert_eq!(
@@ -206,7 +210,7 @@ pub(crate) fn test_handoffs() {
     b.resolve_play(ambiguous.as_ref());
     assert!(matches!(
         commands.try_recv().unwrap(),
-        Command::ApplicationPlay(_)
+        Command::ApplicationPlay(..)
     ));
     b.finish_remote_handoff();
     assert!(searches.try_recv().is_err());
@@ -222,7 +226,7 @@ pub(crate) fn test_handoffs() {
     b.resolve_play(remote.as_ref());
     assert!(matches!(
         commands.try_recv().unwrap(),
-        Command::ApplicationPlay(_)
+        Command::ApplicationPlay(..)
     ));
     b.spotify_playback_state.error = Some(Error::ApiRejected(403));
     b.finish_remote_handoff();
@@ -235,7 +239,267 @@ pub(crate) fn test_handoffs() {
     assert!(searches.try_recv().is_err());
 }
 
+#[cfg(test)]
+pub(crate) fn test_mixed_queue() {
+    use crate::{sample, session::Session, spotify_playback::Worker};
+    use music_library_spotify::playback::Device;
+    let (_temp, library) = sample::create().unwrap();
+    let object = qmetaobject::QObjectBox::new(Bridge::new(Session::new(library)));
+    let pinned = object.pinned();
+    let mut b = pinned.borrow_mut();
+    b.real_audio = true;
+    let local = b.session.rows[2].track_id.clone();
+    let remote = b.session.rows[0].track_id.clone();
+    let unknown = b.session.rows[1].track_id.clone();
+    let source = b
+        .session
+        .library
+        .available_playback_source(&local)
+        .unwrap()
+        .unwrap();
+    let music_library::domain::SourceLocation::LocalFile(path) = source.location else {
+        unreachable!()
+    };
+    std::fs::write(path, b"fixture").unwrap();
+    b.session
+        .library
+        .attach_track_external_identity(
+            &remote,
+            &ExternalIdentity {
+                provider: "spotify".into(),
+                kind: "track".into(),
+                external_id: "1234567890123456789012".into(),
+            },
+        )
+        .unwrap();
+    b.spotify_playback_state.authorization = AuthorizationState::Connected;
+    b.spotify_playback_state.selected_device = Some("desktop".into());
+    b.spotify_playback_state.devices = vec![Device {
+        id: Some("desktop".into()),
+        name: "Desktop".into(),
+        kind: "Computer".into(),
+        is_active: true,
+        is_restricted: false,
+        supports_volume: false,
+    }];
+    let (worker, requests) = Worker::fake();
+    b.spotify_playback_worker = Some(worker);
+    let (catalog, searches) = crate::spotify_resolution::Worker::fake();
+    b.spotify_resolution_worker = Some(catalog);
+    let queue = vec![
+        local.clone(),
+        local.clone(),
+        remote.clone(),
+        remote.clone(),
+        local.clone(),
+        unknown.clone(),
+    ];
+    b.session.playback.set_queue(queue.clone()).unwrap();
+    b.resolve_current_play(local.as_ref());
+    b.navigate_queue(false); // Local -> Local
+    assert_eq!(b.session.playback.state().position, Some(1));
+    assert!(requests.try_recv().is_err());
+    b.navigate_queue(false); // Local -> Spotify
+    assert_eq!(b.session.playback.state().status, PlaybackStatus::Stopped);
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(_, _, true)
+    ));
+    b.finish_remote_handoff();
+    assert_eq!(b.session.playback.state().position, Some(2));
+    b.resolve_current_play(remote.as_ref()); // ordinary Play/Resume retains position
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(_, _, false)
+    ));
+    b.finish_remote_handoff();
+    let completed_generation = b.playback_generation;
+    b.observe_remote_completion(
+        completed_generation,
+        Some(crate::spotify_completion::Outcome::Completed),
+    ); // Spotify -> Spotify
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPause
+    ));
+    b.finish_remote_handoff();
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(..)
+    ));
+    b.finish_remote_handoff();
+    b.observe_remote_completion(
+        completed_generation,
+        Some(crate::spotify_completion::Outcome::Completed),
+    );
+    assert!(requests.try_recv().is_err()); // stale/duplicate completion cannot advance again
+    assert_eq!(b.session.playback.state().position, Some(3));
+    let generation = b.playback_generation;
+    b.observe_remote_completion(
+        generation,
+        Some(crate::spotify_completion::Outcome::Interrupted),
+    );
+    assert!(requests.try_recv().is_err());
+    assert_eq!(b.session.playback.state().position, Some(3));
+    b.navigate_queue(false); // explicit Next after interruption: Spotify -> Local
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPause
+    ));
+    b.finish_remote_handoff();
+    assert_eq!(b.active_backend, ActiveBackend::Local);
+    assert_eq!(b.session.playback.state().position, Some(4));
+    b.navigate_queue(true); // Previous resolves current availability afresh
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(_, _, true)
+    ));
+    b.finish_remote_handoff();
+    b.navigate_queue(false);
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPause
+    ));
+    b.finish_remote_handoff();
+    assert!(searches.try_recv().is_err()); // known identities + local: no catalog
+    b.navigate_queue(false); // unknown next: stops old audio before one search
+    assert_eq!(b.session.playback.state().position, Some(5));
+    assert_eq!(b.session.playback.state().status, PlaybackStatus::Stopped);
+    assert_eq!(b.active_backend, ActiveBackend::None);
+    assert!(searches.try_recv().is_ok());
+    assert!(searches.try_recv().is_err());
+    assert_eq!(b.session.playback.state().queue, queue); // no skip/removal/prefetch
+    b.spotify_resolve("cancel".into(), -1);
+    b.session.defer_confirmations();
+    b.session
+        .playback
+        .set_queue(vec![local.clone(), remote])
+        .unwrap();
+    b.resolve_current_play(local.as_ref());
+    use music_library::playback::{EngineEvent, EngineEventKind};
+    b.session.engine_event(EngineEvent {
+        generation: 1,
+        kind: EngineEventKind::State(PlaybackStatus::Playing),
+    });
+    b.navigate_queue(false);
+    assert!(requests.try_recv().is_err()); // wait for actual Stop confirmation
+    assert_eq!(b.session.playback.state().position, Some(0));
+    b.session.engine_event(EngineEvent {
+        generation: 2,
+        kind: EngineEventKind::State(PlaybackStatus::Stopped),
+    });
+    b.continue_local_stop();
+    assert_eq!(b.session.playback.state().position, Some(1));
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(..)
+    ));
+}
+
 impl Bridge {
+    pub(crate) fn observe_remote_completion(
+        &mut self,
+        generation: u64,
+        outcome: Option<crate::spotify_completion::Outcome>,
+    ) {
+        if self.route_pending.is_some()
+            || generation != self.playback_generation
+            || !matches!(self.active_backend, ActiveBackend::Remote(_))
+        {
+            return;
+        }
+        match outcome {
+            Some(crate::spotify_completion::Outcome::Completed) => self.navigate_queue(false),
+            Some(crate::spotify_completion::Outcome::Interrupted) => {
+                self.route_message = "Spotify changed externally or restarted; use Play or Next to resume the application queue".into();
+            }
+            None => {}
+        }
+    }
+
+    pub(crate) fn replace_resolved_queue_page(&mut self) {
+        if self.route_pending.is_some() {
+            return;
+        }
+        self.playback_generation += 1;
+        self.spotify_resolve("cancel".into(), -1);
+        if self.real_audio && matches!(self.active_backend, ActiveBackend::Remote(_)) {
+            self.route_pending = Some(Pending::PageAfterRemote);
+            if !self.send_remote(Command::ApplicationPause) {
+                self.route_pending = None;
+            }
+        } else {
+            self.session.queue_page();
+            self.active_backend = ActiveBackend::None;
+        }
+    }
+
+    pub(crate) fn clear_resolved_queue(&mut self) {
+        if self.route_pending.is_some() {
+            return;
+        }
+        self.playback_generation += 1;
+        self.spotify_resolve("cancel".into(), -1);
+        if self.real_audio && matches!(self.active_backend, ActiveBackend::Remote(_)) {
+            self.route_pending = Some(Pending::ClearAfterRemote);
+            if !self.send_remote(Command::ApplicationPause) {
+                self.route_pending = None;
+            }
+        } else {
+            self.session.clear_queue();
+            self.active_backend = ActiveBackend::None;
+        }
+    }
+
+    /// Queue entries stay application Tracks; only the newly current entry is resolved.
+    pub(crate) fn navigate_queue(&mut self, previous: bool) {
+        if self.route_pending.is_some() || self.automatic_song_search {
+            return;
+        }
+        let state = self.session.playback.state();
+        let Some(position) = state.position else {
+            return;
+        };
+        if previous && position == 0 {
+            return;
+        }
+        self.playback_generation += 1;
+        let target = if previous {
+            Some(position - 1)
+        } else {
+            (position + 1 < state.queue.len()).then_some(position + 1)
+        };
+        if matches!(self.active_backend, ActiveBackend::Remote(_)) {
+            self.route_pending = Some(Pending::QueueAfterRemote(target));
+            if !self.send_remote(Command::ApplicationPause) {
+                self.route_pending = None;
+            }
+        } else {
+            match self.session.playback.stop() {
+                Ok(()) => {
+                    self.route_pending = Some(Pending::QueueAfterLocal(target));
+                    self.continue_local_stop();
+                }
+                Err(error) => self.session.error = error.to_string(),
+            }
+        }
+    }
+
+    fn start_queue_target(&mut self, target: Option<usize>) {
+        self.active_backend = ActiveBackend::None;
+        let Some(position) = target else {
+            self.route_message = "Queue finished".into();
+            return;
+        };
+        if let Err(error) = self.session.playback.select_queue_position(position) {
+            self.session.error = error.to_string();
+            return;
+        }
+        let track = self.session.playback.state().queue[position].clone();
+        self.restart_playback = true;
+        self.resolve_current_play(track.as_ref());
+    }
+
     fn remote_unavailable(&self) -> Option<String> {
         let s = &self.spotify_playback_state;
         if s.authorization != AuthorizationState::Connected {
@@ -259,6 +523,7 @@ impl Bridge {
     pub(crate) fn resolve_play(&mut self, id: &str) {
         if self.route_pending.is_none() && !self.automatic_song_search {
             self.preserve_play_queue = false;
+            self.restart_playback = true;
         }
         self.resolve_play_inner(id);
     }
@@ -283,6 +548,7 @@ impl Bridge {
             return;
         }
         let track = TrackId(id.into());
+        self.playback_generation += 1;
         // A new explicit request must not display the preceding Track's error
         // while its own route or backend handoff is being evaluated.
         self.session.error.clear();
@@ -377,10 +643,16 @@ impl Bridge {
         if !self.select_application_track(track) {
             return;
         }
-        self.active_backend = ActiveBackend::Local;
+        self.active_backend = ActiveBackend::None;
         match self.session.playback.start_source(source) {
             Ok(()) => {
-                self.route_message = "Playing via Local".into();
+                self.restart_playback = false;
+                if self.session.playback.state().pending.is_none() {
+                    self.active_backend = ActiveBackend::Local;
+                    self.route_message = "Playing via Local".into();
+                } else {
+                    self.route_message = "Starting Local playback…".into();
+                }
                 self.session.error.clear();
             }
             Err(error) => {
@@ -404,7 +676,10 @@ impl Bridge {
 
     /// Do not start remote audio until GStreamer acknowledges Stop.
     pub(crate) fn continue_local_stop(&mut self) {
-        if !matches!(self.route_pending, Some(Pending::StopLocal { .. })) {
+        if !matches!(
+            self.route_pending,
+            Some(Pending::StopLocal { .. } | Pending::QueueAfterLocal(_))
+        ) {
             return;
         }
         let state = self.session.playback.state();
@@ -414,6 +689,11 @@ impl Bridge {
             return;
         }
         if state.pending.is_some() || state.status != PlaybackStatus::Stopped {
+            return;
+        }
+        if let Some(Pending::QueueAfterLocal(target)) = self.route_pending {
+            self.route_pending = None;
+            self.start_queue_target(target);
             return;
         }
         if let Some(Pending::StopLocal { track, identity }) = self.route_pending.take() {
@@ -426,7 +706,12 @@ impl Bridge {
                 self.active_backend = ActiveBackend::None;
             }
             self.route_pending = Some(Pending::StartRemote);
-            if !self.send_remote(Command::ApplicationPlay(song)) {
+            self.playback_generation += 1;
+            if !self.send_remote(Command::ApplicationPlay(
+                song,
+                self.playback_generation,
+                self.restart_playback,
+            )) {
                 self.route_pending = None;
             }
         }
@@ -470,11 +755,23 @@ impl Bridge {
             return;
         }
         match pending {
+            Some(Pending::PageAfterRemote) => {
+                self.active_backend = ActiveBackend::None;
+                self.session.queue_page();
+                self.route_message = "Queue replaced; press Play".into();
+            }
+            Some(Pending::ClearAfterRemote) => {
+                self.active_backend = ActiveBackend::None;
+                self.session.clear_queue();
+                self.route_message = "Queue cleared".into();
+            }
+            Some(Pending::QueueAfterRemote(target)) => self.start_queue_target(target),
             Some(Pending::PauseRemote { track, source }) => {
                 self.active_backend = ActiveBackend::None;
                 self.start_resolved_local(track, source);
             }
             Some(Pending::StartRemote) => {
+                self.restart_playback = false;
                 self.active_backend = ActiveBackend::Remote("spotify".into());
                 self.route_message = "Playing via Spotify (no usable local source)".into();
                 self.session.error.clear();

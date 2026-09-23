@@ -811,6 +811,11 @@ requires reauthorization without affecting catalog matching or local playback.
 Missing files never invalidate Track identity or delete source observations.
 Unexpected local engine failures must not silently become remote playback.
 Explicit backend switches coordinate stop/pause to avoid overlapping output;
-local and Spotify engines remain separate. Mixed-source queue advancement, source
-preferences and broad enrichment remain future work. See
+local and Spotify engines remain separate. Queue navigation resolves each current
+Track lazily through that same boundary; unavailable entries stop without removal
+or automatic skipping. The application queue remains authoritative and is never
+sent to Spotify. Remote completion must be supported by terminal evidence, never
+by pause, missing state, outage or an external Track change. Spotify clients that
+restart a song without exposing terminal evidence require explicit Next.
+Source preferences and broad enrichment remain future work. See
 [diagnostic setup and token lifecycle](../adapters/spotify/PLAYBACK.md).

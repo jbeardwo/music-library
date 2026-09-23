@@ -215,6 +215,30 @@ impl<E: PlaybackEngine> Playback<E> {
         Ok(())
     }
 
+    /// Select an entry without selecting a source. The application resolver starts
+    /// it after the previous backend has acknowledged stopping.
+    pub fn select_queue_position(&mut self, position: usize) -> Result<(), PlaybackError> {
+        if position >= self.state.queue.len() {
+            return Err(PlaybackError::EmptyQueue);
+        }
+        self.stop()?;
+        self.state.position = Some(position);
+        Ok(())
+    }
+
+    /// Consume local EOS exactly once without assuming the next source is local.
+    pub fn consume_end_of_stream(&mut self, event: &EngineEvent) -> bool {
+        if event.generation != self.generation
+            || !matches!(event.kind, EngineEventKind::EndOfStream)
+            || self.state.source.is_none()
+            || self.requested_status() != PlaybackStatus::Playing
+        {
+            return false;
+        }
+        self.new_generation();
+        true
+    }
+
     /// Start the next entry. At the end, stop without wrapping and return false.
     pub fn next(&mut self, library: &Library) -> Result<bool, PlaybackError> {
         let position = self.state.position.ok_or(PlaybackError::EmptyQueue)?;

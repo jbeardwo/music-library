@@ -4,6 +4,7 @@ mod local;
 mod playback_route;
 mod sample;
 mod session;
+use music_library_spotify::playback_completion as spotify_completion;
 mod spotify_playback;
 mod spotify_resolution;
 
@@ -18,6 +19,8 @@ struct Bridge {
     route_pending: Option<playback_route::Pending>,
     automatic_song_search: bool,
     preserve_play_queue: bool,
+    restart_playback: bool,
+    playback_generation: u64,
     route_message: String,
     resolver_dialog_requested: qt_signal!(),
     spotify_resolution_worker: Option<spotify_resolution::Worker>,
@@ -211,6 +214,7 @@ struct Bridge {
                             if update.application_command {
                                 bridge.finish_remote_handoff();
                             }
+                            bridge.observe_remote_completion(update.generation, update.completion);
                             bridge.spotify_playback_changed();
                             bridge.changed();
                         }
@@ -223,12 +227,16 @@ struct Bridge {
                 "refresh" => Command::Refresh,
                 "device" => Command::Select(value),
                 "visible" => Command::Visible(value == "true"),
-                "pause" => Command::Pause,
+                "pause" => {
+                    self.playback_generation += 1;
+                    Command::Pause
+                }
                 "seek" => {
                     let Ok(ms) = value.parse() else {
                         return;
                     };
-                    Command::Seek(ms)
+                    self.playback_generation += 1;
+                    Command::Seek(ms, self.playback_generation)
                 }
                 "play" => {
                     if self.route_pending.is_some() {
@@ -267,7 +275,8 @@ struct Bridge {
                             )
                             .is_ok()
                         }) {
-                            self.preserve_play_queue = false;
+                            self.preserve_play_queue =
+                                self.session.playback.state().current_track() == Some(&track);
                             self.start_resolved_remote(track, id);
                             self.changed();
                         }
@@ -491,7 +500,7 @@ struct Bridge {
     ),
     queue_page: qt_method!(
         fn queue_page(&mut self) {
-            self.session.queue_page();
+            self.replace_resolved_queue_page();
             self.changed();
         }
     ),
@@ -503,7 +512,7 @@ struct Bridge {
     ),
     clear_queue: qt_method!(
         fn clear_queue(&mut self) {
-            self.session.clear_queue();
+            self.clear_resolved_queue();
             self.changed();
         }
     ),
@@ -533,6 +542,11 @@ struct Bridge {
                     && let Some(track) = self.session.playback.state().current_track().cloned()
                 {
                     self.resolve_current_play(track.as_ref());
+                    self.changed();
+                    return;
+                }
+                if matches!(command.as_str(), "next" | "previous") {
+                    self.navigate_queue(command == "previous");
                     self.changed();
                     return;
                 }
@@ -603,6 +617,8 @@ impl Bridge {
             route_pending: None,
             automatic_song_search: false,
             preserve_play_queue: false,
+            restart_playback: false,
+            playback_generation: 0,
             route_message: String::new(),
             resolver_dialog_requested: Default::default(),
             spotify_resolution_worker: None,
@@ -1484,17 +1500,14 @@ impl Bridge {
                         state.media_position_ms
                     })),
                     time_label(if remote_active {
-                        None
+                        self.spotify_playback_state.state.duration_ms
                     } else {
                         state.duration_ms
                     })
                 )),
             ),
-            ("canNext", (!remote_active && state.can_next()).into()),
-            (
-                "canPrevious",
-                (!remote_active && state.can_previous()).into(),
-            ),
+            ("canNext", state.can_next().into()),
+            ("canPrevious", state.can_previous().into()),
             (
                 "source",
                 string(state.source.as_ref().map_or("—", |s| s.source_id.as_ref())),
@@ -1814,7 +1827,27 @@ fn engine_callback(
                     error
                 );
             }
-            if bridge.session.engine_event(event) {
+            if matches!(
+                event.kind,
+                music_library::playback::EngineEventKind::EndOfStream
+            ) {
+                if bridge.active_backend == music_library::playback_resolver::ActiveBackend::Local
+                    && bridge.session.playback.consume_end_of_stream(&event)
+                {
+                    bridge.navigate_queue(false);
+                    bridge.changed();
+                }
+            } else if bridge.session.engine_event(event) {
+                if bridge.session.playback.state().source.is_some()
+                    && bridge.session.playback.state().status
+                        == music_library::playback::PlaybackStatus::Playing
+                    && bridge.session.playback.state().pending.is_none()
+                    && bridge.active_backend
+                        == music_library::playback_resolver::ActiveBackend::None
+                {
+                    bridge.active_backend = music_library::playback_resolver::ActiveBackend::Local;
+                    bridge.route_message = "Playing via Local".into();
+                }
                 bridge.continue_local_stop();
                 bridge.changed();
             }
@@ -1963,6 +1996,89 @@ mod event_delivery_tests {
     use super::*;
     use music_library::playback::{EngineError, EngineEvent, EngineEventKind as Event};
     use std::{cell::RefCell, rc::Rc};
+
+    #[test]
+    #[ignore = "live audio on explicitly configured device and disposable database"]
+    fn live_mixed_queue_controls() {
+        use music_library::domain::TrackId;
+        let database = std::env::var("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE").unwrap();
+        let local = TrackId(std::env::var("MUSIC_LIBRARY_MIXED_LOCAL").unwrap());
+        let remote = TrackId(std::env::var("MUSIC_LIBRARY_MIXED_REMOTE").unwrap());
+        let after = TrackId(
+            std::env::var("MUSIC_LIBRARY_MIXED_LOCAL_AFTER").unwrap_or_else(|_| local.0.clone()),
+        );
+        let natural_local = std::env::var_os("MUSIC_LIBRARY_MIXED_LOCAL_EOS").is_some();
+        let device = std::env::var("MUSIC_LIBRARY_MIXED_DEVICE").unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(
+            music_library::Library::open(database).unwrap(),
+        )));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        engine.set_property("testDevice".into(), string(device));
+        engine.set_property("naturalLocal".into(), natural_local.into());
+        let audio = music_library_gstreamer::GStreamerEngine::new(engine_callback(bridge.pinned()))
+            .unwrap();
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.real_audio = true;
+            b.session.playback =
+                music_library::playback::Playback::new(session::Engine::GStreamer(audio));
+            b.session
+                .playback
+                .set_queue(vec![local.clone(), remote.clone(), after])
+                .unwrap();
+        }
+        engine.load_data(r#"import QtQuick
+            Item {
+                property int step: 0
+                property string failures: ""
+                function check(expected) {
+                    const actual = diagnostic.snapshot.activeBackend;
+                    console.log("mixed queue phase", step, actual, diagnostic.snapshot.time);
+                    if (actual !== expected) failures += step + ": " + actual + "; ";
+                }
+                function report() { return failures; }
+                Timer { interval: 4000; running: true; repeat: true
+                    onTriggered: {
+                        switch (parent.step++) {
+                        case 0: diagnostic.spotify_playback_action("refresh", ""); break;
+                        case 1: diagnostic.spotify_playback_action("device", testDevice); break;
+                        case 2: diagnostic.command("play"); break;
+                        case 3:
+                            if (naturalLocal) parent.check('Remote("spotify")');
+                            else { parent.check("Local"); diagnostic.command("next"); }
+                            break;
+                        case 4: parent.check('Remote("spotify")'); diagnostic.command("next"); break;
+                        case 5: parent.check("Local"); diagnostic.command("previous"); break;
+                        case 6: parent.check('Remote("spotify")'); diagnostic.clear_queue(); break;
+                        case 7: parent.check("None"); stop(); Qt.quit(); break;
+                        }
+                    }
+                }
+            }
+        "#.into());
+        engine.exec();
+        let report = engine
+            .invoke_method("report".into(), &[])
+            .to_qstring()
+            .to_string();
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            assert!(
+                b.spotify_resolution_worker.is_none(),
+                "Known associations must not create catalog worker"
+            );
+            println!(
+                "Live Next/Previous/clear passed; catalog token/API=0/0; playback token/API={}/{}",
+                b.spotify_playback_state.token_requests, b.spotify_playback_state.api_requests
+            );
+            b.spotify_playback_worker.take();
+            b.session.shutdown_audio();
+        }
+        assert!(report.is_empty(), "{report}");
+    }
 
     #[test]
     #[ignore = "opt-in live MusicBrainz timing; requires MUSIC_LIBRARY_CATALOG_LIVE_QUERY"]
@@ -2750,6 +2866,7 @@ mod event_delivery_tests {
         matching_flow(&engine, &bridge);
         spotify_song_resolution_ui(&engine, &bridge);
         playback_route::test_handoffs();
+        playback_route::test_mixed_queue();
         // A real queued QObject notification updates B while the user inspects Q.
         {
             let pinned = bridge.pinned();

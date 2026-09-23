@@ -107,6 +107,7 @@ pub struct State {
     pub track_id: Option<String>,
     pub title: String,
     pub progress_ms: u64,
+    pub duration_ms: Option<u64>,
     pub playing: bool,
     pub device: Option<Device>,
 }
@@ -645,6 +646,7 @@ impl Playback {
             track_id: v["item"]["id"].as_str().map(String::from),
             title: v["item"]["name"].as_str().unwrap_or_default().into(),
             progress_ms: v["progress_ms"].as_u64().unwrap_or(0),
+            duration_ms: v["item"]["duration_ms"].as_u64(),
             playing: v["is_playing"].as_bool().unwrap_or(false),
             device: if v["device"].is_null() {
                 None
@@ -713,6 +715,15 @@ impl Playback {
     }
     pub fn pause(&mut self) -> Result<()> {
         self.command("pause", Value::Null, None)
+    }
+    /// Queue navigation selects a new occurrence, even when Spotify remembers
+    /// the same song. Explicitly reset position rather than resuming Connect state.
+    pub fn play_from_start(&mut self, song: &Song) -> Result<()> {
+        self.command(
+            "play",
+            json!({"uris": [song.uri()], "position_ms": 0}),
+            None,
+        )
     }
     /// Release application-controlled audio before a local backend handoff.
     /// A fresh observation of idle/paused playback needs no Pause command.
@@ -1007,6 +1018,35 @@ mod tests {
         assert_eq!(p.pause(), Err(Error::NoDevice));
         s.finish();
     }
+    #[test]
+    fn queue_start_resets_remembered_song_but_play_still_resumes() {
+        let s = Server::new(vec![
+            (200, "", TOKEN),
+            (200, "", DEVICES),
+            (204, "", ""),
+            (200, "", STATE),
+            (204, "", ""),
+        ]);
+        let d = tempfile::tempdir().unwrap();
+        let mut p = client(&s, &d);
+        authorize(&mut p);
+        p.devices().unwrap();
+        p.snapshot.selected_device = Some("desktop".into());
+        p.snapshot.state = State {
+            track_id: Some(song().0.clone()),
+            progress_ms: 90000,
+            ..Default::default()
+        };
+        p.play_from_start(&song()).unwrap();
+        p.play(&song()).unwrap();
+        let requests = s.finish();
+        assert!(requests[2].contains("PUT /me/player/play?device_id=desktop"));
+        assert!(requests[2].contains("\"position_ms\":0"));
+        assert!(requests[2].contains(&song().uri()));
+        assert!(!requests[4].contains("position_ms"));
+        assert!(!requests[4].contains("uris"));
+    }
+
     #[test]
     fn start_resume_pause_seek_and_external_change() {
         let s = Server::new(vec![

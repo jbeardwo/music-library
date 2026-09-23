@@ -7,8 +7,10 @@ If none is usable, it uses a saved Spotify song association and an explicitly
 selected Spotify device. With playback ready but no association, the same Play
 request can make one bounded catalog lookup: a strong unique result is saved and
 played; ambiguity opens the existing selector with those results. Missing files
-do not remove Tracks or source observations. No queue EOS/Next source switching
-is implemented.
+do not remove Tracks or source observations. Next, Previous and local EOS use the
+same resolver. Build a mixed queue using Replace queue & play followed by Add to
+queue. Unavailable entries remain current. Spotify automatic completion requires
+terminal evidence; clients that repeat/restart without that evidence need Next.
 
 Use **Spotify…** once to connect/refresh and select your desktop device. The normal
 row Play then chooses the backend. Source/status text reports the decision.

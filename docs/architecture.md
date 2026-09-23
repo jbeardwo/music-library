@@ -1396,9 +1396,15 @@ device refresh and browsing never search. No Spotify Album identity is required.
 The diagnostic application coordinates explicit backend switches: local Stop must
 be acknowledged before remote Play; application-controlled Spotify Pause must
 succeed before local Start. Failed handoffs withhold the destination backend.
-Local/remote state and clocks remain separate. Local queue EOS/Next remain local;
-remote queue advancement, mixed queues, source preferences and association
-replacement are deferred.
+Local/remote state and clocks remain separate. Next, Previous and consumed local
+EOS stop the previous backend, select the next application queue entry, and call
+the same resolver. Unavailable/ambiguous entries stay current and stop playback;
+later entries are not prefetched. Spotify receives only the current song URI.
+Generation-tagged Spotify observations may advance once after fresh near-end
+playback and two terminal observations on the same device. Pause, errors, device
+loss, external Track changes and repeat/seek resets are not EOS. Real Spotify
+clients may not expose a distinguishable terminal state; manual Next remains
+necessary in that case. Source preferences and association replacement are deferred.
 
 ### Selected Spotify catalog provider
 

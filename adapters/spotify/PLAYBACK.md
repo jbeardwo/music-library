@@ -218,6 +218,25 @@ Polling remains five seconds while the Spotify panel or application-owned remote
 backend is active (first post-command observation after one second), with existing
 backoff. It never invokes catalog lookup.
 
-Mixed queue advancement, EOS/Next source switching, queue takeover, source
-preferences, moved-file discovery and cross-provider identity reconciliation remain
-deferred. The explicit Spotify panel remains available for debugging.
+Next, Previous and local EOS now resolve the newly current application Track using
+the same route/handoff. No queue is sent to Spotify and no upcoming Track is
+searched in advance. Unavailable or ambiguous entries stop the queue and retain
+their position; manual confirmation can play that same entry.
+
+Queue navigation and Replace queue & play explicitly start the selected Spotify
+song at `position_ms: 0`, including when Spotify remembers that same song from an
+earlier visit. Ordinary Play/Resume retains the existing resume behavior.
+
+Spotify completion is conservative: after playing within six seconds of the known
+duration, two successful terminal observations (no Track, stopped, same device)
+at/after the expected end and within 15 seconds of that evidence may advance once.
+Pause, HTTP 204/device loss, errors, external song/device changes and repeat/seek
+resets do not advance. Polls remain five seconds (one second after commands).
+External changes disarm automatic advancement until explicit application Play.
+The PUHI live test restarted the same song near zero instead of exposing a
+terminal state, so natural Spotify EOS is not yet a reliable foundation on that
+client. Manual Next works independently of terminal detection. The app neither
+changes Spotify repeat/shuffle nor guesses EOS from elapsed time.
+
+Queue synchronization/takeover, source preferences, moved-file discovery and
+cross-provider identity reconciliation remain deferred.

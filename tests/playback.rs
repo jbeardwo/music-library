@@ -923,3 +923,40 @@ fn volume_is_bounded_ephemeral_and_does_not_change_transport_or_generation() {
     assert_eq!(p.state().volume.get(), 0.4);
     assert_eq!(f.durable_state(), durable);
 }
+#[test]
+fn resolver_eos_consumption_keeps_queue_and_rejects_pause_and_duplicates() {
+    use music_library::playback::{EngineEvent, EngineEventKind as Event};
+    let f = Fixture::new();
+    f.source("a", 0, true);
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let mut p = Playback::new(AsyncEngine {
+        fake: FakeEngine(Rc::default()),
+        generation: generation.clone(),
+    });
+    p.enqueue(f.tracks[0].clone());
+    p.enqueue(f.tracks[1].clone());
+    p.play(&f.library).unwrap();
+    let eos = || EngineEvent {
+        generation: generation.get(),
+        kind: Event::EndOfStream,
+    };
+    p.pause().unwrap();
+    assert!(!p.consume_end_of_stream(&eos()));
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: generation.get(),
+            kind: Event::State(PlaybackStatus::Paused),
+        },
+    )
+    .unwrap();
+    p.play(&f.library).unwrap();
+    let event = eos();
+    assert!(p.consume_end_of_stream(&event));
+    assert!(!p.consume_end_of_stream(&event));
+    assert_eq!(p.state().position, Some(0));
+    p.select_queue_position(1).unwrap();
+    assert_eq!(p.state().position, Some(1));
+    assert_eq!(p.state().queue.len(), 2);
+    assert!(p.state().source.is_none()); // current source-less Track retained
+}

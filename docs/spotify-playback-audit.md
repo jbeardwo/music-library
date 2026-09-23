@@ -262,3 +262,71 @@ policy. Do not turn polling into catalog enrichment or treat Spotify identity as
 playback entitlement. Source preference, moved-file discovery, replacement/clearing
 of independent song mappings and cross-provider Recording reconciliation remain
 deferred.
+
+## Mixed queue navigation audit (2026-09-22)
+
+Queue Next/Previous and local EOS now stop the previous backend, select the next
+application Track, and invoke the existing playback resolver. Selection remains
+current on failure/ambiguity. No queue prefetch, Spotify queue mutation, identity
+change, source deletion or automatic skipping was added. The existing chooser
+preserves queue position when resolving the current Track. Clear and Replace Page
+also acknowledge remote pause before changing queue state.
+
+Spotify completion observations carry the application playback generation so
+delayed or duplicate notifications cannot advance a replacement queue. The adapter
+requires fresh playing state within six seconds of known duration, followed by
+two stopped/no-Track observations on the same still-known device at/after expected
+end, within 15 seconds. Pause, device loss/HTTP 204, error, changed song/device,
+or repeated-song progress reset do not establish EOS. Ordinary polling remains
+five seconds, with the existing one-second post-command observation and backoff.
+An external change disarms automatic advancement until an application action.
+
+### Actual live results
+
+Used copies of the previous disposable resolver database, not the user's normal
+library: `/tmp/music-library-mixed-queue-20260922.sqlite` and
+`/tmp/music-library-mixed-eos-20260922.sqlite`. No user's media file was changed.
+The EOS copy points one source to a generated two-second silent WAV in `/tmp`.
+Playback authorization was reused, and PUHI was explicitly selected.
+
+* Real QML bridge: The Knock (local) → Next → Waitress (Spotify) → Next →
+  The Knock (local) → Previous → Waitress (Spotify) → Clear: passed, 32.08 s.
+* Real local EOS: two-second WAV → automatic Waitress (Spotify) → explicit Next
+  → local Waitress → Previous → Spotify → Clear: passed, 32.19 s.
+* Each run: **0 catalog token requests, 0 catalog API requests**, 1 playback token
+  request and 11 playback API requests, including discovery/state/control. Local
+  entries issued no catalog or start-Spotify commands; leaving Spotify necessarily
+  performs the acknowledged state/pause handoff. Source checks occurred lazily for
+  the four selected entries, never for later queue entries.
+* First headless attempts failed to acknowledge GStreamer start/stop with the
+  inherited display. Explicit `DISPLAY=:0` fixed the live harness; no GStreamer
+  code or sink policy was changed.
+* Separate Spotify terminal probe: Waitress (`6aYsKS9XcItrOUWNMLn3Ba`) played on
+  PUHI; two near-end seeks were followed by the **same song playing near zero**,
+  not terminal state. The probe used 0 catalog requests, 1 playback token request,
+  9 playback API requests. Play took 593 ms, seeks 192/185 ms, polls 161/173/134 ms,
+  and final Pause 228 ms. Repeat/shuffle settings were not modified.
+
+**Natural Spotify → next application Track is not live-proven on this client.**
+Its repeat/restart response is deliberately not guessed to be EOS. Therefore a
+fully automatic Local → Spotify → Local queue cannot yet be called a stable
+foundation under the strict no-false-EOS policy. Manual Next works. External-change
+and pause protection are deterministic-test results; an external-control live
+sanity test remains outstanding.
+
+### Validation and local cost
+
+Core 217 passed (8 ignored); MusicBrainz 19 passed (3 ignored); GStreamer 5 passed
+(1 ignored). QML 5 passed (2 opt-in tests ignored), including mixed navigation,
+asynchronous Stop acknowledgement, stale remote completion, unresolved current
+Track and no-prefetch checks inside the existing Qt integration test. Spotify
+adapter tests and four completion-policy tests passed. Formatting, strict Clippy,
+QML build/smoke/qmllint and diff checks passed. The existing Qt teardown timer
+warning remains unchanged.
+
+Fresh 200k fixture: selected provider association median **24.610 µs**, p95
+29.539 µs; resolver including known association median **22.390 µs**, p95
+25.929 µs; local stat/open/metadata median **4.850 µs**. Query plans use indexed
+Track/source keys, without a global scan. Queue selection is constant-time; no
+separate handoff-bookkeeping benchmark was added. Network timings above are not
+included in resolver timings.

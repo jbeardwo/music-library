@@ -19,15 +19,17 @@ pub enum Command {
     Select(String),
     Play(Song),
     Pause,
-    Seek(u64),
+    Seek(u64, u64),
     Visible(bool),
     /// Acknowledged commands used only by explicit application backend handoff.
-    ApplicationPlay(Song),
+    ApplicationPlay(Song, u64, bool),
     ApplicationPause,
 }
 pub struct Update {
     pub snapshot: Snapshot,
     pub application_command: bool,
+    pub completion: Option<crate::spotify_completion::Outcome>,
+    pub generation: u64,
 }
 pub struct Worker {
     sender: Option<SyncSender<Command>>,
@@ -83,6 +85,8 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                     ..Default::default()
                 },
                 application_command: false,
+                completion: None,
+                generation: 0,
             });
             return;
         }
@@ -90,11 +94,16 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
     notify(Update {
         snapshot: playback.snapshot.clone(),
         application_command: false,
+        completion: None,
+        generation: 0,
     });
     let mut auth = None;
     let mut visible = false;
     let mut application_active = false;
     let mut next_poll = Instant::now();
+    let clock = Instant::now();
+    let mut detector: Option<crate::spotify_completion::Detector> = None;
+    let mut generation = 0;
     loop {
         if stopped.load(Ordering::Acquire) {
             return;
@@ -106,6 +115,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
         };
         let mut result = Ok(());
         let mut application_command = false;
+        let mut completion = None;
         if stopped.load(Ordering::Acquire) {
             return;
         }
@@ -127,19 +137,39 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 Command::Refresh => playback.devices(),
                 Command::Select(id) => playback.select_device(&id),
                 Command::Play(song) => playback.play(&song),
-                Command::ApplicationPlay(song) => {
+                Command::ApplicationPlay(song, current_generation, restart) => {
+                    generation = current_generation;
                     application_command = true;
-                    application_active = true;
-                    playback.play(&song)
+                    application_active = false;
+                    detector = None;
+                    let result = if restart {
+                        playback.play_from_start(&song)
+                    } else {
+                        playback.play(&song)
+                    };
+                    result.inspect(|()| {
+                        application_active = true;
+                        detector = Some(crate::spotify_completion::Detector::new(&song.uri()));
+                    })
                 }
                 Command::ApplicationPause => {
+                    detector = None;
                     application_command = true;
                     playback
                         .pause_for_handoff()
                         .inspect(|()| application_active = false)
                 }
-                Command::Pause => playback.pause(),
-                Command::Seek(ms) => playback.seek(ms),
+                Command::Pause => {
+                    detector = None;
+                    playback.pause()
+                }
+                Command::Seek(ms, current_generation) => {
+                    generation = current_generation;
+                    if let Some(d) = &mut detector {
+                        d.reset_evidence();
+                    }
+                    playback.seek(ms)
+                }
                 Command::Visible(v) => {
                     visible = v;
                     if v && playback.snapshot.authorization == AuthorizationState::Connected {
@@ -175,8 +205,24 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
             && Instant::now() >= next_poll
         {
             result = playback.poll();
+            if result.is_ok() {
+                if let Some(d) = &mut detector {
+                    completion =
+                        d.observe(&playback.snapshot.state, clock.elapsed().as_millis() as u64);
+                    if completion.is_some() {
+                        application_active = false;
+                    }
+                }
+            } else if let Some(d) = &mut detector {
+                d.reset_evidence();
+            }
             changed = true;
             next_poll = Instant::now() + POLL_INTERVAL;
+        }
+        if result.is_err()
+            && let Some(d) = &mut detector
+        {
+            d.reset_evidence();
         }
         if let Err(Error::RateLimited(seconds)) = &result {
             next_poll = Instant::now() + Duration::from_secs((*seconds).max(5));
@@ -199,6 +245,8 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
             notify(Update {
                 snapshot: playback.snapshot.clone(),
                 application_command,
+                completion,
+                generation,
             });
         }
     }
