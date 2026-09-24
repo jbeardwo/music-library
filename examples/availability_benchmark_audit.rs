@@ -45,7 +45,7 @@ mod recording;
 #[allow(dead_code)]
 #[path = "../src/song_resolution.rs"]
 mod song_resolution;
-use music_library::matching;
+use music_library::{catalog_date, matching};
 #[allow(dead_code)]
 #[path = "../src/application.rs"]
 mod application;

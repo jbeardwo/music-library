@@ -10,6 +10,10 @@ use rusqlite::params;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub track_id: TrackId,
+    pub album_date: Option<crate::catalog_date::Date>,
+    pub album_artists: Vec<crate::edition::ArtistEvidence>,
+    /// Lower bound from all established Tracks, independent of membership.
+    pub album_required_tracks: usize,
     /// Canonical first Track Artist, or the single Album Artist when no Track
     /// credit is available. No punctuation parsing or display rewrite.
     pub primary_artist: Option<crate::edition::ArtistEvidence>,
@@ -32,6 +36,9 @@ pub struct Candidate {
     pub artists: Vec<crate::edition::ArtistEvidence>,
     pub album: String,
     pub date: String,
+    pub album_artists: Vec<crate::edition::ArtistEvidence>,
+    pub album_type: String,
+    pub album_total_tracks: Option<u32>,
     pub duration_ms: u64,
     pub disc: u32,
     pub number: u32,
@@ -45,10 +52,38 @@ pub trait SongSearch: Send {
 pub struct Selection {
     input: Input,
     candidates: Vec<Candidate>,
+    show_all: bool,
+    assessments: Vec<Feasibility>,
 }
 impl Selection {
     pub fn new(input: Input, candidates: Vec<Candidate>) -> Self {
-        Self { input, candidates }
+        let assessments = classify(&input, &candidates);
+        Self {
+            input,
+            candidates,
+            show_all: false,
+            assessments,
+        }
+    }
+    pub fn show_all(&mut self) {
+        self.show_all = true;
+    }
+    pub fn visible_indices(&self) -> Vec<usize> {
+        let mut rows: Vec<_> = self
+            .assessments
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (i, a.class))
+            .filter(|(_, class)| self.show_all || *class != FeasibilityClass::Infeasible)
+            .collect();
+        rows.sort_by_key(|(_, class)| *class);
+        rows.into_iter().map(|(i, _)| i).collect()
+    }
+    pub fn assessments(&self) -> &[Feasibility] {
+        &self.assessments
+    }
+    pub fn is_showing_all(&self) -> bool {
+        self.show_all
     }
     pub fn candidates(&self) -> &[Candidate] {
         &self.candidates
@@ -68,7 +103,34 @@ impl Input {
 fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<Input> {
     let (mut input, album) = db.query_row(
             "SELECT e.title,e.artist_names,e.release_title,r.album_id,e.duration_ms,t.disc_number,t.track_number FROM track t JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
-            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), album_date:None, album_artists:vec![], album_required_tracks:0, primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+    let year: Option<i32> = db.query_row(
+        "SELECT year FROM album_application_metadata WHERE album_id=?1",
+        [&album],
+        |r| r.get(0),
+    )?;
+    input.album_date = year.and_then(|y| crate::catalog_date::Date::parse(&y.to_string()));
+    input.album_artists = crate::artist_credit::load(db, "album", &album)?
+        .into_iter()
+        .map(|a| {
+            let mut e = a.evidence;
+            e.name = a.canonical_name;
+            e
+        })
+        .collect();
+    // Read Album-scoped positions only; membership and source availability do not
+    // define the established program. This remains a lower bound for partial imports.
+    let mut positions = db.prepare("SELECT DISTINCT COALESCE(t.disc_number,1),t.track_number FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 AND t.track_number>0")?;
+    let positions = positions
+        .query_map([&album], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, u32>(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    input.album_required_tracks = positions.len().max(
+        positions
+            .iter()
+            .map(|(_, n)| *n as usize)
+            .max()
+            .unwrap_or(0),
+    );
     let mut credits = crate::artist_credit::load(db, "track", track.as_ref())?;
     let has_track_credits = !credits.is_empty();
     if credits.is_empty() {
@@ -140,19 +202,109 @@ fn same_title(input: &Input, c: &Candidate) -> bool {
         crate::artist_credit::musical_title(&c.title, &c.artists),
     )
 }
-fn context_matches(input: &Input, c: &Candidate) -> bool {
-    same_title(input, c)
-        && primary_compatible(input, c)
-        && exact(&input.album, &c.album)
-        && !input
-            .duration_ms
-            .is_some_and(|d| d > 0 && c.duration_ms > 0 && d.abs_diff(c.duration_ms) > 3_000)
-        && !input
-            .disc
-            .is_some_and(|d| d > 0 && c.disc > 0 && d != c.disc)
-        && !input
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FeasibilityClass {
+    Preferred,
+    Alternate,
+    Infeasible,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Feasibility {
+    pub class: FeasibilityClass,
+    pub reasons: Vec<&'static str>,
+}
+/// Presentation feasibility is weaker than automatic acceptance. No persistence,
+/// provider calls, duration-only rejection or invented contributor equivalence.
+pub fn feasibility(input: &Input, c: &Candidate) -> Feasibility {
+    let mut reasons = vec![];
+    if !primary_compatible(input, c) {
+        reasons.push("different primary Artist");
+    }
+    if crate::artist_credit::compare(&input.artists, &c.artists)
+        == crate::artist_credit::Compatibility::Contradictory
+    {
+        reasons.push("contradictory Artist credits");
+    }
+    if !same_title(input, c) {
+        reasons.push("different Track title or semantic version");
+    }
+    if !input.album.trim().is_empty() && !exact(&input.album, &c.album) {
+        reasons.push(match c.album_type.as_str() {
+            "compilation" | "Compilation" => "compilation outside established Album context",
+            "single" | "Single" | "EP" => "Single/EP outside established Album context",
+            _ => "different established Album title",
+        });
+    }
+    if let (Some(a), Some(b)) = (input.album_artists.first(), c.album_artists.first())
+        && !crate::artist_credit::same_artist(a, b)
+    {
+        reasons.push("different Album Artist");
+    }
+    if !crate::album_candidates::can_accommodate(input.album_required_tracks, c.album_total_tracks)
+    {
+        reasons.push("Album program too short for established Tracks");
+    }
+    if input
+        .disc
+        .is_some_and(|n| n > 0 && c.disc > 0 && n != c.disc)
+        || input
             .number
             .is_some_and(|n| n > 0 && c.number > 0 && n != c.number)
+    {
+        reasons.push("different position in established Album");
+    }
+    if !reasons.is_empty()
+        && input
+            .duration_ms
+            .is_some_and(|n| n > 0 && c.duration_ms > 0 && n.abs_diff(c.duration_ms) > 30_000)
+    {
+        reasons.push("dramatically different duration corroborates contradictions");
+    }
+    let class = if !reasons.is_empty() {
+        FeasibilityClass::Infeasible
+    } else if input.album_date.is_some()
+        && crate::catalog_date::agreement(
+            input.album_date,
+            crate::catalog_date::Date::parse(&c.date),
+        ) == crate::catalog_date::Agreement::UnknownOrDifferent
+    {
+        FeasibilityClass::Alternate
+    } else {
+        FeasibilityClass::Preferred
+    };
+    Feasibility { class, reasons }
+}
+/// Compare date precision among feasible results only. Equal/unknown dates do
+/// not establish a unique winner, and every compatible alternate stays visible.
+pub fn classify(input: &Input, candidates: &[Candidate]) -> Vec<Feasibility> {
+    let mut assessments: Vec<_> = candidates.iter().map(|c| feasibility(input, c)).collect();
+    let agreements: Vec<_> = candidates
+        .iter()
+        .map(|c| {
+            crate::catalog_date::agreement(
+                input.album_date,
+                crate::catalog_date::Date::parse(&c.date),
+            )
+        })
+        .collect();
+    let best = assessments
+        .iter()
+        .zip(&agreements)
+        .filter(|(a, _)| a.class != FeasibilityClass::Infeasible)
+        .map(|(_, d)| *d)
+        .max();
+    for (a, d) in assessments.iter_mut().zip(agreements) {
+        if a.class != FeasibilityClass::Infeasible && best.is_some_and(|best| d < best) {
+            a.class = FeasibilityClass::Alternate;
+        }
+    }
+    assessments
+}
+fn context_matches(input: &Input, c: &Candidate) -> bool {
+    feasibility(input, c).class != FeasibilityClass::Infeasible
+        && !input.album.trim().is_empty()
+        // Preserve the stricter existing explicit-Play acceptance gate.
+        && !input.duration_ms.is_some_and(|d| d > 0 && c.duration_ms > 0 && d.abs_diff(c.duration_ms) > 3_000)
 }
 /// A complete bounded page, exact musical title/Album context, equivalent
 /// structured credits and no supplied duration/position contradiction. Unknown

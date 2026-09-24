@@ -265,6 +265,58 @@ pub fn inspect_candidate(
     check
 }
 
+/// Only call after the provider Album has been accepted and revalidated. This
+/// establishes an occurrence, never a Recording or contributor relationship.
+fn established_occurrence(local: &LocalTrackEvidence, programs: &Programs) -> Option<Match> {
+    // A MusicBrainz release group is not an established provider representation.
+    if programs.album.provider != "spotify" || programs.album.kind != "album" {
+        return None;
+    }
+    let mut agreed: Option<Vec<ExternalIdentity>> = None;
+    for program in &programs.programs {
+        if !program.complete {
+            return None;
+        }
+        let candidates: Vec<_> = program
+            .tracks
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| {
+                local.evidence.number.is_some()
+                    && local.evidence.number == c.number
+                    && local.evidence.disc.unwrap_or(1) == c.disc.unwrap_or(1)
+                    && inspect_candidate(local, c, *i).exact_title
+            })
+            .map(|(_, c)| c)
+            .collect();
+        let [candidate] = candidates.as_slice() else {
+            return None;
+        };
+        let ids: Vec<_> = candidate
+            .identities
+            .iter()
+            .filter(|id| id.provider == programs.album.provider && id.kind == "track")
+            .cloned()
+            .collect();
+        if let Some(agreed) = &mut agreed {
+            agreed.retain(|id| ids.contains(id));
+        } else {
+            agreed = Some(ids);
+        }
+    }
+    let occurrences = agreed?;
+    if occurrences.len() != 1 {
+        return None;
+    }
+    Some(Match {
+        title: local.evidence.title.clone().unwrap_or_default(),
+        recording: RecordingEvidence::default(),
+        recording_status: RecordingStatus::NotProvided,
+        occurrences,
+        explanation: "Established provider Album; matching disc/Track position and musical title; contributor identity unresolved".into(),
+    })
+}
+
 fn mappings(local: &LocalTrackEvidence, program: &Program) -> Vec<(usize, CandidateCheck)> {
     let mut eligible: Vec<_> = program
         .tracks
@@ -798,9 +850,16 @@ impl Store {
                 let outcome = if let Some(m) = manual.get(&t.track_id) {
                     TrackOutcome::ManuallyMatched(m.matched())
                 } else {
-                    comparisons
+                    let previous = comparisons
                         .remove(&t.track_id)
-                        .unwrap_or(TrackOutcome::NoConfidentMatch)
+                        .unwrap_or(TrackOutcome::NoConfidentMatch);
+                    if matches!(&previous, TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) if !m.occurrences.is_empty()) {
+                        previous
+                    } else {
+                        established_occurrence(&t, &programs)
+                            .map(TrackOutcome::Matched)
+                            .unwrap_or(previous)
+                    }
                 };
                 (t, outcome)
             })

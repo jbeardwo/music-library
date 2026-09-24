@@ -96,7 +96,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let started = Instant::now();
         let outcome = album_candidates::resolve(
             &mut spotify,
-            &title,
+            (
+                &title,
+                match &preparation {
+                    Preparation::Ready(i) => i.date,
+                    _ => None,
+                },
+            ),
             &identity,
             &page,
             false,

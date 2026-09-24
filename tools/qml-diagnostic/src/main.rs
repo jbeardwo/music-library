@@ -43,6 +43,13 @@ struct Bridge {
                 self.spotify_playback_changed();
                 return;
             }
+            if action == "show-all" {
+                if let Some(selection) = &mut self.spotify_resolution_selection {
+                    selection.show_all();
+                }
+                self.spotify_playback_changed();
+                return;
+            }
             if action == "confirm" {
                 let result = self
                     .spotify_resolution_selection
@@ -51,7 +58,13 @@ struct Bridge {
                     .and_then(|selection| {
                         self.session
                             .library
-                            .confirm_song_resolution(selection, index as usize)
+                            .confirm_song_resolution(
+                                selection,
+                                *selection
+                                    .visible_indices()
+                                    .get(index as usize)
+                                    .ok_or_else(|| "Select a visible candidate".to_owned())?,
+                            )
                             .map_err(|e| e.to_string())
                     });
                 match result {
@@ -691,11 +704,24 @@ impl Bridge {
             .as_ref()
             .map(|selection| {
                 selection
-                    .candidates()
-                    .iter()
-                    .map(|c| {
+                    .visible_indices()
+                    .into_iter()
+                    .map(|i| {
+                        let c = &selection.candidates()[i];
+                        let assessment = &selection.assessments()[i];
+                        let group = match assessment.class {
+                            music_library::song_resolution::FeasibilityClass::Preferred => {
+                                "Best match"
+                            }
+                            music_library::song_resolution::FeasibilityClass::Alternate => {
+                                "Other compatible Album representation"
+                            }
+                            music_library::song_resolution::FeasibilityClass::Infeasible => {
+                                "Outside Album context (override)"
+                            }
+                        };
                         string(format!(
-                            "{} — {} | {} ({}) | {}:{:02} | disc {} track {} | {}",
+                            "{group}: {} — {} | {} ({}) | {}:{:02} | disc {} track {} | {}",
                             c.title,
                             c.artist,
                             c.album,
@@ -737,6 +763,17 @@ impl Bridge {
             .collect();
         QVariantMap::from_iter([
             ("resolutionChoices", choices.into()),
+            (
+                "resolutionCanShowAll",
+                self.spotify_resolution_selection
+                    .as_ref()
+                    .is_some_and(|s| {
+                        !s.is_showing_all() && s.assessments().iter().any(|a| {
+                            a.class == music_library::song_resolution::FeasibilityClass::Infeasible
+                        })
+                    })
+                    .into(),
+            ),
             (
                 "resolutionGeneration",
                 string(self.spotify_resolution_generation.to_string()),
@@ -2089,6 +2126,124 @@ mod event_delivery_tests {
     }
 
     #[test]
+    #[ignore = "live Spotify chooser; requires disposable /tmp MUSIC_LIBRARY_DIAGNOSTIC_DATABASE"]
+    fn live_spotify_album_context_chooser() {
+        use music_library::song_resolution::FeasibilityClass as Class;
+        let source = std::path::PathBuf::from(
+            std::env::var_os("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE").expect("disposable database"),
+        );
+        assert!(source.starts_with("/tmp"));
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("chooser.sqlite");
+        std::fs::copy(source, &path).unwrap();
+        let library = music_library::Library::open(path).unwrap();
+        let rows = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml").replace(
+            "    function ready() {",
+            r#"
+    Timer { id: auditTimeout; interval: 30000; onTriggered: Qt.quit() }
+    Connections {
+        target: window.bridge
+        function onSpotify_playback_changed() {
+            if (!window.spotifyPlayback.resolutionPending && auditTimeout.running) {
+                auditTimeout.stop(); Qt.quit();
+            }
+        }
+    }
+    function auditChooser(track) {
+        window.bridge.spotify_playback_action("track", track);
+        spotifyPlaybackDialog.open();
+        window.bridge.spotify_resolve("search", -1);
+        auditTimeout.start();
+    }
+    function auditCount() { return spotifySongChoice.count; }
+    function ready() {
+"#,
+        );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        for title in ["Feel Good Inc.", "Dirty Harry", "DARE", "El mañana"] {
+            let track = &rows
+                .iter()
+                .find(|r| r.title.eq_ignore_ascii_case(title))
+                .unwrap()
+                .track_id;
+            engine.invoke_method("auditChooser".into(), &[string(track.as_ref())]);
+            engine.exec();
+            assert_eq!(
+                engine
+                    .invoke_method("auditCount".into(), &[])
+                    .to_qstring()
+                    .to_string(),
+                "2"
+            );
+            let total = {
+                let pinned = bridge.pinned();
+                let mut b = pinned.borrow_mut();
+                assert!(!b.spotify_resolution_pending, "provider timeout");
+                let selection = b
+                    .spotify_resolution_selection
+                    .as_ref()
+                    .expect("search results");
+                let classes = selection.assessments();
+                let total = selection.candidates().len();
+                println!(
+                    "LIVE QML {title}: total={total} preferred={} alternate={} hidden={}",
+                    classes
+                        .iter()
+                        .filter(|a| a.class == Class::Preferred)
+                        .count(),
+                    classes
+                        .iter()
+                        .filter(|a| a.class == Class::Alternate)
+                        .count(),
+                    classes
+                        .iter()
+                        .filter(|a| a.class == Class::Infeasible)
+                        .count()
+                );
+                assert_eq!(selection.visible_indices().len(), 2);
+                let counts = b.spotify_resolution_counts;
+                b.spotify_resolve("show-all".into(), -1);
+                assert_eq!(b.spotify_resolution_counts, counts);
+                assert!(
+                    b.session
+                        .library
+                        .track_provider_occurrences(track, "spotify")
+                        .unwrap()
+                        .is_empty()
+                );
+                println!(
+                    "LIVE QML Show-all {total}; token/API={counts:?}; no persistence, no extra HTTP"
+                );
+                total
+            };
+            assert_eq!(
+                engine
+                    .invoke_method("auditCount".into(), &[])
+                    .to_qstring()
+                    .to_string(),
+                total.to_string()
+            );
+        }
+        bridge
+            .pinned()
+            .borrow_mut()
+            .spotify_resolution_worker
+            .take();
+        bridge.pinned().borrow_mut().spotify_playback_worker.take();
+        drop(engine);
+    }
+
+    #[test]
     #[ignore = "opt-in live MusicBrainz timing; requires MUSIC_LIBRARY_CATALOG_LIVE_QUERY"]
     fn live_catalog_latency_audit() {
         let query = std::env::var("MUSIC_LIBRARY_CATALOG_LIVE_QUERY").expect("set a catalog query");
@@ -3190,9 +3345,12 @@ mod event_delivery_tests {
                 .library
                 .song_resolution_input(&row.track_id)
                 .unwrap();
-            Selection::new(
-                input,
+            let initial = Selection::new(
+                input.clone(),
                 vec![Candidate {
+                    album_artists: vec![],
+                    album_type: String::new(),
+                    album_total_tracks: None,
                     identity: music_library::domain::ExternalIdentity {
                         provider: "spotify".into(),
                         kind: "track".into(),
@@ -3207,13 +3365,46 @@ mod event_delivery_tests {
                     disc: 1,
                     number: 1,
                 }],
-            )
+            );
+            let mut feasible = initial.candidates()[0].clone();
+            feasible.identity.external_id = "2234567890123456789012".into();
+            feasible.title = input.title.clone();
+            feasible.artist = input.artist.clone();
+            feasible.artists = input.artists.clone();
+            feasible.album = input.album.clone();
+            feasible.disc = input.disc.unwrap_or(1);
+            feasible.number = input.number.unwrap_or(1);
+            Selection::new(input, vec![initial.candidates()[0].clone(), feasible])
         };
         let publish = || {
             let pinned = bridge.pinned();
             let mut b = pinned.borrow_mut();
             b.spotify_resolution_selection = Some(selection.clone());
             b.spotify_playback_changed();
+            assert_eq!(
+                b.spotify_resolution_selection
+                    .as_ref()
+                    .unwrap()
+                    .visible_indices(),
+                vec![1]
+            );
+            assert!(
+                b.session
+                    .library
+                    .track_provider_occurrences(&selection.input().track_id, "spotify")
+                    .unwrap()
+                    .is_empty()
+            );
+            let counts = b.spotify_resolution_counts;
+            b.spotify_resolve("show-all".into(), -1);
+            assert_eq!(b.spotify_resolution_counts, counts);
+            assert_eq!(
+                b.spotify_resolution_selection
+                    .as_ref()
+                    .unwrap()
+                    .visible_indices(),
+                vec![1, 0]
+            );
         };
         let action = |action: &str| {
             engine
@@ -3257,7 +3448,7 @@ mod event_delivery_tests {
                 .library
                 .track_provider_occurrences(&selection.input().track_id, "spotify")
                 .unwrap(),
-            vec![selection.candidates()[0].identity.clone()]
+            vec![selection.candidates()[1].identity.clone()]
         );
         assert!(b.spotify_resolution_worker.is_none());
         assert!(b.spotify_playback_worker.is_none());

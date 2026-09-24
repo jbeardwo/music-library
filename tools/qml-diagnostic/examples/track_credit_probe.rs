@@ -2,7 +2,7 @@
 use music_library::{
     Library,
     domain::SearchRequest,
-    song_resolution::{SongSearch, assess},
+    song_resolution::{FeasibilityClass, Selection, SongSearch, assess, feasibility},
 };
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::PathBuf::from(
@@ -49,9 +49,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             page.next_offset.is_some(),
             assess(&input, &page)
         );
-        for candidate in page.items {
-            println!("CANDIDATE {candidate:?}");
+        let before = spotify.request_counts();
+        let started = std::time::Instant::now();
+        let classes: Vec<_> = page.items.iter().map(|c| feasibility(&input, c)).collect();
+        let elapsed = started.elapsed();
+        println!(
+            "CLASSES preferred={} alternate={} hidden={} cost={elapsed:?}",
+            classes
+                .iter()
+                .filter(|c| c.class == FeasibilityClass::Preferred)
+                .count(),
+            classes
+                .iter()
+                .filter(|c| c.class == FeasibilityClass::Alternate)
+                .count(),
+            classes
+                .iter()
+                .filter(|c| c.class == FeasibilityClass::Infeasible)
+                .count()
+        );
+        for (candidate, class) in page.items.iter().zip(&classes) {
+            println!("CANDIDATE {candidate:?} FEASIBILITY {class:?}");
         }
+        let mut selection = Selection::new(input.clone(), page.items);
+        println!("DEFAULT indices={:?}", selection.visible_indices());
+        selection.show_all();
+        assert_eq!(
+            selection.visible_indices().len(),
+            selection.candidates().len()
+        );
+        assert_eq!(spotify.request_counts(), before);
+        println!(
+            "SHOW ALL {} candidates, zero extra HTTP",
+            selection.visible_indices().len()
+        );
         assert_eq!(input, library.song_resolution_input(&row.track_id)?);
     }
     println!(

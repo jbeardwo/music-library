@@ -123,7 +123,7 @@ impl CatalogProvider for Provider {
 fn run(p: &mut Provider, local: &[LocalTrackEvidence], order: &[&str]) -> MatchOutcome {
     resolve(
         p,
-        "Album",
+        ("Album", None),
         &id("artist", "artist"),
         &Page {
             items: order.iter().map(|i| candidate(i)).collect(),
@@ -174,7 +174,7 @@ fn programs_resolve_only_clear_incompatibility_and_reuse_cache() {
     assert_eq!(
         resolve(
             &mut p,
-            "Album",
+            ("Album", None),
             &id("artist", "artist"),
             &page,
             false,
@@ -188,7 +188,7 @@ fn programs_resolve_only_clear_incompatibility_and_reuse_cache() {
     assert_eq!(
         resolve(
             &mut p,
-            "Album",
+            ("Album", None),
             &id("artist", "artist"),
             &page,
             false,
@@ -685,7 +685,7 @@ fn demon_days_live_credit_fixture_correlates_both_objects_without_arbitrary_ids(
     }
     let outcome = resolve(
         &mut provider,
-        &f.title,
+        (&f.title, None),
         &artist,
         &candidates,
         false,
@@ -716,4 +716,539 @@ fn demon_days_live_credit_fixture_correlates_both_objects_without_arbitrary_ids(
         }];
     }
     assert!(matches!(fit(&local, &contradictory), Fit::Rejected(_)));
+}
+
+#[test]
+fn date_preference_follows_program_compatibility_and_preserves_ties() {
+    use music_library::catalog_date::Date;
+    let local = locals(&[1, 2, 3, 4, 5]);
+    let page = |a: &str, b: &str| Page {
+        items: vec![
+            ArtistAlbumCandidate {
+                date: a.into(),
+                ..candidate("a")
+            },
+            ArtistAlbumCandidate {
+                date: b.into(),
+                ..candidate("b")
+            },
+        ],
+        next_offset: None,
+    };
+    let resolve_date = |p: &mut Provider, date: &str, page: &Page<ArtistAlbumCandidate>| {
+        resolve(
+            p,
+            ("Album", Date::parse(date)),
+            &id("artist", "artist"),
+            page,
+            false,
+            &local,
+            &mut vec![],
+        )
+        .unwrap()
+    };
+    assert_eq!(
+        resolve_date(
+            &mut Provider::new(),
+            "2005",
+            &page("2005-05-23", "2014-04-11")
+        ),
+        MatchOutcome::Matched(id("album", "a"))
+    );
+    for (date, a, b) in [
+        ("", "2005", "2014"),
+        ("2005", "2005-05-23", "2005-01-01"),
+        ("2000", "2005", "2014"),
+    ] {
+        assert!(matches!(
+            resolve_date(&mut Provider::new(), date, &page(a, b)),
+            MatchOutcome::AlbumEquivalent { .. }
+        ));
+    }
+    assert_eq!(
+        resolve_date(
+            &mut Provider::new(),
+            "2005-05-23",
+            &page("2005-05-23", "2005-04-11")
+        ),
+        MatchOutcome::Matched(id("album", "a"))
+    );
+    let mut p = Provider::new();
+    for n in [0, 1] {
+        p.programs.get_mut("a").unwrap().programs[0].tracks[n].title = Some("Wrong song".into());
+    }
+    assert_eq!(
+        resolve_date(&mut p, "2005", &page("2005", "2014")),
+        MatchOutcome::Matched(id("album", "b"))
+    );
+    let mut p = Provider::new();
+    p.programs.get_mut("b").unwrap().programs[0].complete = false;
+    assert!(!matches!(
+        resolve_date(&mut p, "2005", &page("2005", "2014")),
+        MatchOutcome::Matched(_)
+    ));
+    let mut p = Provider::new();
+    let mut wrong_artist = page("2005", "2014");
+    wrong_artist.items[0].artist_ids = vec![id("artist", "other")];
+    assert_eq!(
+        resolve_date(&mut p, "2005", &wrong_artist),
+        MatchOutcome::Matched(id("album", "b"))
+    );
+    assert_eq!(fit(&local, &program("b")), Fit::Supported); // later date never changes human compatibility
+}
+
+#[test]
+fn catalog_dates_compare_only_known_precision() {
+    use music_library::catalog_date::{Agreement, Date, agreement};
+    assert_eq!(
+        agreement(Date::parse("2005"), Date::parse("2005-05-23")),
+        Agreement::Year
+    );
+    assert_eq!(
+        agreement(Date::parse("2005-05"), Date::parse("2005-05-23")),
+        Agreement::Month
+    );
+    assert_eq!(
+        agreement(Date::parse("2005-05-23"), Date::parse("2005-05-23")),
+        Agreement::Day
+    );
+    for invalid in [
+        "",
+        "2005-99",
+        "2005-02-29",
+        "2005-05-00",
+        "2005-x",
+        "2005-05-23-extra",
+    ] {
+        assert!(Date::parse(invalid).is_none());
+    }
+    assert!(Date::parse("2004-02-29").is_some());
+}
+
+#[test]
+fn preferred_catalog_program_persists_occurrences_without_exact_edition_claim() {
+    use music_library::album_matching::{MatchReply, Preparation};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let (mut lib, imported, album) = catalog_fixture(&path);
+    let scope = MatchingScope {
+        provider: "plain-catalog".into(),
+        artist_kind: "artist".into(),
+        album_kind: "album".into(),
+    };
+    let Preparation::Ready(input) = lib.prepare_album_match_for(&album, &scope).unwrap() else {
+        panic!()
+    };
+    let local = lib.local_album_tracks(&album).unwrap();
+    let mut p = Provider::new();
+    for t in &mut p.programs.get_mut("b").unwrap().programs[0].tracks {
+        t.identities = vec![id("song", &format!("alternate{}", t.number.unwrap()))];
+    }
+    let page = Page {
+        items: vec![
+            ArtistAlbumCandidate {
+                date: "2005-05-23".into(),
+                ..candidate("a")
+            },
+            ArtistAlbumCandidate {
+                date: "2014-04-11".into(),
+                ..candidate("b")
+            },
+        ],
+        next_offset: None,
+    };
+    let outcome = resolve(
+        &mut p,
+        ("Album", music_library::catalog_date::Date::parse("2005")),
+        &id("artist", "artist"),
+        &page,
+        false,
+        &local,
+        &mut vec![],
+    )
+    .unwrap();
+    assert_eq!(outcome, MatchOutcome::Matched(id("album", "a")));
+    lib.complete_album_match_for(
+        MatchReply {
+            input,
+            artist: Some(id("artist", "artist")),
+            outcome,
+            matched_album: Some(page.items[0].clone()),
+        },
+        &scope,
+    )
+    .unwrap();
+    let input = lib
+        .prepare_album_program(&album, &id("album", "a"))
+        .unwrap()
+        .unwrap();
+    lib.complete_album_program(music_library::album_program::Reply {
+        input,
+        result: Ok(program("a")),
+    })
+    .unwrap();
+    assert!(
+        lib.list_release_external_identities(&imported.release_id)
+            .unwrap()
+            .is_empty()
+    );
+    drop(lib);
+    let lib = music_library::Library::open(&path).unwrap();
+    for track in &local {
+        assert_eq!(
+            lib.track_provider_occurrences(&track.track_id, "plain-catalog")
+                .unwrap(),
+            vec![id(
+                "song",
+                &format!("song{}", track.evidence.number.unwrap())
+            )]
+        );
+        assert!(
+            lib.list_recording_external_identities(&track.recording_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    // Membership is independent: the established partial program still has
+    // positions 2,6,9, and does not claim a complete nine-Track edition.
+    let input = lib.song_resolution_input(&imported.track_ids[0]).unwrap();
+    assert_eq!(input.album_required_tracks, 9);
+}
+
+#[test]
+#[ignore = "local date-discrimination comparison timing, no network"]
+fn date_representation_comparison_timing() {
+    for count in [5, 15, 30] {
+        let local = locals(&(1..=count).collect::<Vec<_>>());
+        let mut p = Provider::new();
+        for program in p.programs.values_mut() {
+            program.programs[0].tracks = local.iter().map(|t| t.evidence.clone()).collect();
+        }
+        let page = Page {
+            items: vec![
+                ArtistAlbumCandidate {
+                    date: "2005-05-23".into(),
+                    ..candidate("a")
+                },
+                ArtistAlbumCandidate {
+                    date: "2014-04-11".into(),
+                    ..candidate("b")
+                },
+            ],
+            next_offset: None,
+        };
+        let mut cache = p.programs.values().cloned().collect();
+        let start = std::time::Instant::now();
+        for _ in 0..1000 {
+            std::hint::black_box(
+                resolve(
+                    &mut p,
+                    ("Album", music_library::catalog_date::Date::parse("2005")),
+                    &id("artist", "artist"),
+                    &page,
+                    false,
+                    &local,
+                    &mut cache,
+                )
+                .unwrap(),
+            );
+        }
+        println!(
+            "Date preference, two cached programs / {count} Tracks: {:?}",
+            start.elapsed() / 1000
+        );
+        assert!(p.calls.is_empty());
+    }
+}
+
+#[test]
+fn changed_album_date_rejects_stale_representation_choice() {
+    use music_library::album_matching::{MatchReply, Preparation};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let (mut lib, _, album) = catalog_fixture(&path);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute(
+        "UPDATE album_application_metadata SET year=2005 WHERE album_id=?1",
+        [album.as_ref()],
+    )
+    .unwrap();
+    let scope = MatchingScope {
+        provider: "plain-catalog".into(),
+        artist_kind: "artist".into(),
+        album_kind: "album".into(),
+    };
+    let Preparation::Ready(input) = lib.prepare_album_match_for(&album, &scope).unwrap() else {
+        panic!()
+    };
+    assert_eq!(input.date, music_library::catalog_date::Date::parse("2005"));
+    db.execute(
+        "UPDATE album_application_metadata SET year=2014 WHERE album_id=?1",
+        [album.as_ref()],
+    )
+    .unwrap();
+    let result = lib
+        .complete_album_match_for(
+            MatchReply {
+                input,
+                artist: Some(id("artist", "artist")),
+                outcome: MatchOutcome::Matched(id("album", "a")),
+                matched_album: Some(candidate("a")),
+            },
+            &scope,
+        )
+        .unwrap();
+    assert_eq!(result, MatchOutcome::Skipped);
+    assert!(
+        lib.list_album_external_identities(&album)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn established_spotify_occurrence_ignores_credit_only_with_position_and_title() {
+    use music_library::album_program::{RecordingStatus, Reply};
+    let spotify = |kind: &str, value: &str| ExternalIdentity {
+        provider: "spotify".into(),
+        kind: kind.into(),
+        external_id: value.into(),
+    };
+    for case in [
+        "accepted",
+        "position",
+        "disc",
+        "unknown",
+        "unknown_local",
+        "title",
+        "remix",
+        "live",
+        "unresolved",
+        "album",
+        "manual",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("db");
+        let mut lib = music_library::Library::open(&path).unwrap();
+        let imported = lib
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Album".into(),
+                year: None,
+                artists: vec![ArtistCreditInput {
+                    name: "Artist".into(),
+                    role: None,
+                }],
+                tracks: vec![CatalogTrackInput {
+                    title: "Song 2".into(),
+                    artists: vec![ArtistCreditInput {
+                        name: "Rosie Wilson".into(),
+                        role: None,
+                    }],
+                    disc_number: Some(1),
+                    track_number: (case != "unknown_local").then_some(2),
+                }],
+            })
+            .unwrap();
+        let album = lib
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
+        let accepted = spotify("album", "preferred");
+        let mut p = program("a");
+        p.album = accepted.clone();
+        for t in &mut p.programs[0].tracks {
+            t.artists = vec![ArtistEvidence {
+                name: "Different contributor".into(),
+                identities: vec![spotify("artist", "unresolved")],
+                ..Default::default()
+            }];
+            t.identities = vec![spotify("track", &format!("track{}", t.number.unwrap()))];
+        }
+        match case {
+            "position" => p.programs[0].tracks[1].number = Some(3),
+            "disc" => p.programs[0].tracks[1].disc = Some(2),
+            "unknown" => p.programs[0].tracks[1].number = None,
+            "title" => p.programs[0].tracks[1].title = Some("Other song".into()),
+            "remix" => p.programs[0].tracks[1].title = Some("Song 2 (Remix)".into()),
+            "live" => p.programs[0].tracks[1].title = Some("Song 2 (Live)".into()),
+            "album" => p.album = spotify("album", "other"),
+            _ => {}
+        }
+        if case == "unresolved" {
+            assert!(
+                lib.prepare_album_program(&album, &accepted)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                music_library::album_program::compare_album(
+                    &lib.local_album_tracks(&album).unwrap(),
+                    &p
+                )
+                .iter()
+                .all(|o| !matches!(o, TrackOutcome::Matched(m) if !m.occurrences.is_empty()))
+            );
+            continue;
+        }
+        lib.attach_album_external_identity(&album, &accepted)
+            .unwrap();
+        let input = lib
+            .prepare_album_program(&album, &accepted)
+            .unwrap()
+            .unwrap();
+        let before = input.tracks.clone();
+        if case == "manual" {
+            let chosen = music_library::manual_track::Candidate {
+                supporting_programs: 1,
+                evidence: TrackEvidence {
+                    identities: vec![spotify("track", "manual")],
+                    ..Default::default()
+                },
+            };
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute("INSERT INTO manual_track_association(track_id,album_provider,album_kind,album_external_id,candidate_json) VALUES(?1,'spotify','album','preferred',?2)", rusqlite::params![imported.track_ids[0].as_ref(), serde_json::to_string(&chosen).unwrap()]).unwrap();
+        }
+        let result = lib
+            .complete_album_program(Reply {
+                input,
+                result: Ok(p),
+            })
+            .unwrap();
+        if case == "accepted" {
+            assert!(
+                matches!(&result, music_library::album_program::Outcome::Complete(rows) if rows.iter().all(|(_, o)| matches!(o, TrackOutcome::Matched(m) if m.recording_status == RecordingStatus::NotProvided && m.recording.identities.is_empty())))
+            );
+        }
+        assert_eq!(before, lib.local_album_tracks(&album).unwrap());
+        assert!(
+            lib.list_release_external_identities(&imported.release_id)
+                .unwrap()
+                .is_empty()
+        );
+        for t in &before {
+            assert!(
+                lib.list_recording_external_identities(&t.recording_id)
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM artist_external_identity WHERE provider='spotify'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(lib);
+        let lib = music_library::Library::open(&path).unwrap();
+        let ids = lib
+            .track_provider_occurrences(&imported.track_ids[0], "spotify")
+            .unwrap();
+        if case == "accepted" || case == "manual" {
+            let expected = spotify("track", if case == "manual" { "manual" } else { "track2" });
+            assert_eq!(ids, vec![expected.clone()]);
+            assert_eq!(
+                lib.playback_route(
+                    &imported.track_ids[0],
+                    &music_library::playback_resolver::RemoteCapability {
+                        provider: "spotify",
+                        unavailable: None,
+                        catalog_available: false,
+                        accepts: |i| i.kind == "track"
+                    }
+                )
+                .unwrap(),
+                music_library::playback_resolver::Route::Remote(expected)
+            );
+        } else {
+            assert!(ids.is_empty(), "{case}: {ids:?}");
+        }
+    }
+}
+
+#[test]
+fn preferred_demon_days_persists_dare_with_unresolved_contributors() {
+    let f: DemonFixture =
+        serde_json::from_str(include_str!("fixtures/spotify/demon-days-credits.json")).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = music_library::Library::open(&path).unwrap();
+    let imported = lib
+        .create_catalog_release(&CatalogReleaseInput {
+            title: f.title,
+            year: Some(f.year.try_into().unwrap()),
+            artists: vec![ArtistCreditInput {
+                name: f.artist,
+                role: None,
+            }],
+            tracks: f
+                .tracks
+                .iter()
+                .map(|t| CatalogTrackInput {
+                    title: t.title.clone().unwrap(),
+                    artists: t
+                        .artists
+                        .iter()
+                        .map(|a| ArtistCreditInput {
+                            name: a.name.clone(),
+                            role: None,
+                        })
+                        .collect(),
+                    disc_number: t.disc,
+                    track_number: t.number,
+                })
+                .collect(),
+        })
+        .unwrap();
+    let album = lib
+        .album_for_release(&imported.release_id)
+        .unwrap()
+        .album_id;
+    let preferred = &f.programs[0];
+    lib.attach_album_external_identity(&album, &preferred.album)
+        .unwrap();
+    let input = lib
+        .prepare_album_program(&album, &preferred.album)
+        .unwrap()
+        .unwrap();
+    let before = input.tracks.clone();
+    let check =
+        music_library::album_program::inspect_candidate(&before[11], &preferred.tracks[11], 11);
+    assert!(check.considered && check.exact_title && check.position && !check.occurrence_supported);
+    lib.complete_album_program(music_library::album_program::Reply {
+        input,
+        result: Ok(Programs {
+            album: preferred.album.clone(),
+            programs: vec![Program {
+                identity: None,
+                complete: true,
+                tracks: preferred.tracks.clone(),
+            }],
+            note: String::new(),
+        }),
+    })
+    .unwrap();
+    assert_eq!(before, lib.local_album_tracks(&album).unwrap());
+    drop(lib);
+    let lib = music_library::Library::open(&path).unwrap();
+    for (t, expected) in before.iter().zip(&preferred.tracks) {
+        assert_eq!(
+            lib.track_provider_occurrences(&t.track_id, "spotify")
+                .unwrap(),
+            expected.identities
+        );
+        assert!(
+            lib.list_recording_external_identities(&t.recording_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(
+        lib.list_release_external_identities(&imported.release_id)
+            .unwrap()
+            .is_empty()
+    );
 }

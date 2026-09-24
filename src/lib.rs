@@ -6,6 +6,7 @@ pub mod album_program;
 pub mod application;
 pub mod artist_credit;
 pub mod catalog;
+pub mod catalog_date;
 pub mod domain;
 pub mod edition;
 pub mod edition_storage;

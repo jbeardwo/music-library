@@ -45,6 +45,9 @@ fn release() -> Release {
 }
 fn candidate() -> Candidate {
     Candidate {
+        album_artists: vec![],
+        album_type: String::new(),
+        album_total_tracks: None,
         identity: id("song-provider", "song", "opaque-song"),
         title: "Song".into(),
         artist: "Artist".into(),
@@ -397,5 +400,119 @@ fn structured_primary_search_and_conservative_featured_acceptance_preserve_displ
         )
         .unwrap(),
         music_library::playback_resolver::Route::Remote(accepted)
+    );
+}
+
+#[test]
+fn album_context_feasibility_and_explicit_override_are_separate_from_acceptance() {
+    use music_library::song_resolution::{FeasibilityClass as Class, feasibility};
+    let mut library = Library::open_in_memory().unwrap();
+    let imported = library.add_catalog_release(&release()).unwrap();
+    let mut input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    input.album_required_tracks = 15;
+    input.duration_ms = Some(200000);
+    let mut good = candidate();
+    good.album = input.album.clone();
+    good.date = "2000-05-23".into();
+    good.album_total_tracks = Some(15);
+    good.artists = input.artists.clone();
+    good.album_artists = input.album_artists.clone();
+    assert_eq!(feasibility(&input, &good).class, Class::Preferred);
+    let mut later = good.clone();
+    later.date = "2014-04-11".into();
+    assert_eq!(feasibility(&input, &later).class, Class::Alternate);
+    let mut short = good.clone();
+    short.album_total_tracks = Some(4);
+    short.album_type = "single".into();
+    assert_eq!(feasibility(&input, &short).class, Class::Infeasible);
+    let mut compilation = good.clone();
+    compilation.album = "Greatest Hits".into();
+    compilation.album_type = "compilation".into();
+    assert_eq!(feasibility(&input, &compilation).class, Class::Infeasible);
+    let mut remix = good.clone();
+    remix.title = "Song - Remix".into();
+    remix.duration_ms = 400000;
+    assert!(
+        feasibility(&input, &remix)
+            .reasons
+            .iter()
+            .any(|r| r.contains("duration"))
+    );
+    for delta in [2000, 90000] {
+        let mut c = good.clone();
+        c.duration_ms += delta;
+        assert_eq!(feasibility(&input, &c).class, Class::Preferred);
+    }
+    let mut position = good.clone();
+    position.number = 2;
+    assert_eq!(feasibility(&input, &position).class, Class::Infeasible);
+    let mut title_input = input.clone();
+    title_input.title = "Super Fx".into();
+    let mut fxx = good.clone();
+    fxx.title = "Super Fxx".into();
+    assert_eq!(feasibility(&title_input, &fxx).class, Class::Infeasible);
+    let single = Selection::new(input.clone(), vec![remix.clone(), good.clone()]);
+    assert_eq!(single.visible_indices(), vec![1]);
+    assert!(
+        library
+            .track_provider_occurrences(&imported.track_ids[0], "song-provider")
+            .unwrap()
+            .is_empty()
+    );
+    let mut selection = Selection::new(input, vec![remix, later, good]);
+    assert_eq!(selection.visible_indices(), vec![2, 1]);
+    selection.show_all();
+    assert_eq!(selection.visible_indices(), vec![2, 1, 0]);
+    assert!(
+        library
+            .track_provider_occurrences(&imported.track_ids[0], "song-provider")
+            .unwrap()
+            .is_empty()
+    );
+    // Neither one visible item nor Show-all creates an association. An explicit
+    // override can confirm a hidden result using its original bounded-page index.
+    let original = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let selection = Selection::new(original, selection.candidates().to_vec());
+    library.confirm_song_resolution(&selection, 0).unwrap();
+}
+
+#[test]
+fn album_program_context_survives_partial_membership_and_date_precision_ranks_locally() {
+    use music_library::song_resolution::{FeasibilityClass as Class, classify};
+    let mut r = release();
+    r.media[0].tracks = (1..=15)
+        .map(|n| {
+            let mut t = r.media[0].tracks[0].clone();
+            t.position = n;
+            t.title = format!("Song {n}");
+            t.identities.clear();
+            t
+        })
+        .collect();
+    let mut lib = Library::open_in_memory().unwrap();
+    let imported = lib.add_catalog_release(&r).unwrap();
+    for id in &imported.track_ids[1..] {
+        lib.remove_from_library(id).unwrap();
+    }
+    let mut input = lib.song_resolution_input(&imported.track_ids[0]).unwrap();
+    assert_eq!(input.album_required_tracks, 15);
+    input.album_date = music_library::catalog_date::Date::parse("2000-05-23");
+    let mut c = candidate();
+    c.title = input.title.clone();
+    c.album = input.album.clone();
+    c.artists = input.artists.clone();
+    c.date = "2000-05-23".into();
+    let mut other = c.clone();
+    other.date = "2000-01-01".into();
+    assert_eq!(
+        classify(&input, &[other, c])
+            .iter()
+            .map(|a| a.class)
+            .collect::<Vec<_>>(),
+        vec![Class::Alternate, Class::Preferred]
     );
 }

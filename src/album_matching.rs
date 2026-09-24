@@ -43,6 +43,7 @@ pub enum MatchOutcome {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchInput {
+    pub date: Option<crate::catalog_date::Date>,
     pub album_id: AlbumId,
     pub title: String,
     pub artist: String,
@@ -689,7 +690,7 @@ impl AlbumMatcher {
                                 .map(|page| {
                                     let outcome = crate::album_candidates::resolve(
                                         &mut provider,
-                                        &input.title,
+                                        (&input.title, input.date),
                                         &id,
                                         &page,
                                         input.manual_artist,

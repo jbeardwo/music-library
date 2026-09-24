@@ -140,6 +140,12 @@ ApplicationWindow {
                 wrapMode: Text.Wrap
                 Layout.fillWidth: true
             }
+            Button {
+                text: "Show all Spotify results"
+                visible: window.spotifyPlayback.resolutionCanShowAll || false
+                enabled: !window.spotifyPlayback.resolutionPending
+                onClicked: window.bridge.spotify_resolve("show-all", -1)
+            }
             ComboBox {
                 id: spotifySongChoice
                 Layout.fillWidth: true

@@ -392,13 +392,14 @@ impl Spotify {
                 self.candidate_counts.insert(a.id.clone(), count);
             }
             Timing::event(format_args!(
-                "spotify album candidate id={} title={:?} artist={:?} type={} total_tracks={:?} date={} artist_scope={}",
+                "spotify album candidate id={} title={:?} artist={:?} type={} total_tracks={:?} date={} precision={} artist_scope={}",
                 a.id,
                 a.name,
                 display(&a.artists),
                 a.album_type,
                 a.total_tracks,
                 a.release_date,
+                a.release_date_precision,
                 a.artists
                     .iter()
                     .any(|a| artists.contains(&id("artist", &a.id)))
@@ -463,6 +464,8 @@ struct Album {
     artists: Vec<Artist>,
     #[serde(default)]
     release_date: String,
+    #[serde(default)]
+    release_date_precision: String,
     #[serde(default)]
     album_type: String,
     #[serde(default)]
@@ -572,6 +575,18 @@ impl music_library::song_resolution::SongSearch for Spotify {
                         .collect(),
                     album: entry.album.name,
                     date: entry.album.release_date,
+                    album_artists: entry
+                        .album
+                        .artists
+                        .iter()
+                        .map(|a| ArtistEvidence {
+                            name: a.name.clone(),
+                            identities: vec![id("artist", &a.id)],
+                            join_phrase: String::new(),
+                        })
+                        .collect(),
+                    album_type: entry.album.album_type,
+                    album_total_tracks: entry.album.total_tracks,
                     duration_ms: s.duration_ms,
                     disc: s.disc_number,
                     number: s.track_number,

@@ -659,6 +659,23 @@ supports that same identity for that Track. Structurally rejected objects do not
 missing or disagreeing evidence in surviving programs does not select an arbitrary ID.
 Partial Albums require neither complete local files nor `TrustedComplete`.
 
+Human Album identity ≠ preferred provider catalog representation ≠ exact edition.
+Known Album date/year may distinguish already structurally compatible provider
+representations. A unique stronger date agreement may select that representation
+and supply its Track IDs under existing acceptance rules. A later reissue remains
+human-Album compatible. Date cannot rescue structural contradictions, and unknown,
+equally matching or nonmatching dates must not invent a winner.
+
+Normal manual Spotify Track selection shows preferred-feasible and alternate-feasible
+candidates constrained by established Album, Artist, title/version, program length,
+and known positions. A compatible later reissue may remain an alternate; unrelated
+EP/compilation/remix results are hidden by default. Duration supports other evidence
+rather than imposing a universal hard cutoff. Program reasoning uses established
+Tracks, independent of partial saved membership or local source availability.
+**Show all Spotify results** exposes infeasible results from the same bounded page
+for explicit overrides, without more HTTP. Filtering to one visible result never
+by itself persists an association; automatic acceptance remains stricter.
+
 These Track associations are independently useful for playback, survive reopen, and
 avoid catalog search on Play. Manual associations remain authoritative. Spotify Track
 identity does not imply Recording identity; Spotify Album identity does not imply exact
@@ -847,3 +864,10 @@ Human-Album correlation does not imply unique provider Album-object or Track-ID
 certainty. Multiple compatible programs may persist agreed Track IDs independently;
 disagreeing IDs remain unresolved. Neither Spotify Track identity nor Album identity
 implies Recording identity or exact edition. Partial Albums remain supported.
+
+Within an already-established Spotify Album representation, a known matching
+disc/Track position and compatible musical title suffice to associate the provider
+Track occurrence despite contributor-credit disagreement. Semantic versions such
+as Live or Remix must still agree. This rule must not choose an unresolved Album
+representation, infer contributor aliases, Recording identity or exact edition,
+or overwrite a manual association.

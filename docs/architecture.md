@@ -1420,12 +1420,26 @@ disagreement remains uncertain. A sole supported representation requires at leas
 three exact position/title agreements before program evidence selects its Album ID.
 Fetched programs remain in the owned worker cache for immediate enrichment.
 
+Human Album identity ≠ preferred provider catalog representation ≠ exact edition.
+After all remaining candidate programs are structurally supported, `catalog_date`
+compares parsed year/month/day evidence with the established application Album date.
+The current application metadata stores a year; the comparator also supports partial
+and full dates without inventing missing precision. A unique strongest agreement
+(year, then shared month/day precision) may select the provider representation, still
+requiring at least three exact program positions. Unknown dates, equally matching
+dates, or no matching year leave the tie unresolved; no nearest-year or ID ordering
+breaks it. An uncertain program blocks this preference. Later reissues remain human
+Album compatible. Date cannot rescue a rejected Artist/title/program. Completion
+revalidates the Album date as well as title/Artist before attaching the identity.
+The selected program supplies Track occurrences through the existing stricter
+association path; competing representations no longer veto its different IDs.
+
 Application Album certainty ≠ provider Album-object certainty ≠ provider Track
 certainty. Surviving representations are compared independently, without applying
 cross-object template ranking to discard an inconvenient Track ID. `AlbumEquivalent`
 can contain individually agreed Track occurrences even when another Track is weak or
 unresolved. Every surviving object must supply the same occurrence for that Track;
-structurally rejected objects do not participate. Different IDs remain unresolved.
+structurally rejected objects do not participate. Different IDs remain unresolved while representation preference is unresolved.
 No complete local Album or `TrustedComplete` requirement is introduced.
 
 Primary Artist identity ≠ display Artist credit ≠ provider Artist-credit representation.
@@ -1437,15 +1451,49 @@ credits and a unique complete-page candidate with matching title/Album context a
 no supplied duration/position contradiction; unresolved plausible alternatives veto
 automatic selection.
 
+Manual Track selection applies `song_resolution::classify` to the retained bounded
+Spotify search page (at most ten results), without additional HTTP. Classes are
+**preferred feasible**, **alternate feasible**, and **infeasible**. The first two
+are visible, grouped by labels with best matches first. Known date agreement prefers
+an otherwise-compatible representation; later reissues remain visible alternates.
+Primary/known Artist contradictions, semantic Track-title differences, incompatible
+Album title/Artist, insufficient program length, and conflicting known disc/Track
+positions exclude a candidate from the default list. Provider type contextualizes
+Single/EP/compilation contradictions; it is not a universal ban on these types.
+Program length is a lower bound from established positions across the Album, not
+saved membership or available local files. Partial imports do not assert completeness.
+Duration differences over 30 seconds corroborate other contradictions, never reject
+an otherwise-feasible result alone. Existing strict automatic-acceptance duration,
+credit and page-completeness checks are unchanged. Unknown contributor aliases may
+remain manually feasible without being automatically acceptable.
+
+`Selection` caches these assessments. **Show all Spotify results** exposes the rest
+of that original page, labeled **Outside Album context (override)**, without a new
+search. Displayed rows map back to original candidate indices before confirmation.
+No default, filtering, sorting, or show-all action persists an association; explicit
+confirmation remains authoritative, including overrides for incorrect metadata.
+Automatic explicit-Play assessment reuses feasibility but retains stricter acceptance.
+Program/chooser comparison shares structured credit and featured-title validation,
+program-length feasibility, and date agreement. Position checking here constrains
+this Album context; it is not durable Track identity across arbitrary reissues.
+
 Album-program correlation separately compares structured Artist identities/names,
 ignoring their display join phrases. Omitted contributors are incomplete evidence;
 unresolved additional contributors can support exact title/position human-program
-correlation without establishing occurrence IDs. Contradictory primary performers
-or known identities still reject. A trailing featured-title annotation is removed
+correlation without establishing occurrence IDs while the representation is unresolved.
+After a Spotify Album representation is accepted, `complete_album_program` revalidates
+that identity and the Track snapshot, then may associate an otherwise unresolved
+occurrence by matching explicit disc/Track position and safely normalized musical
+title. Contributor disagreement does not veto this occurrence-only association.
+The fallback requires a unique occurrence agreed by every complete supplied program;
+it never creates Recording, contributor/alias, or exact-edition identity. Manual
+choices remain authoritative. Album selection and explicit Track search keep their
+existing credit checks. A trailing featured-title annotation is removed
 only in comparison, when fully corroborated by that provider's additional Artist
 list. Missing duration is unknown. Different Spotify Track IDs can describe two
 plausible human-Album programs and remain unresolved. No automatic per-Track sweep
-is added. See the [live structured-credit audit](spotify-credit-matching-audit.md).
+is added. See the [Album-context/date audit](spotify-album-context-audit.md) and
+[earlier structured-credit audit](spotify-credit-matching-audit.md).
 
 `Store::complete_album_match_for` revalidates the application Track snapshot inside
 its short transaction, then stores agreed occurrences in the existing

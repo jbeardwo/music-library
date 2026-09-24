@@ -29,7 +29,7 @@ fn artists() -> (u16, Value, Option<&'static str>) {
 }
 #[test]
 fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurrences() {
-    let item = json!({"id":"1234567890123456789012","name":"Song & Title","disc_number":1,"track_number":2,"duration_ms":123456,"artists":[{"id":"artist1","name":"Artist"}],"album":{"id":"album1","name":"Album Deluxe","artists":[],"release_date":"2020"},"external_ids":{"isrc":"example"}});
+    let item = json!({"id":"1234567890123456789012","name":"Song & Title","disc_number":1,"track_number":2,"duration_ms":123456,"artists":[{"id":"artist1","name":"Artist"}],"album":{"id":"album1","name":"Album Deluxe","artists":[{"id":"artist1","name":"Artist"}],"release_date":"2020","release_date_precision":"year","album_type":"album","total_tracks":15},"external_ids":{"isrc":"example"}});
     let page = (
         200,
         json!({"tracks":{"items":[item.clone(),item],"total":50,"offset":0,"next":"untrusted-next"}}),
@@ -38,6 +38,9 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
     let mut mock = Mock::new(vec![token(), page.clone(), page]);
     assert_eq!(mock.client.request_counts(), (0, 0));
     let input = music_library::song_resolution::Input {
+        album_date: None,
+        album_artists: vec![],
+        album_required_tracks: 0,
         track_id: music_library::domain::TrackId("application-track".into()),
         primary_artist: None,
         artists: vec![],
@@ -56,6 +59,19 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
         id("track", "1234567890123456789012")
     );
     assert_eq!(found.items[0].album, "Album Deluxe");
+    assert_eq!(found.items[0].album_total_tracks, Some(15));
+    assert_eq!(found.items[0].album_type, "album");
+    assert_eq!(
+        found.items[0].album_artists[0].identities,
+        vec![id("artist", "artist1")]
+    );
+    let counts = mock.client.request_counts();
+    let mut selection =
+        music_library::song_resolution::Selection::new(input.clone(), found.items.clone());
+    assert!(selection.visible_indices().is_empty());
+    selection.show_all();
+    assert_eq!(selection.visible_indices(), vec![0]);
+    assert_eq!(mock.client.request_counts(), counts);
     assert_eq!(
         playback::Song::from_associations(&[found.items[0].identity.clone()])
             .unwrap()
@@ -474,6 +490,9 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
         join_phrase: " feat. ".into(),
     };
     let input = music_library::song_resolution::Input {
+        album_date: None,
+        album_artists: vec![],
+        album_required_tracks: 0,
         track_id: music_library::domain::TrackId("application".into()),
         title: "Feel Good Inc.".into(),
         artist: "Gorillaz feat. De La Soul".into(),

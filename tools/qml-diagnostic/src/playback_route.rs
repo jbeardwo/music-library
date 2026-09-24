@@ -137,6 +137,9 @@ pub(crate) fn test_handoffs() {
     assert!(searches.try_recv().is_err()); // exactly one explicit-Play search
     assert!(commands.try_recv().is_err());
     let song = Candidate {
+        album_artists: vec![],
+        album_type: String::new(),
+        album_total_tracks: None,
         identity: identity.clone(),
         title: input.title.clone(),
         artist: input.artist.clone(),
@@ -177,6 +180,9 @@ pub(crate) fn test_handoffs() {
     b.resolve_play(ambiguous.as_ref());
     let (_, input) = searches.try_recv().unwrap();
     let song = Candidate {
+        album_artists: vec![],
+        album_type: String::new(),
+        album_total_tracks: None,
         identity: identity.clone(),
         title: input.title.clone(),
         artist: input.artist.clone(),

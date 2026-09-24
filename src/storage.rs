@@ -105,7 +105,10 @@ impl Store {
                 Preparation::Ready(current) => current,
                 Preparation::Done(outcome) => return Ok(outcome),
             };
-            if current.title != reply.input.title || current.artist != reply.input.artist {
+            if current.title != reply.input.title
+                || current.artist != reply.input.artist
+                || current.date != reply.input.date
+            {
                 return Ok(MatchOutcome::Skipped);
             }
             // A prior completion may already have reassigned this queued input's
@@ -127,6 +130,7 @@ impl Store {
             Preparation::Ready(current)
                 if current.title != reply.input.title
                     || current.artist != reply.input.artist
+                    || current.date != reply.input.date
                     || current.artist_id != canonical =>
             {
                 MatchOutcome::Skipped
@@ -1759,10 +1763,10 @@ fn prepare_album_match(
     scope: &crate::catalog::MatchingScope,
 ) -> Result<crate::album_matching::Preparation> {
     use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
-    let (title, artist): (String, String) = db.query_row(
-        "SELECT match_title,match_artist_credit FROM album_application_metadata WHERE album_id=?1",
+    let (title, artist, year): (String, String, Option<i32>) = db.query_row(
+        "SELECT match_title,match_artist_credit,year FROM album_application_metadata WHERE album_id=?1",
         [id.as_ref()],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3)", params![id.as_ref(),scope.provider,scope.album_kind], |r|r.get::<_,bool>(0))? {
         return Ok(Preparation::Done(MatchOutcome::AlreadyMatched));
@@ -1809,6 +1813,7 @@ fn prepare_album_match(
     }
     Ok(if usable {
         Preparation::Ready(MatchInput {
+            date: year.and_then(|y| crate::catalog_date::Date::parse(&y.to_string())),
             album_id: id.clone(),
             title,
             artist,

@@ -36,6 +36,11 @@ pub fn required_tracks(local: &[LocalTrackEvidence]) -> usize {
     )
 }
 
+/// Shared lower-bound test: partial imports never imply an exact total.
+pub fn can_accommodate(required: usize, total: Option<u32>) -> bool {
+    total.is_none_or(|n| n as usize >= required)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fit {
     Supported,
@@ -84,13 +89,14 @@ pub fn fit(local: &[LocalTrackEvidence], p: &Programs) -> Fit {
 /// identifiers as primary IDs, exact-edition claims or per-Track HTTP calls.
 pub fn resolve(
     provider: &mut impl CatalogProvider,
-    title: &str,
+    context: (&str, Option<crate::catalog_date::Date>),
     artist: &ExternalIdentity,
     page: &Page<ArtistAlbumCandidate>,
     manual: bool,
     local: &[LocalTrackEvidence],
     cache: &mut Vec<Programs>,
 ) -> Result<MatchOutcome, CatalogError> {
+    let (title, date) = context;
     let initial = accepted_album_confirmed(title, artist, page, manual);
     if !provider.album_candidate_programs() || local.is_empty() {
         return Ok(initial);
@@ -108,7 +114,7 @@ pub fn resolve(
     let required = required_tracks(local);
     let surviving:Vec<_>=candidates.into_iter().filter(|c| {
         let count=provider.album_candidate_track_count(&c.identity);
-        let possible=count.is_none_or(|n|n as usize>=required);
+        let possible=can_accommodate(required,count);
         Timing::event(format_args!("album candidate={} total={count:?} local_required={required} survives_cheap={possible}",c.identity.external_id));
         possible
     }).collect();
@@ -147,6 +153,40 @@ pub fn resolve(
         ));
         if !matches!(assessment, Fit::Rejected(_)) {
             examined.push((candidate.clone(), programs, assessment));
+        }
+    }
+    // Dates compare only fully supported human programs. Unknown structural
+    // competitors cannot be dismissed by date; no nearest-year tie breaker.
+    if examined.len() > 1 && examined.iter().all(|(_, _, f)| *f == Fit::Supported) {
+        let agreements: Vec<_> = examined
+            .iter()
+            .map(|(c, _, _)| {
+                crate::catalog_date::agreement(date, crate::catalog_date::Date::parse(&c.date))
+            })
+            .collect();
+        let best = agreements.iter().max().copied().unwrap();
+        if best > crate::catalog_date::Agreement::UnknownOrDifferent
+            && agreements.iter().filter(|a| **a == best).count() == 1
+        {
+            let index = agreements.iter().position(|a| *a == best).unwrap();
+            let preferred = examined.remove(index);
+            if preferred
+                .1
+                .programs
+                .iter()
+                .any(|p| album_program::program_fit(local, p).exact_positions >= 3)
+            {
+                return Ok(accepted_album_confirmed(
+                    title,
+                    artist,
+                    &Page {
+                        items: vec![preferred.0],
+                        next_offset: None,
+                    },
+                    manual,
+                ));
+            }
+            examined.insert(index, preferred);
         }
     }
     if let [(candidate, programs, Fit::Supported)] = examined.as_slice() {
