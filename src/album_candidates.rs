@@ -168,29 +168,45 @@ pub fn resolve(
             ));
         }
     }
-    if examined.len() > 1 && examined.iter().all(|(_, _, f)| *f == Fit::Supported) {
+    if !examined.is_empty() {
+        // Compare each representation separately. Cross-program template ranking
+        // must not discard a plausible Album merely to manufacture ID agreement.
         let mappings: Vec<_> = examined
             .iter()
-            .map(|(_, p, _)| album_program::compare_album(local, p))
-            .collect();
-        let matched_title = |o: &TrackOutcome| match o {
-            TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) => {
-                Some(album_program::comparison_title(&m.title))
-            }
-            _ => None,
-        };
-        if (0..local.len()).all(|i| {
-            matched_title(&mappings[0][i]).is_some()
-                && mappings
+            .map(|(_, p, _)| {
+                local
                     .iter()
-                    .all(|m| matched_title(&m[i]) == matched_title(&mappings[0][i]))
-        }) {
-            let combined=Programs{album:examined[0].1.album.clone(),programs:examined.iter().flat_map(|(_,p,_)|p.programs.clone()).collect(),note:"Equivalent provider representations; no Album ID selected; associations are diagnostic until identity resolves".into()};
-            let tracks = local
-                .iter()
-                .cloned()
-                .zip(album_program::compare_album(local, &combined))
-                .collect();
+                    .map(|t| album_program::compare(t, p))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let tracks: Vec<_> = local.iter().enumerate().map(|(i,t)| {
+            let mut outcome = mappings[0][i].clone();
+            if let TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) = &mut outcome {
+                m.occurrences.retain(|id| mappings.iter().all(|rows| {
+                    matches!(&rows[i], TrackOutcome::Matched(other) | TrackOutcome::AlreadyMatched(other) if other.occurrences.contains(id))
+                }));
+                // No Recording claim is made while provider objects are unresolved.
+                m.recording.identities.clear();
+                if m.recording_status == album_program::RecordingStatus::Identified {
+                    m.recording_status = album_program::RecordingStatus::Ambiguous;
+                }
+                m.explanation = format!("Agreement across {} plausible provider Album objects; no Album ID selected. {}", examined.len(), m.explanation);
+            }
+            (t.clone(), outcome)
+        }).collect();
+        let all_supported = examined.len() > 1
+            && examined.iter().all(|(_, _, fit)| *fit == Fit::Supported)
+            && mappings.iter().all(|rows| {
+                rows.iter().all(|o| {
+                    matches!(
+                        o,
+                        TrackOutcome::Matched(_) | TrackOutcome::AlreadyMatched(_)
+                    )
+                })
+            });
+        let any_agreed = tracks.iter().any(|(_,o)| matches!(o, TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) if !m.occurrences.is_empty()));
+        if all_supported || any_agreed {
             return Ok(MatchOutcome::AlbumEquivalent {
                 candidates: examined.into_iter().map(|(c, _, _)| c).collect(),
                 tracks,

@@ -649,10 +649,22 @@ Large artwork should not be decoded or retained at full resolution for every lib
 
 Provider search may return multiple catalog objects for one human Album. Filter
 structurally impossible objects before ambiguity, then use bounded program evidence
-where supported. Compare only present local Tracks; partial Albums and extra provider
+where supported. Compare only present application Tracks, including catalog-only
+Tracks; partial Albums and extra provider
 Tracks remain valid. Selecting a provider representation never proves exact edition.
-Equivalent unresolved catalog IDs must not erase useful Album/Track association;
-genuine alternatives remain ambiguous rather than choosing by search order or score.
+Application Album certainty, provider Album-object certainty, and provider Track
+certainty are independent. Provider Album ambiguity may coexist with durable provider
+Track associations: persist an occurrence only when every plausible surviving program
+supports that same identity for that Track. Structurally rejected objects do not vote;
+missing or disagreeing evidence in surviving programs does not select an arbitrary ID.
+Partial Albums require neither complete local files nor `TrustedComplete`.
+
+These Track associations are independently useful for playback, survive reopen, and
+avoid catalog search on Play. Manual associations remain authoritative. Spotify Track
+identity does not imply Recording identity; Spotify Album identity does not imply exact
+edition. Catalog imports schedule bounded Spotify Album enrichment when Spotify catalog
+credentials are configured, independently of the selected metadata provider. Disabling
+automatic matching disables this job too. Polling never starts matching.
 
 External metadata support is part of the intended architecture but is not required for the first backend vertical slice.
 
@@ -819,3 +831,19 @@ by pause, missing state, outage or an external Track change. Spotify clients tha
 restart a song without exposing terminal evidence require explicit Next.
 Source preferences and broad enrichment remain future work. See
 [diagnostic setup and token lifecycle](../adapters/spotify/PLAYBACK.md).
+
+### Cross-provider Artist credits
+
+Primary Artist identity, display credit and provider credit representation are
+separate. Search may use a reliable structured primary Artist while preserving all
+original display metadata and validating additional Artists after retrieval.
+Equivalent structured credits must not veto human-Album correlation merely because
+join phrases differ. Unproven contributor relationships remain uncertain; genuinely
+contradictory identities remain protective evidence. A provider's featured-title
+annotation is comparison-only evidence when corroborated by its structured credits.
+No broad punctuation parsing or stored-credit rewrite is permitted.
+
+Human-Album correlation does not imply unique provider Album-object or Track-ID
+certainty. Multiple compatible programs may persist agreed Track IDs independently;
+disagreeing IDs remain unresolved. Neither Spotify Track identity nor Album identity
+implies Recording identity or exact edition. Partial Albums remain supported.

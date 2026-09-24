@@ -1,0 +1,1630 @@
+{
+  "artist": "Gorillaz",
+  "title": "Demon Days",
+  "year": 2005,
+  "tracks": [
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 1,
+      "title": "Intro",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 2,
+      "title": "Last Living Souls",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 3,
+      "title": "Kids With Guns",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "Neneh Cherry",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "527c65d1-9fdb-4482-8796-dde2980bd63a"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 4,
+      "title": "O Green World",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 5,
+      "title": "Dirty Harry",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "Bootie Brown",
+          "join_phrase": " & ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "fb86fedf-8a52-4ada-baa0-1c52bd0cbfa9"
+            }
+          ]
+        },
+        {
+          "name": "San Fernandez Youth Chorus",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "ae8834ec-86a6-4764-b978-0e3fc16eeeea"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 6,
+      "title": "Feel Good Inc.",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "De La Soul",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "a8ebde98-7e91-46c7-992c-90039ba42017"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 7,
+      "title": "El mañana",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 8,
+      "title": "Every Planet We Reach Is Dead",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 9,
+      "title": "November Has Come",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "MF DOOM",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "188711ed-c99b-439c-844a-ca831f63a727"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 10,
+      "title": "All Alone",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "Roots Manuva",
+          "join_phrase": " & ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "4f6dd51e-bfd7-4153-ace7-9316d1757a57"
+            }
+          ]
+        },
+        {
+          "name": "Martina Topley‐Bird",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "ed785ff1-8b1b-4bc0-8a24-dcc831013059"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 11,
+      "title": "White Light",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 12,
+      "title": "DARE",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "Shaun Ryder",
+          "join_phrase": " & ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "cb72e132-66c1-44c2-986f-eed70d97d29a"
+            }
+          ]
+        },
+        {
+          "name": "Rosie Wilson",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "8020c8b6-5363-4b4e-b552-c8a2bd7cd5a8"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 13,
+      "title": "Fire Coming Out of the Monkey's Head",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "Dennis Hopper",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "806b8e6f-343f-46db-849d-ac551a384f60"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 14,
+      "title": "Don't Get Lost in Heaven",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "London Community Gospel Choir",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "a63b9208-6867-43fe-ad1d-f8801ad79915"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    },
+    {
+      "identities": [],
+      "disc": 1,
+      "number": 15,
+      "title": "Demon Days",
+      "artists": [
+        {
+          "name": "Gorillaz",
+          "join_phrase": " feat. ",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "e21857d5-3256-4547-afb3-4b6ded592596"
+            }
+          ]
+        },
+        {
+          "name": "London Community Gospel Choir",
+          "join_phrase": "",
+          "identities": [
+            {
+              "provider": "musicbrainz",
+              "kind": "artist",
+              "external_id": "a63b9208-6867-43fe-ad1d-f8801ad79915"
+            }
+          ]
+        }
+      ],
+      "duration_ms": null,
+      "recording": {
+        "identities": [],
+        "isrcs": []
+      }
+    }
+  ],
+  "programs": [
+    {
+      "album": {
+        "provider": "spotify",
+        "kind": "album",
+        "external_id": "0bUTHlWbkSQysoM3VsWldT"
+      },
+      "date": "2005-05-23",
+      "tracks": [
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2zavoMfVVPJMikH57fd8yK"
+            }
+          ],
+          "disc": 1,
+          "number": 1,
+          "title": "Intro",
+          "duration_ms": 67133,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "7JzmCjvB6bk48JghLyrg8N"
+            }
+          ],
+          "disc": 1,
+          "number": 2,
+          "title": "Last Living Souls",
+          "duration_ms": 195400,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0eEgMbSzOHmkOeVuNC3E0k"
+            }
+          ],
+          "disc": 1,
+          "number": 3,
+          "title": "Kids with Guns",
+          "duration_ms": 225773,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Neneh Cherry",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3JxCEqL9zjKnDJgUhRuRJD"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "4hNPMfFHauPIbOKvdYqFt7"
+            }
+          ],
+          "disc": 1,
+          "number": 4,
+          "title": "O Green World",
+          "duration_ms": 275000,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2bfGNzdiRa1jXZRdfssSzR"
+            }
+          ],
+          "disc": 1,
+          "number": 5,
+          "title": "Dirty Harry (feat. Bootie Brown)",
+          "duration_ms": 230426,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Bootie Brown",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "6GI3CJjT2bOnMfprCpjT1d"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0d28khcov6AiegSCpG5TuT"
+            }
+          ],
+          "disc": 1,
+          "number": 6,
+          "title": "Feel Good Inc.",
+          "duration_ms": 222640,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "De La Soul",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "1Z8ODXyhEBi3WynYw0Rya6"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0dcMqjeDpwqB2xhzMsld0p"
+            }
+          ],
+          "disc": 1,
+          "number": 7,
+          "title": "El Mañana",
+          "duration_ms": 235360,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2pw9RZWZibttZzoFhwjuy6"
+            }
+          ],
+          "disc": 1,
+          "number": 8,
+          "title": "Every Planet We Reach Is Dead",
+          "duration_ms": 295266,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "6lrDckuosGpwEHtm1hHBcf"
+            }
+          ],
+          "disc": 1,
+          "number": 9,
+          "title": "November Has Come",
+          "duration_ms": 165093,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "MF DOOM",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "2pAWfrd7WFF3XhVt9GooDL"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "76Ug1q4l6rGwJ2ubV5wh3X"
+            }
+          ],
+          "disc": 1,
+          "number": 10,
+          "title": "All Alone",
+          "duration_ms": 213333,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Martina Topley-Bird",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "6sKLLGj7SqbP2qDBdEOoZ6"
+                }
+              ]
+            },
+            {
+              "name": "Roots Manuva",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "4sSSkVtrCTzENCgm2vokiY"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "7hnW9af7GuGH5lyUUTa8UH"
+            }
+          ],
+          "disc": 1,
+          "number": 11,
+          "title": "White Light",
+          "duration_ms": 133066,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "4Hff1IjRbLGeLgFgxvHflk"
+            }
+          ],
+          "disc": 1,
+          "number": 12,
+          "title": "DARE (feat. Shaun Ryder & Roses Gabor)",
+          "duration_ms": 244999,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Shaun Ryder",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3ONSkkEnOSZVNogu98dvTY"
+                }
+              ]
+            },
+            {
+              "name": "Roses Gabor",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "2gcdX1NqiPU2F4QxSlBo7r"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1S9tfxdFr4TqoqA14gnKj3"
+            }
+          ],
+          "disc": 1,
+          "number": 13,
+          "title": "Fire Coming out of the Monkey's Head",
+          "duration_ms": 199000,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "4hjGZN8poACfjWCK3Og6vY"
+            }
+          ],
+          "disc": 1,
+          "number": 14,
+          "title": "Don't Get Lost in Heaven",
+          "duration_ms": 131866,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2k6hpKTyubRVOmQR11ViY3"
+            }
+          ],
+          "disc": 1,
+          "number": 15,
+          "title": "Demon Days",
+          "duration_ms": 268400,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        }
+      ]
+    },
+    {
+      "album": {
+        "provider": "spotify",
+        "kind": "album",
+        "external_id": "45IcwOkFv3YqTpU5Bal8fl"
+      },
+      "date": "2014-04-11",
+      "tracks": [
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "6kYEzcByL2fsOIBy3hjEeS"
+            }
+          ],
+          "disc": 1,
+          "number": 1,
+          "title": "Intro",
+          "duration_ms": 63160,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "6B1CTvwp5UHmsC7C5dUFyH"
+            }
+          ],
+          "disc": 1,
+          "number": 2,
+          "title": "Last Living Souls",
+          "duration_ms": 190400,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "3p6CzPIM1oThkSAVwYMNL2"
+            }
+          ],
+          "disc": 1,
+          "number": 3,
+          "title": "Kids with Guns",
+          "duration_ms": 225840,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Neneh Cherry",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3JxCEqL9zjKnDJgUhRuRJD"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0JY0InSgMgbL4ndXwMeVMO"
+            }
+          ],
+          "disc": 1,
+          "number": 4,
+          "title": "O Green World",
+          "duration_ms": 271960,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "5LMfXbPn6VF5IusbdW1dmr"
+            }
+          ],
+          "disc": 1,
+          "number": 5,
+          "title": "Dirty Harry",
+          "duration_ms": 223800,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Bootie Brown",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "6GI3CJjT2bOnMfprCpjT1d"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "72YCeOZX7NoyRPJGyGbTHs"
+            }
+          ],
+          "disc": 1,
+          "number": 6,
+          "title": "Feel Good Inc.",
+          "duration_ms": 221173,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "De La Soul",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "1Z8ODXyhEBi3WynYw0Rya6"
+                }
+              ]
+            },
+            {
+              "name": "Dave Jolicoeur",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "7p9cQvuiCC28PPRZwHGDBM"
+                }
+              ]
+            },
+            {
+              "name": "Kelvin Mercer",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "0Qpk1IGiZeB6rRhfK4FVDT"
+                }
+              ]
+            },
+            {
+              "name": "Vincent Mason",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "0VvgqsepMNYg1Iou7h1xb3"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "6Q2B0I3t6oXSVBKfJJYiFZ"
+            }
+          ],
+          "disc": 1,
+          "number": 7,
+          "title": "El Mañana",
+          "duration_ms": 230026,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0XpcgA4TlJAH3EpiyZhCeQ"
+            }
+          ],
+          "disc": 1,
+          "number": 8,
+          "title": "Every Planet We Reach Is Dead",
+          "duration_ms": 293266,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "6VAIvE8McCUpZEqba1pSWj"
+            }
+          ],
+          "disc": 1,
+          "number": 9,
+          "title": "November Has Come",
+          "duration_ms": 161106,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "MF DOOM",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "2pAWfrd7WFF3XhVt9GooDL"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "25VvZQmr3OwrBrjZDB2KP0"
+            }
+          ],
+          "disc": 1,
+          "number": 10,
+          "title": "All Alone",
+          "duration_ms": 210066,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Martina Topley-Bird",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "6sKLLGj7SqbP2qDBdEOoZ6"
+                }
+              ]
+            },
+            {
+              "name": "Roots Manuva",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "4sSSkVtrCTzENCgm2vokiY"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "7m6fzGmgWlROIR4RDPShMS"
+            }
+          ],
+          "disc": 1,
+          "number": 11,
+          "title": "White Light",
+          "duration_ms": 128426,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2WEe9qVLhqZHOFoykgVlNu"
+            }
+          ],
+          "disc": 1,
+          "number": 12,
+          "title": "DARE (feat. Shaun Ryder & Roses Gabor)",
+          "duration_ms": 244306,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            },
+            {
+              "name": "Shaun Ryder",
+              "join_phrase": ", ",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3ONSkkEnOSZVNogu98dvTY"
+                }
+              ]
+            },
+            {
+              "name": "Roses Gabor",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "2gcdX1NqiPU2F4QxSlBo7r"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1PSmZhEQks1E4OOBqSjdjh"
+            }
+          ],
+          "disc": 1,
+          "number": 13,
+          "title": "Fire Coming out of the Monkey's Head",
+          "duration_ms": 196426,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1sIBFDvOJacc9n4GPxYAK6"
+            }
+          ],
+          "disc": 1,
+          "number": 14,
+          "title": "Don't Get Lost in Heaven",
+          "duration_ms": 120373,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "3cQtzv5263FpoTaDmGudRm"
+            }
+          ],
+          "disc": 1,
+          "number": 15,
+          "title": "Demon Days",
+          "duration_ms": 268893,
+          "artists": [
+            {
+              "name": "Gorillaz",
+              "join_phrase": "",
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "3AA28KZvwAUcZuOKwyblJQ"
+                }
+              ]
+            }
+          ],
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        }
+      ]
+    }
+  ]
+}

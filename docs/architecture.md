@@ -1420,13 +1420,55 @@ disagreement remains uncertain. A sole supported representation requires at leas
 three exact position/title agreements before program evidence selects its Album ID.
 Fetched programs remain in the owned worker cache for immediate enrichment.
 
-Equally supported representations with matching Track associations remain
-`AlbumEquivalent`: the diagnostic shows Album/Track support without arbitrarily
-persisting an Album ID. Common song evidence remains visible; differing song IDs
-remain unresolved. These associations are ephemeral until a provider Album identity
-is established. No exact edition is inferred. MusicBrainz currently leaves this
-additive capability disabled, preserving its existing request bounds. See the
-[live candidate audit](spotify-album-candidates-audit.md).
+Application Album certainty ≠ provider Album-object certainty ≠ provider Track
+certainty. Surviving representations are compared independently, without applying
+cross-object template ranking to discard an inconvenient Track ID. `AlbumEquivalent`
+can contain individually agreed Track occurrences even when another Track is weak or
+unresolved. Every surviving object must supply the same occurrence for that Track;
+structurally rejected objects do not participate. Different IDs remain unresolved.
+No complete local Album or `TrustedComplete` requirement is introduced.
+
+Primary Artist identity ≠ display Artist credit ≠ provider Artist-credit representation.
+Bounded Spotify Track search uses the canonical Artist from the first ordered Track
+credit, or a single structured Album Artist when Track credits are absent. It never
+splits display text on `feat.` or rewrites stored credits. Returned candidates retain
+all structured Artists for validation. Automatic acceptance requires equivalent
+credits and a unique complete-page candidate with matching title/Album context and
+no supplied duration/position contradiction; unresolved plausible alternatives veto
+automatic selection.
+
+Album-program correlation separately compares structured Artist identities/names,
+ignoring their display join phrases. Omitted contributors are incomplete evidence;
+unresolved additional contributors can support exact title/position human-program
+correlation without establishing occurrence IDs. Contradictory primary performers
+or known identities still reject. A trailing featured-title annotation is removed
+only in comparison, when fully corroborated by that provider's additional Artist
+list. Missing duration is unknown. Different Spotify Track IDs can describe two
+plausible human-Album programs and remain unresolved. No automatic per-Track sweep
+is added. See the [live structured-credit audit](spotify-credit-matching-audit.md).
+
+`Store::complete_album_match_for` revalidates the application Track snapshot inside
+its short transaction, then stores agreed occurrences in the existing
+`track_external_identity` table. It writes neither provider Album identity, Recording
+identity, nor exact-edition identity. Manual choices and existing accepted identities
+are not overwritten. The unique-Album path retains `provider_track_association`.
+`provider_track_associations` also reconstructs independent identities for presentation;
+`track_provider_occurrences` and the playback resolver already read these identities
+without any Album join or catalog client. No migration is needed.
+
+Eligibility and program snapshots use effective metadata for the present application
+Tracks, whether imported from files or a catalog. In the diagnostic host, catalog Add
+schedules a separate Spotify `AlbumMatcher` when credentials are configured, even in
+MusicBrainz mode. This is a playback-association enrichment job, not a change to the
+metadata-provider fallback chain. It shares the existing bounded candidate/program
+machinery, cooldown behavior, and asynchronous completion boundary; `--no-auto-match`
+disables it. It never runs from playback polling, changes OAuth, or starts audio.
+No automatic per-Track fallback search was added: it cannot settle already-known
+conflicting Album-program IDs by choosing a ranked result.
+
+MusicBrainz leaves the additive candidate-program capability disabled, preserving
+its existing request bounds. See the [Demon Days audit](spotify-demon-days-audit.md)
+and [earlier live candidate audit](spotify-album-candidates-audit.md).
 
 `adapters/spotify` is the second concrete catalog adapter. MusicBrainz remains the
 single-provider default; an explicit ordered chain enables serial fallback.

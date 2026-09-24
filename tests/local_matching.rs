@@ -867,7 +867,7 @@ mod external {
             .album_id;
         let (mut matcher, results, calls) = worker(vec![Ok(page(&["group"]))], None);
         f.db()
-            .execute("UPDATE file_metadata_observation SET track_title=NULL", [])
+            .execute_batch("UPDATE file_metadata_observation SET track_title=NULL; UPDATE effective_track_metadata SET title='';")
             .unwrap();
         assert_eq!(
             matcher.match_album(&f.library, &id).unwrap(),
@@ -875,10 +875,7 @@ mod external {
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         f.db()
-            .execute(
-                "UPDATE file_metadata_observation SET track_title='Song 1'",
-                [],
-            )
+            .execute("UPDATE effective_track_metadata SET title='Song 1'", [])
             .unwrap();
         matcher.match_album(&f.library, &id).unwrap();
         let reply = results.recv_timeout(Duration::from_secs(5)).unwrap();

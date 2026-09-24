@@ -84,6 +84,15 @@ impl Store {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        // Snapshot before Artist canonicalization adds independently resolved identities.
+        let candidate_tracks = if matches!(reply.outcome, MatchOutcome::AlbumEquivalent { .. }) {
+            Some(crate::album_program::local_tracks(
+                &tx,
+                &reply.input.album_id,
+            )?)
+        } else {
+            None
+        };
         let mut canonical = reply.input.artist_id.clone();
         if let Some(identity) = &reply.artist {
             if identity.provider != scope.provider
@@ -133,6 +142,37 @@ impl Store {
                     }
                     tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING", params![reply.input.album_id.as_ref(), identity.provider, identity.kind, identity.external_id])?;
                     reply.outcome
+                }
+                MatchOutcome::AlbumEquivalent { .. } => {
+                    let MatchOutcome::AlbumEquivalent {
+                        candidates,
+                        mut tracks,
+                    } = reply.outcome
+                    else {
+                        unreachable!()
+                    };
+                    if reply.artist.is_none()
+                        || candidates.is_empty()
+                        || candidates.iter().any(|c| {
+                            c.identity.provider != scope.provider
+                                || c.identity.kind != scope.album_kind
+                                || c.identity.external_id.is_empty()
+                        })
+                    {
+                        return Err(Error::Invalid("invalid candidate Album context".into()));
+                    }
+                    let (current, conflicts) = candidate_tracks.unwrap();
+                    if current != tracks.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>() {
+                        return Ok(MatchOutcome::Skipped);
+                    }
+                    crate::album_program::persist_agreed_occurrences(
+                        &tx,
+                        &reply.input.album_id,
+                        &scope.provider,
+                        &conflicts,
+                        &mut tracks,
+                    )?;
+                    MatchOutcome::AlbumEquivalent { candidates, tracks }
                 }
                 _ => reply.outcome,
             },
@@ -1758,7 +1798,7 @@ fn prepare_album_match(
         )));
     }
     let known_artist = known.pop();
-    let mut query = db.prepare("SELECT m.track_title FROM release r JOIN track t ON t.release_id=r.id JOIN track_source ts ON ts.track_id=t.id JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id=?1")?;
+    let mut query = db.prepare("SELECT e.title FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1")?;
     let mut titles = query.query_map([id.as_ref()], |r| r.get::<_, Option<String>>(0))?;
     let mut usable = false;
     for title in &mut titles {

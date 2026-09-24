@@ -48,6 +48,7 @@ fn candidate() -> Candidate {
         identity: id("song-provider", "song", "opaque-song"),
         title: "Song".into(),
         artist: "Artist".into(),
+        artists: vec![],
         album: "Other release of Album".into(),
         date: "2001".into(),
         duration_ms: 200000,
@@ -269,5 +270,132 @@ fn stale_metadata_and_existing_provider_associations_are_not_overwritten() {
             .track_provider_occurrences(track, "song-provider")
             .unwrap(),
         vec![id("song-provider", "song", "existing")]
+    );
+}
+
+#[test]
+fn structured_primary_search_and_conservative_featured_acceptance_preserve_display() {
+    use music_library::{
+        catalog::Page,
+        edition::ArtistEvidence,
+        song_resolution::{Assessment, assess},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut lib = Library::open(&path).unwrap();
+    let mut r = release();
+    r.media[0].tracks[0].credits[0].join_phrase = " feat. ".into();
+    r.media[0].tracks[0].credits.push(Credit {
+        identity: Some(id("musicbrainz", "artist", "guest")),
+        name: "Guest".into(),
+        join_phrase: String::new(),
+    });
+    let imported = lib.add_catalog_release(&r).unwrap();
+    let track = &imported.track_ids[0];
+    let before = lib.edition_evidence(&imported.release_id).unwrap();
+    let input = lib.song_resolution_input(track).unwrap();
+    assert_eq!(input.artist, "Artist feat. Guest");
+    assert_eq!(input.search_artist(), "Artist");
+    let mut c = candidate();
+    c.artist = "Artist, Guest".into();
+    c.album = input.album.clone();
+    c.artists = ["Artist", "Guest"]
+        .into_iter()
+        .map(|name| ArtistEvidence {
+            name: name.into(),
+            ..Default::default()
+        })
+        .collect();
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![c.clone()],
+                next_offset: None
+            }
+        ),
+        Assessment::Unique(0)
+    );
+    let mut unrelated = c.clone();
+    unrelated.artists[1].name = "Unrelated".into();
+    unrelated.artist = "Artist, Unrelated".into();
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![unrelated.clone()],
+                next_offset: None
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![c.clone(), unrelated],
+                next_offset: None
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+    let mut wrong = c.clone();
+    wrong.artists[0].name = "Wrong primary".into();
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![wrong],
+                next_offset: None
+            }
+        ),
+        Assessment::NoMatch
+    );
+    let mut omitted = c.clone();
+    omitted.artists.pop();
+    omitted.artist = "Artist".into();
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![omitted],
+                next_offset: None
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+    assert_eq!(input, lib.song_resolution_input(track).unwrap());
+    let accepted = lib
+        .confirm_song_resolution(&Selection::new(input, vec![c]), 0)
+        .unwrap();
+    drop(lib);
+    let lib = Library::open(&path).unwrap();
+    assert_eq!(
+        lib.song_resolution_input(track).unwrap().artist,
+        "Artist feat. Guest"
+    );
+    assert_eq!(
+        lib.edition_evidence(&imported.release_id).unwrap().tracks[0]
+            .evidence
+            .artists,
+        before.tracks[0].evidence.artists
+    );
+    assert_eq!(
+        lib.track_provider_occurrences(track, "song-provider")
+            .unwrap(),
+        vec![accepted.clone()]
+    );
+    assert_eq!(
+        lib.playback_route(
+            track,
+            &music_library::playback_resolver::RemoteCapability {
+                provider: "song-provider",
+                unavailable: None,
+                catalog_available: false,
+                accepts: |_| true
+            }
+        )
+        .unwrap(),
+        music_library::playback_resolver::Route::Remote(accepted)
     );
 }

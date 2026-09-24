@@ -5,6 +5,7 @@ mod playback_route;
 mod sample;
 mod session;
 use music_library_spotify::playback_completion as spotify_completion;
+mod spotify_enrichment;
 mod spotify_playback;
 mod spotify_resolution;
 
@@ -23,6 +24,7 @@ struct Bridge {
     playback_generation: u64,
     route_message: String,
     resolver_dialog_requested: qt_signal!(),
+    spotify_album_matcher: Option<music_library::album_matching::AlbumMatcher>,
     spotify_resolution_worker: Option<spotify_resolution::Worker>,
     spotify_resolution_generation: u64,
     spotify_resolution_selection: Option<music_library::song_resolution::Selection>,
@@ -296,6 +298,7 @@ struct Bridge {
     ),
     spotify: bool,
     catalog_providers: Vec<String>,
+    auto_match: bool,
     stored_programs: std::collections::HashMap<
         music_library::domain::AlbumId,
         music_library::album_program::Outcome,
@@ -621,6 +624,7 @@ impl Bridge {
             playback_generation: 0,
             route_message: String::new(),
             resolver_dialog_requested: Default::default(),
+            spotify_album_matcher: None,
             spotify_resolution_worker: None,
             spotify_resolution_generation: 0,
             spotify_resolution_selection: None,
@@ -654,6 +658,7 @@ impl Bridge {
             manual_associations: Default::default(),
             spotify: false,
             catalog_providers: vec!["musicbrainz".into()],
+            auto_match: true,
             stored_programs: Default::default(),
             matching_provider: Default::default(),
             retry_matching: Default::default(),
@@ -1339,6 +1344,7 @@ impl Bridge {
             Ok(catalog::Reply::Add(release)) => {
                 match self.session.library.add_catalog_release(&release) {
                     Ok(imported) => {
+                        self.enrich_catalog_spotify(&imported);
                         let refresh =
                             music_library::catalog::Timing::new("post_import.search_refresh");
                         self.session.search(release.album.title);
@@ -1936,6 +1942,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pin before exposing to QML, and keep the QObject alive until QML destruction.
     let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
     bridge.pinned().borrow_mut().spotify = spotify;
+    bridge.pinned().borrow_mut().auto_match = auto_match;
     bridge.pinned().borrow_mut().catalog_providers = providers;
     let mut engine = QmlEngine::new();
     #[cfg(feature = "gstreamer")]
@@ -1978,6 +1985,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(())
     })();
     bridge.pinned().borrow_mut().matcher.take();
+    bridge.pinned().borrow_mut().spotify_album_matcher.take();
     bridge.pinned().borrow_mut().catalog.worker.take();
     bridge.pinned().borrow_mut().spotify_playback_worker.take();
     bridge
@@ -2459,7 +2467,11 @@ mod event_delivery_tests {
                 Ok(Page {
                     next_offset: None,
                     items: vec![AlbumCandidate {
-                        credits: vec![],
+                        credits: vec![music_library::catalog::Credit {
+                            identity: None,
+                            name: "Artist".into(),
+                            join_phrase: String::new(),
+                        }],
                         identity: id("group"),
                         title: "Catalog Fixture".into(),
                         artist: "Artist".into(),
@@ -2513,7 +2525,11 @@ mod event_delivery_tests {
                         identity: id("group"),
                         title: "Catalog Fixture".into(),
                         date: "2001".into(),
-                        credits: vec![],
+                        credits: vec![music_library::catalog::Credit {
+                            identity: None,
+                            name: "Artist".into(),
+                            join_phrase: String::new(),
+                        }],
                     },
                     identity: id("release"),
                     identities: vec![],
@@ -2534,6 +2550,20 @@ mod event_delivery_tests {
         }
         let (gate, recv) = mpsc::channel();
         let calls = Arc::new(AtomicUsize::new(0));
+        let (_, enrichment_recv) = mpsc::channel();
+        bridge.pinned().borrow_mut().spotify_album_matcher = Some(
+            music_library::album_matching::AlbumMatcher::for_provider(
+                Provider {
+                    gate: enrichment_recv,
+                    calls: Arc::new(AtomicUsize::new(0)),
+                },
+                music_library_spotify::matching_scope(),
+                |_| {},
+                |_| {},
+                |_| {},
+            )
+            .unwrap(),
+        );
         let deliver = catalog_callback(qmetaobject::QPointer::from(bridge.pinned().borrow()));
         let quit = engine.clone();
         let done = qmetaobject::queued_callback(move |()| quit.borrow().quit());
@@ -2592,6 +2622,18 @@ mod event_delivery_tests {
         invoke("add_album", "0");
         engine.borrow().exec();
         assert!(snapshot().contains("Added Album: 1 Tracks"));
+        // A MusicBrainz-mode catalog add schedules Spotify separately; no Play/poll.
+        assert!(!bridge.pinned().borrow().spotify);
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .spotify_album_matcher
+                .as_ref()
+                .unwrap()
+                .pending_count(),
+            1
+        );
         assert_eq!(
             bridge.pinned().borrow().session.playback.state(),
             &transport_before_add
@@ -2641,6 +2683,13 @@ mod event_delivery_tests {
         let imported = bridge.pinned().borrow().session.rows[0].track_id.clone();
         assert_eq!(first_import, imported);
         assert_eq!(calls.load(Ordering::SeqCst), 4); // Re-add reused the detail, too.
+        bridge.pinned().borrow_mut().spotify_album_matcher.take();
+        bridge.pinned().borrow_mut().auto_match = false;
+        // Re-add under disabled policy must not construct a Spotify client/worker.
+        invoke("add_album", "0");
+        engine.borrow().exec();
+        assert!(bridge.pinned().borrow().spotify_album_matcher.is_none());
+        bridge.pinned().borrow_mut().auto_match = true;
         invoke("search", "failure");
         gate.send(()).unwrap();
         engine.borrow().exec();
@@ -3151,6 +3200,7 @@ mod event_delivery_tests {
                     },
                     title: "Provider Song".into(),
                     artist: "Artist".into(),
+                    artists: vec![],
                     album: "Album variant".into(),
                     date: "2020".into(),
                     duration_ms: 200000,
@@ -3249,7 +3299,16 @@ mod event_delivery_tests {
             let (album, tracks) = state
                 .matching_tracks
                 .iter()
-                .find(|(_, rows)| !rows.is_empty())
+                .find(|(album, rows)| {
+                    !rows.is_empty()
+                        && state
+                            .session
+                            .library
+                            .list_album_external_identities(album)
+                            .unwrap()
+                            .iter()
+                            .any(|id| id.provider == "musicbrainz" && id.kind == "release_group")
+                })
                 .unwrap();
             let album = album.clone();
             let tracks = tracks.clone();
@@ -3258,8 +3317,10 @@ mod event_delivery_tests {
                 .session
                 .library
                 .list_album_external_identities(&album)
-                .unwrap()[0]
-                .clone();
+                .unwrap()
+                .into_iter()
+                .find(|id| id.provider == "musicbrainz" && id.kind == "release_group")
+                .unwrap();
             let programs = Programs {
                 album: identity,
                 programs: vec![Program {

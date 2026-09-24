@@ -1,5 +1,9 @@
 # Spotify Album candidate audit
 
+Follow-up: the [Demon Days audit](spotify-demon-days-audit.md) documents independent
+durable Track identities and supersedes the ephemeral-only persistence behavior
+described in this historical audit.
+
 Live Web API diagnostics, 2026-09-14, configured market US. All requests returned
 200; no Development Mode access restriction was encountered. These are bounded
 search observations, not proof of worldwide catalog presence/absence. Diagnostic

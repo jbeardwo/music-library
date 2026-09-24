@@ -26,7 +26,7 @@ pub enum MatchOutcome {
     ArtistAmbiguous(Vec<ArtistCandidate>),
     AlbumAmbiguous(Vec<ArtistAlbumCandidate>),
     /// Human Album/Track support without selecting an arbitrary catalog object.
-    /// No Album or Track external identity is persisted from this ephemeral state.
+    /// Agreed Track occurrences persist independently; no Album ID is selected.
     AlbumEquivalent {
         candidates: Vec<ArtistAlbumCandidate>,
         tracks: Vec<(

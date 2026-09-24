@@ -10,8 +10,13 @@ use rusqlite::params;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
     pub track_id: TrackId,
+    /// Canonical first Track Artist, or the single Album Artist when no Track
+    /// credit is available. No punctuation parsing or display rewrite.
+    pub primary_artist: Option<crate::edition::ArtistEvidence>,
     pub title: String,
     pub artist: String,
+    /// Ordered structured credits, separate from the unchanged display string.
+    pub artists: Vec<crate::edition::ArtistEvidence>,
     pub album: String,
     pub duration_ms: Option<u64>,
     pub disc: Option<u32>,
@@ -23,6 +28,8 @@ pub struct Candidate {
     pub identity: ExternalIdentity,
     pub title: String,
     pub artist: String,
+    /// Ordered structured credits, separate from the unchanged display string.
+    pub artists: Vec<crate::edition::ArtistEvidence>,
     pub album: String,
     pub date: String,
     pub duration_ms: u64,
@@ -50,21 +57,53 @@ impl Selection {
         &self.input
     }
 }
+impl Input {
+    pub fn search_artist(&self) -> &str {
+        self.primary_artist
+            .as_ref()
+            .filter(|a| !a.name.trim().is_empty())
+            .map_or(&self.artist, |a| &a.name)
+    }
+}
 fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<Input> {
-    let (mut input, release) = db.query_row(
-            "SELECT e.title,e.artist_names,e.release_title,t.release_id,e.duration_ms,t.disc_number,t.track_number FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
-            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
-    if input.artist.trim().is_empty() {
-        let mut statement = db.prepare("SELECT COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,'') FROM release_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.release_id=?1 ORDER BY c.position")?;
-        let credits = statement.query_map([release], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-        })?;
-        for credit in credits {
-            let (name, join) = credit?;
-            input.artist.push_str(&name);
-            input.artist.push_str(&join);
+    let (mut input, album) = db.query_row(
+            "SELECT e.title,e.artist_names,e.release_title,r.album_id,e.duration_ms,t.disc_number,t.track_number FROM track t JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
+            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+    let mut credits = crate::artist_credit::load(db, "track", track.as_ref())?;
+    let has_track_credits = !credits.is_empty();
+    if credits.is_empty() {
+        let album_credits = crate::artist_credit::load(db, "album", &album)?;
+        if let [primary] = album_credits.as_slice() {
+            let mut evidence = primary.evidence.clone();
+            evidence.name = primary.canonical_name.clone();
+            input.primary_artist = Some(evidence);
+        }
+        let display = album_credits
+            .iter()
+            .map(|a| format!("{}{}", a.evidence.name, a.evidence.join_phrase))
+            .collect::<String>();
+        if input.artist.trim().is_empty() {
+            input.artist = display;
+            credits = album_credits;
+        } else if crate::matching::normalize(&input.artist) == crate::matching::normalize(&display)
+        {
+            credits = album_credits;
         }
     }
+    if let Some(primary) = credits.first()
+        && (has_track_credits || credits.len() == 1)
+    {
+        let mut evidence = primary.evidence.clone();
+        evidence.name = primary.canonical_name.clone();
+        input.primary_artist = Some(evidence);
+    }
+    input.artists = credits
+        .into_iter()
+        .map(|mut a| {
+            a.evidence.name = a.canonical_name;
+            a.evidence
+        })
+        .collect();
     Ok(input)
 }
 
@@ -75,53 +114,78 @@ pub enum Assessment {
     NoMatch,
 }
 
-/// Deliberately stricter than the known-Album matcher: complete bounded page,
-/// exact conservative Artist/title/Album strings, and no supplied duration or
-/// position contradiction. No ranking, fuzzy edits, or version-word stripping.
-pub fn assess(input: &Input, page: &Page<Candidate>) -> Assessment {
-    fn normalized(s: &str) -> String {
-        s.split_whitespace()
-            .map(str::to_lowercase)
-            .collect::<Vec<_>>()
-            .join(" ")
+fn primary_compatible(input: &Input, c: &Candidate) -> bool {
+    match (&input.primary_artist, c.artists.first()) {
+        (Some(a), Some(b)) => crate::artist_credit::same_artist(a, b),
+        _ => crate::matching::normalize(&input.artist) == crate::matching::normalize(&c.artist),
     }
-    let exact =
-        |left: &str, right: &str| !left.trim().is_empty() && normalized(left) == normalized(right);
-    let eligible: Vec<_> = page
+}
+fn credits_compatible(input: &Input, c: &Candidate) -> bool {
+    if !primary_compatible(input, c) {
+        return false;
+    }
+    if input.artists.is_empty() || c.artists.is_empty() {
+        return !input.artist.trim().is_empty()
+            && crate::matching::normalize(&input.artist) == crate::matching::normalize(&c.artist);
+    }
+    crate::artist_credit::compare(&input.artists, &c.artists)
+        == crate::artist_credit::Compatibility::Equivalent
+}
+fn exact(left: &str, right: &str) -> bool {
+    !left.trim().is_empty() && crate::matching::normalize(left) == crate::matching::normalize(right)
+}
+fn same_title(input: &Input, c: &Candidate) -> bool {
+    exact(
+        crate::artist_credit::musical_title(&input.title, &input.artists),
+        crate::artist_credit::musical_title(&c.title, &c.artists),
+    )
+}
+fn context_matches(input: &Input, c: &Candidate) -> bool {
+    same_title(input, c)
+        && primary_compatible(input, c)
+        && exact(&input.album, &c.album)
+        && !input
+            .duration_ms
+            .is_some_and(|d| d > 0 && c.duration_ms > 0 && d.abs_diff(c.duration_ms) > 3_000)
+        && !input
+            .disc
+            .is_some_and(|d| d > 0 && c.disc > 0 && d != c.disc)
+        && !input
+            .number
+            .is_some_and(|n| n > 0 && c.number > 0 && n != c.number)
+}
+/// A complete bounded page, exact musical title/Album context, equivalent
+/// structured credits and no supplied duration/position contradiction. Unknown
+/// contributor relationships in another plausible candidate block auto-acceptance.
+/// No ranking, fuzzy Artist names or unverified title suffix stripping.
+pub fn assess(input: &Input, page: &Page<Candidate>) -> Assessment {
+    let plausible: Vec<_> = page
         .items
         .iter()
         .enumerate()
         .filter(|(_, c)| {
-            exact(&input.title, &c.title)
-                && exact(&input.artist, &c.artist)
-                && exact(&input.album, &c.album)
-                && !input.duration_ms.is_some_and(|d| {
-                    d > 0 && c.duration_ms > 0 && d.abs_diff(c.duration_ms) > 3_000
-                })
-                && !input
-                    .disc
-                    .is_some_and(|d| d > 0 && c.disc > 0 && d != c.disc)
-                && !input
-                    .number
-                    .is_some_and(|n| n > 0 && c.number > 0 && n != c.number)
+            context_matches(input, c)
+                && crate::artist_credit::compare(&input.artists, &c.artists)
+                    != crate::artist_credit::Compatibility::Contradictory
         })
-        .map(|(index, _)| index)
         .collect();
-    if let [index] = eligible.as_slice()
+    if let [(index, candidate)] = plausible.as_slice()
         && page.next_offset.is_none()
+        && credits_compatible(input, candidate)
     {
         return Assessment::Unique(*index);
     }
-    if !page
+    if page
         .items
         .iter()
-        .any(|c| exact(&input.title, &c.title) && exact(&input.artist, &c.artist))
+        .any(|c| same_title(input, c) && primary_compatible(input, c))
     {
-        Assessment::NoMatch
-    } else {
         Assessment::NeedsSelection
+    } else {
+        Assessment::NoMatch
     }
 }
+
 impl Store {
     pub fn song_resolution_input(&self, track: &TrackId) -> Result<Input> {
         load_input(&self.connection, track)

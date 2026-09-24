@@ -153,6 +153,9 @@ pub struct CandidateCheck {
     pub identity_conflict: bool,
     pub duration_mismatch: bool,
     pub considered: bool,
+    /// Human-program support need not establish a provider occurrence when
+    /// additional contributor identities remain unreconciled.
+    pub occurrence_supported: bool,
     pub reason: &'static str,
 }
 
@@ -163,8 +166,12 @@ pub fn inspect_candidate(
     index: usize,
 ) -> CandidateCheck {
     let l = &local.evidence;
-    let name = comparison_title(l.title.as_deref().unwrap_or(""));
-    let candidate = comparison_title(c.title.as_deref().unwrap_or(""));
+    let local_title =
+        crate::artist_credit::musical_title(l.title.as_deref().unwrap_or(""), &l.artists);
+    let provider_title =
+        crate::artist_credit::musical_title(c.title.as_deref().unwrap_or(""), &c.artists);
+    let name = comparison_title(local_title);
+    let candidate = comparison_title(provider_title);
     // Preserve the previous punctuation-only comparison as well as conjunction
     // equivalence (e.g. the established R & R / R+R comparison).
     let punctuation = |s: &str| {
@@ -177,9 +184,7 @@ pub fn inspect_candidate(
             .join(" ")
     };
     let exact = !name.is_empty()
-        && (name == candidate
-            || punctuation(l.title.as_deref().unwrap_or(""))
-                == punctuation(c.title.as_deref().unwrap_or("")));
+        && (name == candidate || punctuation(local_title) == punctuation(provider_title));
     let trusted = shared(&l.recording.identities, &c.recording.identities);
     let position = l.number.is_some()
         && (l.number == c.number && l.disc.unwrap_or(1) == c.disc.unwrap_or(1)
@@ -194,6 +199,7 @@ pub fn inspect_candidate(
             .zip(c.duration_ms)
             .is_some_and(|(a, b)| a.abs_diff(b) > DURATION_TOLERANCE_MS),
         considered: false,
+        occurrence_supported: true,
         reason: "title/semantic qualifier disagreement",
     };
     if !trusted
@@ -202,26 +208,36 @@ pub fn inspect_candidate(
     {
         return check;
     }
-    let a: Vec<_> = l
-        .artists
-        .iter()
-        .flat_map(|a| a.identities.clone())
-        .collect();
-    let b: Vec<_> = c
-        .artists
-        .iter()
-        .flat_map(|a| a.identities.clone())
-        .collect();
-    if !trusted
-        && (conflict(&a, &b)
-            || !shared(&a, &b)
-                && !a.iter().any(|x| b.iter().any(|y| x.provider == y.provider))
-                && !l.artists.is_empty()
-                && !c.artists.is_empty()
-                && artist_name(&l.artists) != artist_name(&c.artists))
+    use crate::artist_credit::Compatibility;
+    let mut credit = crate::artist_credit::compare(&l.artists, &c.artists);
+    // Preserve the pre-existing literal-credit comparison for unstructured tags.
+    if credit == Compatibility::Contradictory && artist_name(&l.artists) == artist_name(&c.artists)
     {
-        check.reason = "Artist disagreement";
+        let a: Vec<_> = l
+            .artists
+            .iter()
+            .flat_map(|a| a.identities.clone())
+            .collect();
+        let b: Vec<_> = c
+            .artists
+            .iter()
+            .flat_map(|a| a.identities.clone())
+            .collect();
+        if !conflict(&a, &b) {
+            credit = Compatibility::Equivalent;
+        }
+    }
+    if !trusted && credit == Compatibility::Contradictory {
+        check.reason = "Artist identity/primary performer contradiction";
         return check;
+    }
+    if !trusted && credit == Compatibility::DifferentAdditional {
+        check.occurrence_supported = false;
+        if !exact || !position {
+            check.reason =
+                "unresolved additional Artists need exact title and position for program support";
+            return check;
+        }
     }
     if !trusted && check.duration_mismatch && !check.identity_conflict && !exact {
         check.reason = "duration outside 3000 ms tolerance for near-title association";
@@ -234,8 +250,15 @@ pub fn inspect_candidate(
         "trusted Recording identity (duration is diagnostic)"
     } else if check.duration_mismatch {
         "exact normalized title; duration diagnostic if unique in program"
+    } else if !check.occurrence_supported {
+        "exact title/position and primary Artist; additional Artists unresolved"
+    } else if exact
+        && (local_title != l.title.as_deref().unwrap_or("")
+            || provider_title != c.title.as_deref().unwrap_or(""))
+    {
+        "exact musical title; featured suffix verified against structured credits"
     } else if exact {
-        "exact normalized title"
+        "exact normalized title and compatible Artist evidence"
     } else {
         "positional one-edit title tolerance"
     };
@@ -380,6 +403,7 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
     }
     let mut mappings = vec![];
     let mut duration_blocks_recording = false;
+    let mut occurrence_supported = true;
     for program in &programs.programs {
         let unique_exact = program
             .tracks
@@ -393,6 +417,7 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
             return TrackOutcome::Ambiguous;
         }
         for (i, c) in eligible {
+            occurrence_supported &= c.occurrence_supported;
             duration_blocks_recording |=
                 c.duration_mismatch && !c.trusted_identity && !(unique_exact && c.exact_title);
             mappings.push(&program.tracks[i]);
@@ -431,7 +456,7 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
     let occurrences: Vec<_> = first
         .identities
         .iter()
-        .filter(|i| mappings.iter().all(|c| c.identities.contains(i)))
+        .filter(|i| occurrence_supported && mappings.iter().all(|c| c.identities.contains(i)))
         .cloned()
         .collect();
     if identities.is_empty()
@@ -450,7 +475,7 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
         // A provider without Recording identity has no Recording certainty to
         // withhold. The Track association above has already passed its checks.
         RecordingStatus::NotProvided
-    } else if recording_disagreement {
+    } else if recording_disagreement || !occurrence_supported {
         RecordingStatus::Ambiguous
     } else if duration_blocks_recording {
         RecordingStatus::DurationMismatch
@@ -511,12 +536,12 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
     }
 }
 
-fn local_tracks(
+pub(crate) fn local_tracks(
     db: &Connection,
     album: &AlbumId,
 ) -> Result<(Vec<LocalTrackEvidence>, Vec<TrackId>)> {
     let mut artist_conflicts = vec![];
-    let mut tracks=db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.artist_names FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 AND EXISTS(SELECT 1 FROM track_source ts JOIN local_file_observation l ON l.source_id=ts.source_id WHERE ts.track_id=t.id) ORDER BY r.id,t.disc_number,t.track_number,t.id")?
+    let mut tracks=db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.artist_names FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 ORDER BY r.id,t.disc_number,t.track_number,t.id")?
         .query_map([album.as_ref()],|r|Ok((LocalTrackEvidence{track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence{disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),..Default::default()}},r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let names: Vec<_> = tracks.iter().map(|t| t.1.clone()).collect();
     let mut tracks: Vec<_> = tracks.drain(..).map(|t| t.0).collect();
@@ -594,6 +619,58 @@ fn local_tracks(
         }
     }
     Ok((tracks, artist_conflicts))
+}
+/// Independent occurrence identities need no provider Album row. Existing/manual
+/// choices win; no Recording or edition identity is written on this path.
+pub(crate) fn persist_agreed_occurrences(
+    db: &Connection,
+    album: &AlbumId,
+    provider: &str,
+    conflicts: &[TrackId],
+    tracks: &mut [(LocalTrackEvidence, TrackOutcome)],
+) -> Result<()> {
+    let manual = crate::manual_track::load(db, album)?;
+    let existing: std::collections::HashSet<String> = db.prepare(
+        "SELECT t.id FROM release r CROSS JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 AND (EXISTS(SELECT 1 FROM track_external_identity i WHERE i.track_id=t.id AND i.provider=?2) OR EXISTS(SELECT 1 FROM provider_track_association a WHERE a.track_id=t.id AND a.album_provider=?2))"
+    )?.query_map(params![album.as_ref(),provider], |r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+    let mut insert = db.prepare("INSERT INTO track_external_identity(track_id,provider,kind,external_id) VALUES(?1,?2,?3,?4)")?;
+    for (track, outcome) in tracks {
+        if let Some(m) = manual
+            .iter()
+            .find(|m| m.track_id == track.track_id && m.album.provider == provider)
+        {
+            *outcome = TrackOutcome::ManuallyMatched(m.matched());
+            continue;
+        }
+        if conflicts.contains(&track.track_id) {
+            *outcome = TrackOutcome::NoConfidentMatch;
+            continue;
+        }
+        let (TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m)) = outcome else {
+            continue;
+        };
+        // One provider occurrence, unanimously supported by the surviving programs.
+        let [identity] = m.occurrences.as_slice() else {
+            continue;
+        };
+        if identity.provider != provider
+            || identity.kind.is_empty()
+            || identity.external_id.is_empty()
+        {
+            return Err(crate::storage::Error::Invalid(
+                "invalid agreed Track identity".into(),
+            ));
+        }
+        if !existing.contains(track.track_id.as_ref()) {
+            insert.execute(params![
+                track.track_id.as_ref(),
+                identity.provider,
+                identity.kind,
+                identity.external_id
+            ])?;
+        }
+    }
+    Ok(())
 }
 impl Store {
     pub fn track_provider_occurrences(
@@ -776,9 +853,50 @@ impl Store {
         album: &AlbumId,
         provider: &str,
     ) -> Result<Vec<(TrackId, Match)>> {
-        self.connection.prepare("SELECT a.track_id,a.match_json FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN provider_track_association a ON a.track_id=t.id AND a.album_provider=?2 JOIN album_external_identity i ON i.album_id=r.album_id AND i.provider=a.album_provider AND i.kind=a.album_kind AND i.external_id=a.album_external_id WHERE r.album_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?.query_map(params![album.as_ref(),provider], |r| Ok((TrackId(r.get(0)?),r.get::<_,String>(1)?)))?.map(|row| {
+        let mut rows: Vec<(TrackId, Match)> = self.connection.prepare("SELECT a.track_id,a.match_json FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN provider_track_association a ON a.track_id=t.id AND a.album_provider=?2 JOIN album_external_identity i ON i.album_id=r.album_id AND i.provider=a.album_provider AND i.kind=a.album_kind AND i.external_id=a.album_external_id WHERE r.album_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?.query_map(params![album.as_ref(),provider], |r| Ok((TrackId(r.get(0)?),r.get::<_,String>(1)?)))?.map(|row| {
             let (id,json) = row?;
             Ok((id,serde_json::from_str(&json).map_err(|e| crate::storage::Error::Invalid(e.to_string()))?))
-        }).collect()
+        }).collect::<Result<_>>()?;
+        let mut direct = self.connection.prepare("SELECT t.id,e.title,i.kind,i.external_id FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id JOIN track_external_identity i ON i.track_id=t.id AND i.provider=?2 WHERE r.album_id=?1 ORDER BY t.disc_number,t.track_number,t.id,i.kind,i.external_id")?;
+        let mut accepted = Vec::<(TrackId, Match)>::new();
+        for row in direct.query_map(params![album.as_ref(), provider], |r| {
+            Ok((
+                TrackId(r.get(0)?),
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })? {
+            let (track, title, kind, external_id) = row?;
+            let identity = ExternalIdentity {
+                provider: provider.into(),
+                kind,
+                external_id,
+            };
+            if let Some((last, m)) = accepted.last_mut()
+                && *last == track
+            {
+                m.occurrences.push(identity);
+            } else {
+                accepted.push((
+                    track,
+                    Match {
+                        title,
+                        recording: RecordingEvidence::default(),
+                        recording_status: RecordingStatus::NotProvided,
+                        occurrences: vec![identity],
+                        explanation:
+                            "Persisted Track identity; independent of provider Album identity"
+                                .into(),
+                    },
+                ));
+            }
+        }
+        // Independent accepted identities have the same precedence as playback lookup.
+        let accepted_ids: std::collections::HashSet<_> =
+            accepted.iter().map(|(id, _)| id).collect();
+        rows.retain(|(track, _)| !accepted_ids.contains(track));
+        rows.extend(accepted);
+        Ok(rows)
     }
 }

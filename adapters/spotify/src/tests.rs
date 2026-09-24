@@ -39,6 +39,8 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
     assert_eq!(mock.client.request_counts(), (0, 0));
     let input = music_library::song_resolution::Input {
         track_id: music_library::domain::TrackId("application-track".into()),
+        primary_artist: None,
+        artists: vec![],
         title: "Song \"Title\"".into(),
         artist: "Artist".into(),
         album: "Album".into(),
@@ -453,4 +455,68 @@ fn malformed_and_changing_pages_are_errors_not_outages() {
         Err(CatalogError::Other(_))
     ));
     mock.finish();
+}
+
+#[test]
+fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artists() {
+    let item = json!({"id":"1234567890123456789012","name":"Feel Good Inc.","disc_number":1,"track_number":6,"duration_ms":222640,"artists":[{"id":"primary","name":"Gorillaz"},{"id":"guest","name":"De La Soul"}],"album":{"id":"album","name":"Demon Days","artists":[{"id":"primary","name":"Gorillaz"}],"release_date":"2005"}});
+    let mut mock = Mock::new(vec![
+        token(),
+        (
+            200,
+            json!({"tracks":{"items":[item],"total":1,"offset":0,"next":null}}),
+            None,
+        ),
+    ]);
+    let primary = ArtistEvidence {
+        name: "Gorillaz".into(),
+        identities: vec![id("artist", "primary")],
+        join_phrase: " feat. ".into(),
+    };
+    let input = music_library::song_resolution::Input {
+        track_id: music_library::domain::TrackId("application".into()),
+        title: "Feel Good Inc.".into(),
+        artist: "Gorillaz feat. De La Soul".into(),
+        primary_artist: Some(primary.clone()),
+        artists: vec![
+            primary,
+            ArtistEvidence {
+                name: "De La Soul".into(),
+                ..Default::default()
+            },
+        ],
+        album: "Demon Days".into(),
+        duration_ms: None,
+        disc: Some(1),
+        number: Some(6),
+    };
+    let before = input.clone();
+    let found = mock.client.search_songs(&input).unwrap();
+    assert_eq!(input, before);
+    assert_eq!(found.items[0].artists.len(), 2);
+    assert_eq!(
+        found.items[0].artists[1].identities,
+        vec![id("artist", "guest")]
+    );
+    assert_eq!(
+        music_library::song_resolution::assess(&input, &found),
+        music_library::song_resolution::Assessment::Unique(0)
+    );
+    assert_eq!(mock.client.request_counts(), (1, 1));
+    let requests = mock.finish();
+    let request = requests[1]
+        .lines()
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap();
+    let url = Url::parse(&format!("http://mock{request}")).unwrap();
+    let query = url
+        .query_pairs()
+        .find(|(k, _)| k == "q")
+        .unwrap()
+        .1
+        .into_owned();
+    assert_eq!(query, "track:\"Feel Good Inc.\" artist:\"Gorillaz\"");
 }

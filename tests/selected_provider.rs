@@ -452,11 +452,14 @@ fn equivalent_catalog_objects_finish_without_arbitrary_album_identity() {
             .unwrap()
             .is_empty()
     );
-    assert!(
-        lib.provider_track_associations(&album, "song-catalog")
-            .unwrap()
-            .is_empty()
-    );
+    for track in lib.local_album_tracks(&album).unwrap() {
+        assert_eq!(
+            lib.track_provider_occurrences(&track.track_id, "song-catalog")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
     assert_eq!(matcher.pending_count(), 0);
     assert_eq!(calls.lock().unwrap().len(), 4);
 }
@@ -665,5 +668,58 @@ fn occurrence_comparison_and_persistence_timing() {
     println!(
         "3 persisted song associations: restart reconstruction {:?}",
         start.elapsed() / 1000
+    );
+}
+
+#[test]
+fn catalog_only_import_enters_worker_and_persists_agreed_tracks() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut lib = Library::open(temp.path().join("db")).unwrap();
+    let imported = lib
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Album".into(),
+            year: None,
+            artists: vec![ArtistCreditInput {
+                name: "Artist".into(),
+                role: None,
+            }],
+            tracks: [2, 5, 9]
+                .into_iter()
+                .map(|n| CatalogTrackInput {
+                    title: format!("Song {n}"),
+                    artists: vec![],
+                    disc_number: Some(1),
+                    track_number: Some(n),
+                })
+                .collect(),
+        })
+        .unwrap();
+    let album = lib
+        .album_for_release(&imported.release_id)
+        .unwrap()
+        .album_id;
+    let (mut matcher, rx, calls) = worker_with_options(false, true, true);
+    matcher
+        .after_import(&lib, &[imported], AutoMatchPolicy::default())
+        .unwrap();
+    drain(&mut matcher, &rx, &mut lib);
+    assert!(matches!(
+        matcher.outcome(&album),
+        Some(MatchOutcome::AlbumEquivalent { .. })
+    ));
+    assert!(
+        lib.list_album_external_identities(&album)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        lib.provider_track_associations(&album, "song-catalog")
+            .unwrap()
+            .len(),
+        3
+    );
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec!["artist", "album", "program", "program"]
     );
 }

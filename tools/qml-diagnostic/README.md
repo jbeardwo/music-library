@@ -568,3 +568,34 @@ See [setup, exact redirect, restricted token storage and
 manual test](../../adapters/spotify/PLAYBACK.md). Local queue and automatic source
 selection are unchanged. The backend/probe requires only `SPOTIFY_CLIENT_ID` for
 playback OAuth; catalog matching keeps its existing separate credentials.
+
+
+Catalog **Add Album** also queues bounded Spotify Album-program enrichment when
+Spotify catalog credentials are configured, including in `--catalog-provider
+musicbrainz` mode. This uses a separate application Album matcher so the selected
+metadata-provider fallback chain is preserved. `--no-auto-match` disables it.
+Agreed Spotify Track IDs can persist without an accepted Spotify Album ID and are
+reused by playback after restart. No automatic per-Track search fan-out is added.
+See [the Demon Days audit](../../docs/spotify-demon-days-audit.md) for live results,
+remaining credit/title differences and provider-ID disagreement.
+
+The disposable catalog-import diagnostic requires a new path under `/tmp`:
+
+```sh
+MUSIC_LIBRARY_CATALOG_TIMING=1 MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/demon-audit.sqlite \
+  cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml \
+  --example album_resolution_probe -- Gorillaz 'Demon Days' --worker
+```
+
+Omit `--worker` for the detailed forensic candidate/program comparison. Both modes
+use the normal MusicBrainz representative-release importer and preserve source
+metadata. Neither mode accesses the normal library database or starts playback.
+
+The read-only `track_credit_probe` example accepts an existing disposable database
+through `MUSIC_LIBRARY_DIAGNOSTIC_DATABASE`. It runs the existing bounded Spotify
+search for four Demon Days controls, printing effective input, structured primary
+identity, returned Artist lists and conservative assessment, without accepting a
+candidate. Enable `MUSIC_LIBRARY_CATALOG_TIMING=1` to record actual query strings
+and HTTP counts. See [the structured-credit audit](../../docs/spotify-credit-matching-audit.md)
+for before/after results and the distinction between human-Album correlation and
+provider-object certainty.

@@ -518,7 +518,7 @@ impl music_library::song_resolution::SongSearch for Spotify {
         &mut self,
         input: &music_library::song_resolution::Input,
     ) -> Result<Page<music_library::song_resolution::Candidate>, CatalogError> {
-        if input.title.trim().is_empty() || input.artist.trim().is_empty() {
+        if input.title.trim().is_empty() || input.search_artist().trim().is_empty() {
             return Err(CatalogError::Other(
                 "Song resolution needs a Track title and credited Artist".into(),
             ));
@@ -528,8 +528,9 @@ impl music_library::song_resolution::SongSearch for Spotify {
         let query = format!(
             "track:{} artist:{}",
             quoted(&input.title),
-            quoted(&input.artist)
+            quoted(input.search_artist())
         );
+        Timing::event(format_args!("spotify Track query={query:?}"));
         let response: SongSearch = self.get(
             "search",
             &[
@@ -560,6 +561,15 @@ impl music_library::song_resolution::SongSearch for Spotify {
                     identity: id("track", &key),
                     title: s.name,
                     artist: display(&s.artists),
+                    artists: s
+                        .artists
+                        .iter()
+                        .map(|a| ArtistEvidence {
+                            name: a.name.clone(),
+                            identities: vec![id("artist", &a.id)],
+                            join_phrase: String::new(),
+                        })
+                        .collect(),
                     album: entry.album.name,
                     date: entry.album.release_date,
                     duration_ms: s.duration_ms,

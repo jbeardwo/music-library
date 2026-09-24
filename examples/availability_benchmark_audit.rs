@@ -10,6 +10,9 @@ mod album_matching;
 #[path = "../src/album_program.rs"]
 mod album_program;
 #[allow(dead_code)]
+#[path = "../src/artist_credit.rs"]
+mod artist_credit;
+#[allow(dead_code)]
 #[path = "../src/catalog.rs"]
 mod catalog;
 #[allow(dead_code)]

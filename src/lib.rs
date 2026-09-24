@@ -4,6 +4,7 @@ pub mod album_candidates;
 pub mod album_matching;
 pub mod album_program;
 pub mod application;
+pub mod artist_credit;
 pub mod catalog;
 pub mod domain;
 pub mod edition;
