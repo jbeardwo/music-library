@@ -2244,6 +2244,79 @@ mod event_delivery_tests {
     }
 
     #[test]
+    #[ignore = "live catalog Add and Spotify enrichment on a fresh disposable database"]
+    fn live_catalog_add_preferred_spotify() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("fresh.sqlite");
+        let library = music_library::Library::open(&path).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml").replace(
+            "    function ready() {",
+            r#"
+    property bool waitingForSpotify: false
+    Timer { id: deadline; interval: 60000; onTriggered: Qt.quit() }
+    Connections {
+        target: window.bridge
+        function onCatalog_changed() {
+            if (!window.waitingForSpotify && !window.bridge.catalog_snapshot.catalogPending)
+                Qt.quit();
+        }
+        function onSpotify_playback_changed() {
+            if (window.waitingForSpotify && window.bridge.spotify_playback_snapshot.resolutionMessage.indexOf("15/15") >= 0)
+                Qt.quit();
+        }
+    }
+    function auditSearch() {
+        deadline.start();
+        window.bridge.catalog_action("search", 'releasegroup:"Demon Days" AND artist:"Gorillaz"');
+    }
+    Timer { interval: 50; running: window.waitingForSpotify; repeat: true
+        onTriggered: {
+            if (window.bridge.spotify_playback_snapshot.resolutionMessage.indexOf("15/15") >= 0) Qt.quit();
+        }
+    }
+    function auditWait() { waitingForSpotify = true; deadline.restart(); }
+    function ready() {
+"#,
+        );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        engine.invoke_method("auditSearch".into(), &[]);
+        engine.exec();
+        let index = bridge.pinned().borrow().catalog.groups.iter().position(|a|
+            a.title == "Demon Days" && a.artist == "Gorillaz" && a.primary_type == "Album"
+        ).expect("catalog Album");
+        engine.invoke_method("addAlbum".into(), &[(index as u32).into()]);
+        engine.exec();
+        assert!(bridge.pinned().borrow().catalog.status.starts_with("Added Album"));
+        assert!(bridge.pinned().borrow().spotify_album_matcher.is_some(), "Add must schedule Spotify");
+        engine.invoke_method("auditWait".into(), &[]);
+        engine.exec();
+        let rows = bridge.pinned().borrow().session.library.search(&music_library::domain::SearchRequest {
+            limit: 100, ..Default::default()
+        }).unwrap();
+        assert_eq!(rows.len(), 15);
+        println!("LIVE catalog Add: {}", bridge.pinned().borrow().spotify_resolution_message);
+        bridge.pinned().borrow_mut().spotify_album_matcher.take();
+        bridge.pinned().borrow_mut().catalog.worker.take();
+        drop(engine);
+        drop(bridge);
+        let library = music_library::Library::open(&path).unwrap();
+        for row in &rows {
+            let ids = library.track_provider_occurrences(&row.track_id, "spotify").unwrap();
+            assert_eq!(ids.len(), 1, "{}", row.title);
+            let capability = music_library::playback_resolver::RemoteCapability {
+                provider: "spotify", unavailable: None, catalog_available: true, accepts: |_| true,
+            };
+            assert!(matches!(library.playback_route(&row.track_id, &capability).unwrap(),
+                music_library::playback_resolver::Route::Remote(_)));
+        }
+        println!("LIVE catalog Add: reopened 15/15; playback catalog requests=0");
+    }
+
+    #[test]
     #[ignore = "opt-in live MusicBrainz timing; requires MUSIC_LIBRARY_CATALOG_LIVE_QUERY"]
     fn live_catalog_latency_audit() {
         let query = std::env::var("MUSIC_LIBRARY_CATALOG_LIVE_QUERY").expect("set a catalog query");
