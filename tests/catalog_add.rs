@@ -318,7 +318,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        13
+        14
     );
 }
 
@@ -371,81 +371,83 @@ fn exact_existing_edition_anchors_album_and_conflicting_owners_roll_back() {
 #[test]
 fn catalog_reuses_strong_artist_identity_without_changing_credited_presentation() {
     use music_library::domain::ArtistId;
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("db");
-    let mut lib = Library::open(&path).unwrap();
-    let db = Connection::open(path).unwrap();
-    db.execute_batch("INSERT INTO artist(id,name) VALUES ('a-existing','Canonical name'),('z-duplicate','Alternate name')").unwrap();
-    for key in ["a-existing", "z-duplicate"] {
-        lib.attach_artist_external_identity(
-            &ArtistId(key.into()),
-            &id("musicbrainz", "artist", "strong"),
-        )
-        .unwrap();
-    }
-    for key in ["first", "second"] {
-        let mut data = release(key);
-        data.album.identity.external_id = key.into();
-        for credits in std::iter::once(&mut data.album.credits)
-            .chain(std::iter::once(&mut data.credits))
-            .chain(
-                data.media
-                    .iter_mut()
-                    .flat_map(|m| m.tracks.iter_mut().map(|t| &mut t.credits)),
+    for provider in ["musicbrainz", "spotify", "another-catalog"] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("db");
+        let mut lib = Library::open(&path).unwrap();
+        let db = Connection::open(path).unwrap();
+        db.execute_batch("INSERT INTO artist(id,name) VALUES ('a-existing','Canonical name'),('z-duplicate','Alternate name')").unwrap();
+        for key in ["a-existing", "z-duplicate"] {
+            lib.attach_artist_external_identity(
+                &ArtistId(key.into()),
+                &id(provider, "artist", "strong"),
             )
-        {
-            // Same canonical Artist can legitimately occupy two distinct positions.
-            for credit in credits {
-                credit.identity = Some(id("musicbrainz", "artist", "strong"));
-            }
+            .unwrap();
         }
-        lib.add_catalog_release(&data).unwrap();
-        lib.add_catalog_release(&data).unwrap();
-    }
-    assert_eq!(
-        lib.resolve_artists_external_identity(&id("musicbrainz", "artist", "strong"))
-            .unwrap(),
-        vec![ArtistId("a-existing".into())]
-    );
-    assert_eq!(
-        db.query_row("SELECT count(*) FROM artist", [], |r| r.get::<_, i64>(0))
-            .unwrap(),
-        1
-    );
-    for table in [
-        "album_artist_credit",
-        "release_artist_credit",
-        "track_artist_credit",
-    ] {
+        for key in ["first", "second"] {
+            let mut data = release(key);
+            data.album.identity.external_id = key.into();
+            for credits in std::iter::once(&mut data.album.credits)
+                .chain(std::iter::once(&mut data.credits))
+                .chain(
+                    data.media
+                        .iter_mut()
+                        .flat_map(|m| m.tracks.iter_mut().map(|t| &mut t.credits)),
+                )
+            {
+                // Same canonical Artist can legitimately occupy two distinct positions.
+                for credit in credits {
+                    credit.identity = Some(id(provider, "artist", "strong"));
+                }
+            }
+            lib.add_catalog_release(&data).unwrap();
+            lib.add_catalog_release(&data).unwrap();
+        }
         assert_eq!(
-            db.query_row(
-                &format!("SELECT count(*) FROM {table} WHERE artist_id!='a-existing'"),
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-            0
+            lib.resolve_artists_external_identity(&id(provider, "artist", "strong"))
+                .unwrap(),
+            vec![ArtistId("a-existing".into())]
         );
         assert_eq!(
-            db.query_row(
-                &format!(
-                    "SELECT credited_name || join_phrase FROM {table} WHERE position=0 LIMIT 1"
-                ),
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-            "Artist A feat. "
+            db.query_row("SELECT count(*) FROM artist", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            1
         );
-    }
-    for row in lib
-        .search(&SearchRequest {
-            limit: 10,
-            ..Default::default()
-        })
-        .unwrap()
-    {
-        assert_eq!(row.artist_names, "Artist A feat. Artist B");
+        for table in [
+            "album_artist_credit",
+            "release_artist_credit",
+            "track_artist_credit",
+        ] {
+            assert_eq!(
+                db.query_row(
+                    &format!("SELECT count(*) FROM {table} WHERE artist_id!='a-existing'"),
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                db.query_row(
+                    &format!(
+                        "SELECT credited_name || join_phrase FROM {table} WHERE position=0 LIMIT 1"
+                    ),
+                    [],
+                    |r| r.get::<_, String>(0)
+                )
+                .unwrap(),
+                "Artist A feat. "
+            );
+        }
+        for row in lib
+            .search(&SearchRequest {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+        {
+            assert_eq!(row.artist_names, "Artist A feat. Artist B");
+        }
     }
 }
 

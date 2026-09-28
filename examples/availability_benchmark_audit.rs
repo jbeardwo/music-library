@@ -13,6 +13,9 @@ mod album_program;
 #[path = "../src/artist_credit.rs"]
 mod artist_credit;
 #[allow(dead_code)]
+#[path = "../src/artist_identity.rs"]
+mod artist_identity;
+#[allow(dead_code)]
 #[path = "../src/catalog.rs"]
 mod catalog;
 #[allow(dead_code)]

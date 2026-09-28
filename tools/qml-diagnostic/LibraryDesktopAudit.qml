@@ -51,6 +51,13 @@
                 check(view.queueTotal > before, "append queue " + pane);
             }
             if (audio) {
+                for (let n = 0; n < 100 && !view.seekAvailable; ++n) desktopTest.wait(50);
+                check(view.seekAvailable, "local seek available");
+                desktopTest.mouseClick(seekSlider, seekSlider.width / 4, seekSlider.height / 2);
+                desktopTest.wait(700);
+                check(view.progressMs > view.durationMs * 0.15 && view.progressMs < view.durationMs * 0.4, "local slider seek");
+                desktopTest.mouseClick(volumeSlider, volumeSlider.width * 0.1, volumeSlider.height / 2);
+                check(view.volume < 0.2, "local slider volume");
                 window.bridge.command("pause");
                 for (let n = 0; n < 100 && view.playing; ++n) desktopTest.wait(20);
                 check(!view.playing, "pause");

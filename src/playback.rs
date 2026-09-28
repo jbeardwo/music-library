@@ -43,6 +43,11 @@ pub trait PlaybackEngine {
     /// Engines start at unity gain and retain accepted volume across inputs and Stop.
     /// Rejection preserves the previously accepted volume and transport state.
     fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError>;
+    fn seek(&mut self, _position_ms: u64) -> Result<(), EngineError> {
+        Err(EngineError(
+            "Seeking is not supported by this engine".into(),
+        ))
+    }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError>;
     fn pause(&mut self) -> Result<(), EngineError>;
     fn resume(&mut self) -> Result<(), EngineError>;
@@ -63,6 +68,7 @@ pub enum EngineEventKind {
     Error(EngineError),
     Duration(Option<u64>),
     Position(u64),
+    Seeked(u64),
 }
 
 #[derive(Debug, Error)]
@@ -105,6 +111,7 @@ pub struct PlaybackState {
     /// Media clock, distinct from the queue index. Stop resets it immediately.
     pub media_position_ms: u64,
     pub duration_ms: Option<u64>,
+    pub pending_seek_ms: Option<u64>,
     /// Selected input source (possibly still loading), cleared on stop or engine failure.
     pub source: Option<PlayableSource>,
 }
@@ -148,6 +155,32 @@ impl<E: PlaybackEngine> Playback<E> {
         let volume = Volume::new(value)?;
         self.engine.set_volume(volume)?;
         self.state.volume = volume;
+        Ok(())
+    }
+
+    /// Seek within the active input without replacing the queue or media lifetime.
+    /// Asynchronous engines confirm the new clock through Seeked.
+    pub fn seek(&mut self, position_ms: u64) -> Result<(), PlaybackError> {
+        if self.state.source.is_none()
+            || self.state.pending.is_some()
+            || !matches!(
+                self.state.status,
+                PlaybackStatus::Playing | PlaybackStatus::Paused
+            )
+        {
+            return Err(PlaybackError::Engine(EngineError(
+                "No ready playback input to seek".into(),
+            )));
+        }
+        let position_ms = self.state.duration_ms.map_or(position_ms, |duration| {
+            position_ms.min(duration.saturating_sub(1))
+        });
+        self.engine.seek(position_ms)?;
+        if self.engine.asynchronous() {
+            self.state.pending_seek_ms = Some(position_ms);
+        } else {
+            self.state.media_position_ms = position_ms;
+        }
         Ok(())
     }
 
@@ -211,6 +244,7 @@ impl<E: PlaybackEngine> Playback<E> {
         }
         self.state.source = None;
         self.state.media_position_ms = 0;
+        self.state.pending_seek_ms = None;
         self.state.duration_ms = None;
         Ok(())
     }
@@ -296,6 +330,7 @@ impl<E: PlaybackEngine> Playback<E> {
         self.state.status = PlaybackStatus::Stopped;
         self.state.pending = None;
         self.state.media_position_ms = 0;
+        self.state.pending_seek_ms = None;
         self.state.duration_ms = None;
         let result = self.engine.start(&source);
         self.acknowledge(result)?;
@@ -346,9 +381,16 @@ impl<E: PlaybackEngine> Playback<E> {
                 self.state.pending = None;
             }
             EngineEventKind::Position(ms) => {
+                if self.state.source.is_none() || self.state.pending_seek_ms.is_some() {
+                    return Ok(false);
+                }
+                self.state.media_position_ms = ms;
+            }
+            EngineEventKind::Seeked(ms) => {
                 if self.state.source.is_none() {
                     return Ok(false);
                 }
+                self.state.pending_seek_ms = None;
                 self.state.media_position_ms = ms;
             }
             EngineEventKind::Duration(ms) => {
@@ -378,6 +420,7 @@ impl<E: PlaybackEngine> Playback<E> {
             self.state.pending = None;
             self.state.source = None;
             self.state.media_position_ms = 0;
+            self.state.pending_seek_ms = None;
             self.state.duration_ms = None;
             PlaybackError::Engine(error)
         })

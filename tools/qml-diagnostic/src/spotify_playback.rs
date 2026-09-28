@@ -20,6 +20,7 @@ pub enum Command {
     Play(Song),
     Pause,
     Seek(u64, u64),
+    Volume(u8, u64),
     Visible(bool),
     /// Acknowledged commands used only by explicit application backend handoff.
     ApplicationPlay(Song, u64, bool),
@@ -30,6 +31,7 @@ pub struct Update {
     pub application_command: bool,
     pub completion: Option<crate::spotify_completion::Outcome>,
     pub generation: u64,
+    pub volume_ack: Option<u64>,
 }
 pub struct Worker {
     sender: Option<SyncSender<Command>>,
@@ -87,6 +89,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 application_command: false,
                 completion: None,
                 generation: 0,
+                volume_ack: None,
             });
             return;
         }
@@ -96,6 +99,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
         application_command: false,
         completion: None,
         generation: 0,
+        volume_ack: None,
     });
     let mut auth = None;
     let mut visible = false;
@@ -116,6 +120,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
         let mut result = Ok(());
         let mut application_command = false;
         let mut completion = None;
+        let mut volume_ack = None;
         if stopped.load(Ordering::Acquire) {
             return;
         }
@@ -162,6 +167,10 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 Command::Pause => {
                     detector = None;
                     playback.pause()
+                }
+                Command::Volume(percent, revision) => {
+                    volume_ack = Some(revision);
+                    playback.set_volume(percent)
                 }
                 Command::Seek(ms, current_generation) => {
                     generation = current_generation;
@@ -247,6 +256,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 application_command,
                 completion,
                 generation,
+                volume_ack,
             });
         }
     }

@@ -5,6 +5,7 @@ pub mod album_matching;
 pub mod album_program;
 pub mod application;
 pub mod artist_credit;
+mod artist_identity;
 pub mod browse;
 pub mod catalog;
 pub mod catalog_date;

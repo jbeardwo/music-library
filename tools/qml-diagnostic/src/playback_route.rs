@@ -65,6 +65,7 @@ pub(crate) fn test_handoffs() {
         is_active: true,
         is_restricted: false,
         supports_volume: false,
+        volume_percent: None,
     }];
     let (worker, commands) = Worker::fake();
     b.spotify_playback_worker = Some(worker);
@@ -290,6 +291,7 @@ pub(crate) fn test_mixed_queue() {
         is_active: true,
         is_restricted: false,
         supports_volume: false,
+        volume_percent: None,
     }];
     let (worker, requests) = Worker::fake();
     b.spotify_playback_worker = Some(worker);

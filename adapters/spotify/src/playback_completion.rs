@@ -110,6 +110,7 @@ mod tests {
                 is_active: true,
                 is_restricted: false,
                 supports_volume: false,
+                volume_percent: None,
             }),
             ..Default::default()
         }

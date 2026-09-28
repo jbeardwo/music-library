@@ -3,6 +3,7 @@ mod catalog;
 #[cfg(feature = "gstreamer")]
 mod local;
 mod playback_route;
+mod player_controls;
 mod sample;
 mod session;
 use music_library_spotify::playback_completion as spotify_completion;
@@ -226,13 +227,7 @@ struct Bridge {
                     qmetaobject::queued_callback(move |update: spotify_playback::Update| {
                         if let Some(pinned) = weak.as_pinned() {
                             let mut bridge = pinned.borrow_mut();
-                            bridge.spotify_playback_state = update.snapshot;
-                            if update.application_command {
-                                bridge.finish_remote_handoff();
-                            }
-                            bridge.observe_remote_completion(update.generation, update.completion);
-                            bridge.spotify_playback_changed();
-                            bridge.changed();
+                            bridge.apply_player_update(update);
                         }
                     });
                 self.spotify_playback_worker = Some(spotify_playback::Worker::new(callback));
@@ -506,9 +501,21 @@ struct Bridge {
             self.browse_action_impl(&action, pane as usize, id);
         }
     ),
+    controls: player_controls::Controls,
+    seek: qt_method!(
+        fn seek(&mut self, milliseconds: f64) {
+            self.player_seek(milliseconds);
+            self.changed();
+        }
+    ),
+    refresh_clock: qt_method!(
+        fn refresh_clock(&mut self) {
+            self.changed();
+        }
+    ),
     set_volume: qt_method!(
         fn set_volume(&mut self, value: f64) {
-            self.session.set_volume(value);
+            self.player_volume(value);
             self.changed();
         }
     ),
@@ -702,6 +709,9 @@ impl Bridge {
             browse_snapshot: Default::default(),
             browse_changed: Default::default(),
             browse_action: Default::default(),
+            controls: Default::default(),
+            seek: Default::default(),
+            refresh_clock: Default::default(),
             set_volume: Default::default(),
             search: Default::default(),
             page_next: Default::default(),
@@ -1498,6 +1508,7 @@ impl Bridge {
             self.active_backend,
             music_library::playback_resolver::ActiveBackend::Remote(_)
         );
+        let (progress, duration, seek_available) = self.player_clock();
         let rows: QVariantList = s.rows.iter().map(row_value).collect();
         let queue: QVariantList = state
             .queue
@@ -1581,8 +1592,17 @@ impl Bridge {
                         .map_or(String::new(), |s| format!(" → {s:?} pending")),
                 ),
             ),
-            ("volume", state.volume.get().into()),
-            ("volumeAvailable", (!remote_active).into()),
+            ("volume", self.player_volume_value().into()),
+            ("volumeAvailable", self.player_volume_available().into()),
+            ("progressMs", (progress as f64).into()),
+            ("durationMs", duration.map_or(-1., |d| d as f64).into()),
+            ("elapsed", string(time_label(Some(progress)))),
+            ("duration", string(time_label(duration))),
+            ("seekAvailable", seek_available.into()),
+            (
+                "clockRunning",
+                (remote_active && self.spotify_playback_state.state.playing).into(),
+            ),
             ("realAudio", self.real_audio.into()),
             ("route", string(&self.route_message)),
             (
@@ -1593,16 +1613,8 @@ impl Bridge {
                 "time",
                 string(format!(
                     "{} / {}",
-                    time_label(Some(if remote_active {
-                        self.spotify_playback_state.state.progress_ms
-                    } else {
-                        state.media_position_ms
-                    })),
-                    time_label(if remote_active {
-                        self.spotify_playback_state.state.duration_ms
-                    } else {
-                        state.duration_ms
-                    })
+                    time_label(Some(progress)),
+                    time_label(duration)
                 )),
             ),
             ("canNext", state.can_next().into()),
@@ -3848,5 +3860,7 @@ mod library_ui_tests {
                 .to_string(),
             "ok"
         );
+        #[cfg(feature = "gstreamer")]
+        player_controls::test_controls(&bridge, &mut engine);
     }
 }

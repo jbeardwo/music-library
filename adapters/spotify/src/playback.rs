@@ -31,6 +31,8 @@ pub enum Error {
     NoDevice,
     DeviceUnavailable,
     RestrictedDevice,
+    VolumeUnavailable,
+    InvalidVolume,
     RateLimited(u64),
     ServiceUnavailable,
     Transport,
@@ -59,6 +61,8 @@ impl std::fmt::Display for Error {
             Self::RestrictedDevice => {
                 "Selected Spotify device is restricted and cannot be controlled"
             }
+            Self::VolumeUnavailable => "Selected playback device does not support volume control",
+            Self::InvalidVolume => "Volume must be between 0 and 100",
             Self::CapabilityUnavailable => {
                 "Spotify Premium/playback capability unavailable for this account"
             }
@@ -101,6 +105,8 @@ pub struct Device {
     pub is_restricted: bool,
     #[serde(default)]
     pub supports_volume: bool,
+    #[serde(default)]
+    pub volume_percent: Option<u8>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct State {
@@ -193,6 +199,7 @@ pub struct Playback {
     base: Url,
     not_before: Instant,
     pub snapshot: Snapshot,
+    pending_volume: Option<(String, u8, Instant)>,
 }
 impl std::fmt::Debug for Playback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -252,6 +259,7 @@ impl Playback {
             token_url: "https://accounts.spotify.com/api/token".into(),
             base: Url::parse("https://api.spotify.com/v1/").unwrap(),
             not_before: Instant::now(),
+            pending_volume: None,
             snapshot: Snapshot {
                 authorization: if connected {
                     AuthorizationState::Connected
@@ -637,6 +645,9 @@ impl Playback {
         if device.is_restricted {
             return Err(Error::RestrictedDevice);
         }
+        if self.snapshot.selected_device.as_deref() != Some(id) {
+            self.pending_volume = None;
+        }
         self.snapshot.selected_device = Some(id.into());
         Ok(())
     }
@@ -657,6 +668,26 @@ impl Playback {
                 )
             },
         };
+        if let Some((device, percent, since)) = &self.pending_volume {
+            if let Some(observed) = self
+                .snapshot
+                .state
+                .device
+                .as_mut()
+                .filter(|d| d.id.as_ref() == Some(device))
+            {
+                if observed.volume_percent == Some(*percent)
+                    || since.elapsed() >= Duration::from_secs(8)
+                {
+                    self.pending_volume = None;
+                } else {
+                    // Connect can briefly return pre-command state after a 204.
+                    observed.volume_percent = Some(*percent);
+                }
+            } else {
+                self.pending_volume = None;
+            }
+        }
         Ok(())
     }
     fn command(
@@ -723,7 +754,14 @@ impl Playback {
             "play",
             json!({"uris": [song.uri()], "position_ms": 0}),
             None,
-        )
+        )?;
+        if self.snapshot.state.track_id.as_deref() != Some(&song.0) {
+            self.snapshot.state.duration_ms = None;
+        }
+        self.snapshot.state.track_id = Some(song.0.clone());
+        self.snapshot.state.progress_ms = 0;
+        self.snapshot.state.playing = true;
+        Ok(())
     }
     /// Release application-controlled audio before a local backend handoff.
     /// A fresh observation of idle/paused playback needs no Pause command.
@@ -746,12 +784,58 @@ impl Playback {
             _ => Err(Error::DeviceUnavailable),
         }
     }
+    pub fn set_volume(&mut self, percent: u8) -> Result<()> {
+        if percent > 100 {
+            return Err(Error::InvalidVolume);
+        }
+        let id = self
+            .snapshot
+            .selected_device
+            .clone()
+            .ok_or(Error::NoDevice)?;
+        let device = self
+            .snapshot
+            .state
+            .device
+            .as_ref()
+            .filter(|d| d.id.as_ref() == Some(&id))
+            .or_else(|| {
+                self.snapshot
+                    .devices
+                    .iter()
+                    .find(|d| d.id.as_ref() == Some(&id))
+            })
+            .ok_or(Error::DeviceUnavailable)?;
+        if !device.supports_volume {
+            return Err(Error::VolumeUnavailable);
+        }
+        self.command(
+            "volume",
+            Value::Null,
+            Some(("volume_percent", percent.to_string())),
+        )?;
+        self.pending_volume = Some((id.clone(), percent, Instant::now()));
+        for device in self
+            .snapshot
+            .devices
+            .iter_mut()
+            .chain(self.snapshot.state.device.iter_mut())
+        {
+            if device.id.as_ref() == Some(&id) {
+                device.volume_percent = Some(percent);
+            }
+        }
+        Ok(())
+    }
+
     pub fn seek(&mut self, milliseconds: u64) -> Result<()> {
         self.command(
             "seek",
             Value::Null,
             Some(("position_ms", milliseconds.to_string())),
-        )
+        )?;
+        self.snapshot.state.progress_ms = milliseconds;
+        Ok(())
     }
 }
 
@@ -1045,6 +1129,50 @@ mod tests {
         assert!(requests[2].contains(&song().uri()));
         assert!(!requests[4].contains("position_ms"));
         assert!(!requests[4].contains("uris"));
+    }
+
+    #[test]
+    fn volume_targets_selected_device_preserves_intent_through_stale_polls_and_reports_failures() {
+        const OLD: &str = r#"{"device":{"id":"desktop","name":"Test PC","type":"Computer","is_active":true,"is_restricted":false,"supports_volume":true,"volume_percent":20}}"#;
+        const CONFIRMED: &str = r#"{"device":{"id":"desktop","name":"Test PC","type":"Computer","is_active":true,"is_restricted":false,"supports_volume":true,"volume_percent":35}}"#;
+        let server = Server::new(vec![
+            (200, "", TOKEN),
+            (200, "", DEVICES),
+            (204, "", ""),
+            (200, "", OLD),
+            (200, "", CONFIRMED),
+            (200, "", OLD),
+            (429, "Retry-After: 1\r\n", ""),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        p.devices().unwrap();
+        p.select_device("desktop").unwrap();
+        assert_eq!(p.set_volume(101), Err(Error::InvalidVolume));
+        p.set_volume(35).unwrap();
+        p.poll().unwrap();
+        assert_eq!(
+            p.snapshot.state.device.as_ref().unwrap().volume_percent,
+            Some(35)
+        );
+        p.poll().unwrap();
+        assert!(p.pending_volume.is_none());
+        p.poll().unwrap();
+        assert_eq!(
+            p.snapshot.state.device.as_ref().unwrap().volume_percent,
+            Some(20)
+        );
+        assert_eq!(p.set_volume(45), Err(Error::RateLimited(1)));
+        assert_eq!(
+            p.snapshot.state.device.as_ref().unwrap().volume_percent,
+            Some(20)
+        );
+        p.snapshot.state.device.as_mut().unwrap().supports_volume = false;
+        assert_eq!(p.set_volume(50), Err(Error::VolumeUnavailable));
+        let requests = server.finish();
+        assert!(requests[2].contains("PUT /me/player/volume?device_id=desktop&volume_percent=35"));
+        assert_eq!(requests.len(), 7);
     }
 
     #[test]

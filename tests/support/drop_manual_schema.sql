@@ -9,3 +9,5 @@ DROP TABLE IF EXISTS provider_track_association;
 DROP INDEX IF EXISTS artist_browse_name;
 DROP INDEX IF EXISTS album_browse_title;
 DROP INDEX IF EXISTS track_browse_title;
+
+DROP TABLE IF EXISTS local_artist_context;

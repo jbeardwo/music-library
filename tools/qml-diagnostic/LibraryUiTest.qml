@@ -104,3 +104,12 @@
             return "ok";
         } catch (error) { return String(error); }
     }
+    function exercisePlayerControls() {
+        uiTest.wait(30);
+        if (!seekSlider.enabled || !volumeSlider.enabled) return "disabled";
+        uiTest.mouseClick(seekSlider, seekSlider.width / 2, seekSlider.height / 2);
+        volumeSlider.value = 35;
+        volumeSlider.moved();
+        return "ok";
+    }
+    function seekControlEnabled() { return seekSlider.enabled; }

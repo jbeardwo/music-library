@@ -39,6 +39,9 @@ impl PlaybackEngine for DiagnosticEngine {
     fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
         self.call(&format!("volume {}", volume.get()))
     }
+    fn seek(&mut self, position_ms: u64) -> Result<(), EngineError> {
+        self.call(&format!("seek {position_ms}"))
+    }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
         self.call(&format!("start {}", source.source_id.as_ref()))
     }
@@ -86,6 +89,9 @@ impl PlaybackEngine for Engine {
     }
     fn set_event_generation(&mut self, generation: u64) {
         self.inner().set_event_generation(generation);
+    }
+    fn seek(&mut self, position_ms: u64) -> Result<(), EngineError> {
+        self.inner().seek(position_ms)
     }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
         self.inner().start(source)

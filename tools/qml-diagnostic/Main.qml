@@ -688,6 +688,12 @@ ApplicationWindow {
         }
     }
 
+    Timer {
+        interval: 250
+        repeat: true
+        running: window.view.clockRunning
+        onTriggered: window.bridge.refresh_clock()
+    }
     palette.window: "#f6f5f3"
     palette.highlight: "#96506d"
     palette.highlightedText: "white"
@@ -878,11 +884,12 @@ ApplicationWindow {
             RowLayout {
                 anchors.fill: parent; anchors.margins: 14
                 Label { text: window.view.realAudio ? "" : "DEMO · NO AUDIO"; font.pixelSize: 10; color: "#777078"; Layout.preferredWidth: 120 }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 650
                 Button {
                     id: currentTrack
                     Layout.fillWidth: true
-                    Layout.maximumWidth: 650
-                    Layout.alignment: Qt.AlignHCenter
                     flat: true
                     Accessible.name: "Now Playing: " + window.view.currentTitle
                     onClicked: { if (queueDrawer.opened) queueDrawer.close(); else queueDrawer.open(); }
@@ -892,6 +899,33 @@ ApplicationWindow {
                         Label { width: parent.width; text: window.view.position < 0 ? "Now Playing ⌃" : window.view.currentArtist + " — " + window.view.currentAlbum + "  ⌃"; color: "#68636a"; textFormat: Text.PlainText; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
                     }
                 }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label { text: window.view.elapsed; font.pixelSize: 11; Layout.preferredWidth: 42; horizontalAlignment: Text.AlignRight }
+                        Slider {
+                            id: seekSlider
+                            Layout.fillWidth: true
+                            from: 0
+                            to: Math.max(1, window.view.durationMs)
+                            enabled: window.view.seekAvailable
+                            Accessible.name: "Seek"
+                            property real preview: 0
+                            property bool movedDuringPress: false
+                            property string dragTrack: ""
+                            Binding { restoreMode: Binding.RestoreNone; target: seekSlider; property: "value"; value: window.view.progressMs; when: !seekSlider.pressed }
+                            onPressedChanged: {
+                                if (pressed) { dragTrack = window.view.currentId; if (!movedDuringPress) preview = value; }
+                                else { if (dragTrack === window.view.currentId) window.bridge.seek(preview); movedDuringPress = false; }
+                            }
+                            onMoved: {
+                                movedDuringPress = true;
+                                preview = value;
+                                if (!pressed) window.bridge.seek(value);
+                            }
+                        }
+                        Label { text: window.view.duration; font.pixelSize: 11; Layout.preferredWidth: 42 }
+                    }
+                }
                 ColumnLayout {
                     RowLayout {
                         Button { id: previousButton; text: "Previous"; Accessible.name: "Previous"; enabled: window.view.canPrevious; onClicked: window.bridge.command("previous") }
@@ -899,8 +933,22 @@ ApplicationWindow {
                         Button { id: nextButton; text: "Next"; Accessible.name: "Next"; enabled: window.view.canNext; onClicked: window.bridge.command("next") }
                     }
                     RowLayout {
-                        Label { text: window.view.time; font.pixelSize: 10; color: "#68636a" }
-                        Slider { id: volumeSlider; from: 0; to: 100; stepSize: 1; value: window.view.volume * 100; onMoved: window.bridge.set_volume(value / 100); Layout.preferredWidth: 100; Accessible.name: "Volume"; enabled: window.view.volumeAvailable; ToolTip.visible: hovered && !enabled; ToolTip.text: "Volume is controlled by your playback device" }
+                        Label { text: "Volume"; font.pixelSize: 11 }
+                        Slider {
+                            id: volumeSlider
+                            from: 0; to: 100; stepSize: 1
+                            Layout.preferredWidth: 130
+                            Accessible.name: "Volume"
+                            enabled: window.view.volumeAvailable
+                            property real preview: 100
+                            property bool movedDuringPress: false
+                            Binding { restoreMode: Binding.RestoreNone; target: volumeSlider; property: "value"; value: window.view.volume * 100; when: !volumeSlider.pressed }
+                            onMoved: { movedDuringPress = true; preview = value; if (!pressed) window.bridge.set_volume(value / 100); }
+                            onPressedChanged: { if (pressed) { if (!movedDuringPress) preview = value; } else { window.bridge.set_volume(preview / 100); movedDuringPress = false; } }
+                            ToolTip.visible: hovered && !enabled
+                            ToolTip.text: "This playback device cannot currently change volume"
+                        }
+                        Label { text: Math.round(volumeSlider.value) + "%"; font.pixelSize: 11; Layout.preferredWidth: 32 }
                     }
                 }
             }

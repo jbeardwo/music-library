@@ -26,7 +26,7 @@ pub enum Error {
     },
     #[error("metadata could not be read from {path}: {message}")]
     Metadata { path: PathBuf, message: String },
-    #[error("Artist consolidation conflicts with different MusicBrainz Artist identities")]
+    #[error("Artist consolidation conflicts with different external Artist identities")]
     ArtistIdentityConflict,
     #[error("invalid operation: {0}")]
     Invalid(String),
@@ -212,7 +212,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 13 {
+        } else if version > 14 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -300,6 +300,14 @@ impl Store {
         }
         if version < 13 {
             connection.execute_batch(include_str!("../migrations/0013_library_browse.sql"))?;
+        }
+        if version < 14 {
+            let tx =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch(include_str!("../migrations/0014_artist_import_context.sql"))?;
+            crate::artist_identity::backfill(&tx)?;
+            tx.pragma_update(None, "user_version", 14)?;
+            tx.commit()?;
         }
         Ok(Self {
             connection,
@@ -830,6 +838,7 @@ impl Store {
             self.provenance_validator,
             true,
         )?;
+        crate::artist_identity::reconcile_album(&tx, album_id.as_ref())?;
         tx.commit()?;
         Ok(ImportedRelease {
             release_id,
@@ -1669,7 +1678,7 @@ fn refresh_effective_track_tx(tx: &Transaction<'_>, track_id: &TrackId) -> Resul
 }
 
 #[cfg(unix)]
-fn path_to_bytes(path: &Path) -> Vec<u8> {
+pub(crate) fn path_to_bytes(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes().to_vec()
 }
@@ -1682,7 +1691,7 @@ pub(crate) fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
 }
 
 #[cfg(windows)]
-fn path_to_bytes(path: &Path) -> Vec<u8> {
+pub(crate) fn path_to_bytes(path: &Path) -> Vec<u8> {
     use std::os::windows::ffi::OsStrExt;
     path.as_os_str()
         .encode_wide()
@@ -1829,9 +1838,6 @@ fn prepare_album_match(
     })
 }
 
-fn artist_matching_identities(db: &Connection, id: &ArtistId) -> Result<Vec<ExternalIdentity>> {
-    artist_identities_for(db, id, "musicbrainz", "artist")
-}
 fn artist_identities_for(
     db: &Connection,
     id: &ArtistId,
@@ -1841,9 +1847,12 @@ fn artist_identities_for(
     Ok(db.prepare("SELECT external_id FROM artist_external_identity WHERE artist_id=?1 AND provider=?2 AND kind=?3")?.query_map(params![id.as_ref(),provider,kind], |r|Ok(ExternalIdentity { provider:provider.into(),kind:kind.into(),external_id:r.get(0)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-// Generic explicit reassignment. Only the known exclusive MB Artist namespace
-// has a conflict rule; opaque identities of other kinds are preserved in full.
-fn merge_artist_tx(tx: &Transaction<'_>, source: &ArtistId, canonical: &ArtistId) -> Result<bool> {
+// Explicit Artist namespaces must agree; other opaque identity kinds are preserved.
+pub(crate) fn merge_artist_tx(
+    tx: &Transaction<'_>,
+    source: &ArtistId,
+    canonical: &ArtistId,
+) -> Result<bool> {
     let exists = |id: &ArtistId| -> Result<bool> {
         Ok(tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM artist WHERE id=?1)",
@@ -1857,11 +1866,8 @@ fn merge_artist_tx(tx: &Transaction<'_>, source: &ArtistId, canonical: &ArtistId
     if source == canonical || !exists(source)? {
         return Ok(false);
     }
-    let mut identities = artist_matching_identities(tx, source)?;
-    identities.extend(artist_matching_identities(tx, canonical)?);
-    identities.sort_by(|a, b| a.external_id.cmp(&b.external_id));
-    identities.dedup();
-    if identities.len() > 1 {
+    let conflict: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM artist_external_identity WHERE artist_id IN (?1,?2) AND kind='artist' GROUP BY provider,kind HAVING count(DISTINCT external_id)>1)",params![source.as_ref(),canonical.as_ref()],|r|r.get(0))?;
+    if conflict {
         return Err(Error::ArtistIdentityConflict);
     }
     for table in [
@@ -1874,6 +1880,7 @@ fn merge_artist_tx(tx: &Transaction<'_>, source: &ArtistId, canonical: &ArtistId
         tx.execute(&format!("UPDATE {table} SET credited_name=COALESCE(credited_name,(SELECT name FROM artist WHERE id=?1)), artist_id=?2 WHERE artist_id=?1"), params![source.as_ref(),canonical.as_ref()])?;
     }
     tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) SELECT ?2,provider,kind,external_id FROM artist_external_identity WHERE artist_id=?1 ON CONFLICT DO NOTHING", params![source.as_ref(),canonical.as_ref()])?;
+    tx.execute("INSERT OR IGNORE INTO local_artist_context(root_id,directory,name_key,artist_id) SELECT root_id,directory,name_key,?2 FROM local_artist_context WHERE artist_id=?1",params![source.as_ref(),canonical.as_ref()])?;
     tx.execute("DELETE FROM artist WHERE id=?1", [source.as_ref()])?;
     // Display is unchanged, so effective metadata, FTS and Album keys stay valid.
     Ok(true)
@@ -1934,7 +1941,7 @@ fn insert_catalog_credits(
     for (position, credit) in credits.iter().enumerate() {
         let artist = match &credit.identity {
             Some(identity)
-                if identity.provider == "musicbrainz"
+                if !identity.provider.is_empty()
                     && identity.kind == "artist"
                     && !identity.external_id.is_empty() =>
             {

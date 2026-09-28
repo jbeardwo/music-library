@@ -19,6 +19,7 @@ use music_library::{
 
 enum Command {
     Volume(Volume),
+    Seek(u64, u64),
     Start(u64, PlayableSource),
     Pause(u64),
     Resume(u64),
@@ -72,6 +73,9 @@ impl PlaybackEngine for GStreamerEngine {
     }
     fn set_event_generation(&mut self, generation: u64) {
         self.generation = generation;
+    }
+    fn seek(&mut self, position_ms: u64) -> Result<(), EngineError> {
+        self.send(Command::Seek(self.generation, position_ms))
     }
     fn start(&mut self, source: &PlayableSource) -> Result<(), EngineError> {
         self.send(Command::Start(self.generation, source.clone()))
@@ -210,6 +214,9 @@ impl Input {
                 gst_play::PlayMessage::DurationChanged(value) => Some(EngineEventKind::Duration(
                     value.duration().map(|t| t.mseconds()),
                 )),
+                gst_play::PlayMessage::SeekDone(value) => value
+                    .position()
+                    .map(|t| EngineEventKind::Seeked(t.mseconds())),
                 gst_play::PlayMessage::PositionUpdated(value) => value
                     .position()
                     .map(|t| EngineEventKind::Position(t.mseconds())),
@@ -264,6 +271,13 @@ fn run(
                 volume = value;
                 if let Some(active) = &input {
                     active.player.set_volume(volume.get());
+                }
+            }
+            Ok(Command::Seek(generation, position_ms)) => {
+                if let Some(active) = input.as_ref().filter(|i| i.generation == generation) {
+                    active
+                        .player
+                        .seek(gst::ClockTime::from_mseconds(position_ms));
                 }
             }
             Ok(Command::Start(generation, source)) => {
@@ -401,6 +415,42 @@ mod tests {
                 path
             );
         }
+    }
+
+    #[test]
+    fn worker_seek_confirms_new_position_and_preserves_paused_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("seek.wav");
+        wav(&path, 8);
+        let (send, receive) = std::sync::mpsc::channel();
+        let mut engine = GStreamerEngine::spawn(
+            Arc::new(move |event| {
+                let _ = send.send(event);
+            }),
+            true,
+        )
+        .unwrap();
+        engine.set_event_generation(5);
+        engine.start(&source(&path)).unwrap();
+        let wait_for = |predicate: &dyn Fn(&EngineEventKind) -> bool| {
+            loop {
+                let event = receive.recv_timeout(Duration::from_secs(10)).unwrap();
+                assert_eq!(event.generation, 5);
+                if let EngineEventKind::Error(error) = &event.kind {
+                    panic!("{error}");
+                }
+                if predicate(&event.kind) {
+                    break;
+                }
+            }
+        };
+        wait_for(&|event| matches!(event,EngineEventKind::Position(ms) if *ms>100));
+        engine.pause().unwrap();
+        wait_for(&|e| matches!(e, EngineEventKind::State(PlaybackStatus::Paused)));
+        engine.seek(5000).unwrap();
+        wait_for(&|e| matches!(e,EngineEventKind::Seeked(ms) if ms.abs_diff(5000)<100));
+        engine.resume().unwrap();
+        wait_for(&|e| matches!(e,EngineEventKind::Position(ms) if *ms>=5000));
     }
 
     #[test]

@@ -110,6 +110,7 @@ fn resolver_local_engine_failure_stays_an_engine_failure() {
 #[derive(Clone, Debug, PartialEq)]
 enum Call {
     Volume(Volume),
+    Seek(u64),
     Start(PlayableSource),
     Pause,
     Resume,
@@ -135,6 +136,9 @@ impl FakeEngine {
     }
 }
 impl PlaybackEngine for FakeEngine {
+    fn seek(&mut self, position_ms: u64) -> Result<(), EngineError> {
+        self.call(Call::Seek(position_ms))
+    }
     fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
         self.call(Call::Volume(volume))
     }
@@ -622,6 +626,9 @@ struct AsyncEngine {
     generation: Rc<std::cell::Cell<u64>>,
 }
 impl PlaybackEngine for AsyncEngine {
+    fn seek(&mut self, position_ms: u64) -> Result<(), EngineError> {
+        self.fake.seek(position_ms)
+    }
     fn set_volume(&mut self, volume: Volume) -> Result<(), EngineError> {
         self.fake.set_volume(volume)
     }
@@ -959,4 +966,88 @@ fn resolver_eos_consumption_keeps_queue_and_rejects_pause_and_duplicates() {
     assert_eq!(p.state().position, Some(1));
     assert_eq!(p.state().queue.len(), 2);
     assert!(p.state().source.is_none()); // current source-less Track retained
+}
+
+#[test]
+fn seek_is_confirmed_without_queue_or_transport_changes_and_stale_input_events_are_ignored() {
+    use music_library::playback::{EngineEvent, EngineEventKind as Event};
+    let f = Fixture::new();
+    f.source("a", 0, true);
+    let engine = Rc::new(RefCell::new(EngineState::default()));
+    let generation = Rc::new(std::cell::Cell::new(0));
+    let mut p = Playback::new(AsyncEngine {
+        fake: FakeEngine(engine.clone()),
+        generation: generation.clone(),
+    });
+    assert!(p.seek(2000).is_err());
+    p.enqueue(f.tracks[0].clone());
+    p.play(&f.library).unwrap();
+    let g = generation.get();
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: g,
+            kind: Event::State(PlaybackStatus::Playing),
+        },
+    )
+    .unwrap();
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: g,
+            kind: Event::Duration(Some(60000)),
+        },
+    )
+    .unwrap();
+    p.seek(30000).unwrap();
+    assert_eq!(p.state().pending_seek_ms, Some(30000));
+    assert_eq!(generation.get(), g);
+    assert!(
+        !p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: g,
+                kind: Event::Position(500)
+            }
+        )
+        .unwrap()
+    );
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: g,
+            kind: Event::Seeked(30000),
+        },
+    )
+    .unwrap();
+    assert_eq!(p.state().media_position_ms, 30000);
+    assert_eq!(p.state().pending_seek_ms, None);
+    engine.borrow_mut().fail_next = true;
+    assert!(p.seek(40000).is_err());
+    assert_eq!(p.state().status, PlaybackStatus::Playing);
+    p.pause().unwrap();
+    p.handle_event(
+        &f.library,
+        EngineEvent {
+            generation: g,
+            kind: Event::State(PlaybackStatus::Paused),
+        },
+    )
+    .unwrap();
+    p.seek(90000).unwrap();
+    assert_eq!(p.state().pending_seek_ms, Some(59999));
+    p.stop().unwrap();
+    assert_eq!(p.state().pending_seek_ms, None);
+    assert!(
+        !p.handle_event(
+            &f.library,
+            EngineEvent {
+                generation: g,
+                kind: Event::Seeked(59999)
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(p.state().media_position_ms, 0);
+    assert_eq!(p.state().queue, vec![f.tracks[0].clone()]);
 }

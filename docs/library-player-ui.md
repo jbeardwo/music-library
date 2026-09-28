@@ -10,7 +10,7 @@ an implementation prototype, not the public skin format or a final frontend deci
 - Artist selection preserves the Artist list and filters Albums and Songs. A Track
   belongs to an Artist through a Track, Release or Album credit; overlapping credits
   contribute it only once. Different Artist IDs remain different rows, even when their
-  names match. Identity reconciliation is outside this slice.
+  names match. Identity reconciliation uses the evidence described below.
 - Album selection leaves Artists and the current Album list intact. Songs show every
   saved Track in that Album, grouped by Release and ordered by disc/Track position.
   Unknown disc defaults to disc 1 for ordering; unknown Track positions sort last.
@@ -25,10 +25,11 @@ an implementation prototype, not the public skin format or a final frontend deci
   existing playback. Queue construction never contacts a catalog. Playback uses the
   existing resolver, including its existing explicit-Play enrichment policy.
 - The persistent player shows title, Artist and Album, Previous/Play/Pause/Next,
-  elapsed/duration text and local volume. Missing Track artist text falls back to
+  elapsed/seek/duration controls and a shared 0–100 volume slider. Missing Track artist text falls back to
   Album credits for presentation only; effective metadata and credits are unchanged.
-  Remote volume stays with the playback device. Seeking has no common existing
-  engine boundary, so this slice does not add it.
+  Seeking and volume route through common application controls to GStreamer or the
+  selected Spotify device. Unknown duration disables seeking. Accepted remote volume
+  is retained through stale polls and carried into the next local playback handoff.
 - Clicking the current Track toggles an upward-opening Now Playing panel. Escape or
   its close button dismisses it. The panel shows ordered titles and Artist/Album,
   marks the current occurrence, and supports clearing. Outside clicks remain usable
@@ -91,7 +92,7 @@ remain available under the small settings menu, outside ordinary row actions.
 
 Next UX work: global search, a unified Add Music/local-folder flow, smoother continuous
 browsing across page boundaries, and queue editing. Duplicate Artist labels reflect
-existing distinct identities; this UI does not merge them. Artwork, playlists, skins,
+distinct identities when insufficient evidence exists; the UI never groups by name. Artwork, playlists, skins,
 locale collation, matching changes and catalog redesign are deliberately deferred.
 
 ## Validation
@@ -126,3 +127,46 @@ MUSIC_LIBRARY_UI_AUDIT_DATABASE=/tmp/library-copy.sqlite MUSIC_LIBRARY_UI_AUDIT_
 The desktop audit writes `/tmp/music-library-ui-library.png` and
 `/tmp/music-library-ui-queue.png`. Its audio path assumes the first displayed Artist
 has a playable local program; omit the audio variable for a source-less fixture.
+
+## Artist identity repair and player controls
+
+Migration 14 repairs existing Artist identities and records local import context.
+An explicit provider Artist identity can unify its owners, provided their other
+provider Artist identities do not conflict. Catalog imports now reuse Artist IDs
+for every provider with an explicit Artist identity, including Spotify.
+
+For local imports, a single Album Artist credit can share an identity when all
+local sources agree on the same registered root and immediate Artist directory,
+and that directory matches the trimmed, case-insensitive credit. The layout must
+contain Artist/Album/file components. Matching singleton Release/Track credits
+participate too; credited spelling, join phrases, positions and roles are preserved.
+All participants are checked for conflicting IDs within each provider namespace
+before merging. Equal names in different roots/directories, flat collections,
+and ambiguous multi-Artist credits are not sufficient evidence.
+
+The real-library audit copy consolidated Hella's local-only, MusicBrainz and Spotify
+identities into one Artist with ten saved Albums. Bygones has both Albums under one
+identity; Floral retains its four Albums. Previously, imports created fresh Artist
+IDs per credit, matching only unified successfully resolved participants, and
+catalog credit reuse was restricted to MusicBrainz.
+
+Core seek requests preserve queue/current-source identity and await engine
+confirmation before accepting further position observations. GStreamer reports
+SeekDone; Spotify uses its existing seek endpoint. The common slider sends one
+request on release, ignores a drag when the Track changes, and previews progress.
+Spotify volume targets the selected device, checks capability, and acknowledges
+requests by revision. Older polls cannot overwrite the pending slider value.
+After a successful command the adapter tolerates stale device volume for up to
+eight seconds, then accepts external device changes again. Errors preserve the
+last accepted volume and are shown in the existing error area.
+
+Follow-up validation: core tests, QML tests, focused GStreamer and Spotify playback
+tests, strict Clippy for all four crates, formatting and diff whitespace checks
+passed. The desktop audit on the migrated real-library copy exercised actual
+local audio seek/volume and the existing browsing/queue/drawer interactions.
+Controlled Spotify HTTP tests cover selected-device volume, stale polling,
+capability errors and rejected commands; QML control tests cover remote seek,
+volume acknowledgements and local/remote handoff. Live Spotify device seek/volume
+and a human cursor-visibility check remain unverified. Qt test teardown still
+prints an existing timer-thread warning; the normal desktop backend also reports
+Mesa/EGL fallback warnings. No rendering environment changes were added.
