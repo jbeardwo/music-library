@@ -11,6 +11,7 @@ use music_library_spotify::playback::{AuthorizationState, Error, Song};
 
 pub enum Pending {
     ClearAfterRemote,
+    LibraryAfterRemote(Vec<music_library::domain::TrackSearchResult>),
     PageAfterRemote,
     QueueAfterLocal(Option<usize>),
     QueueAfterRemote(Option<usize>),
@@ -247,7 +248,7 @@ pub(crate) fn test_handoffs() {
     assert!(searches.try_recv().is_err());
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gstreamer"))]
 pub(crate) fn test_mixed_queue() {
     use crate::{sample, session::Session, spotify_playback::Worker};
     use music_library_spotify::playback::Device;
@@ -378,6 +379,56 @@ pub(crate) fn test_mixed_queue() {
     assert!(searches.try_recv().is_err());
     assert_eq!(b.session.playback.state().queue, queue); // no skip/removal/prefetch
     b.spotify_resolve("cancel".into(), -1);
+    b.spotify_playback_state.error = None; // successful fake worker acknowledgement
+    // New library actions use the same resolver and capture a whole program,
+    // independent of subsequent browse changes during a remote pause handshake.
+    let album = b
+        .session
+        .library
+        .album_for_release(&b.session.rows[0].release_id)
+        .unwrap()
+        .album_id;
+    b.browse_action_impl("play", 2, remote.as_ref().into());
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(..)
+    ));
+    b.finish_remote_handoff();
+    let rows = b
+        .session
+        .library
+        .library_queue(&music_library::browse::Request {
+            album: Some(album),
+            ..Default::default()
+        })
+        .unwrap();
+    b.replace_library_queue(rows);
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPause
+    ));
+    b.browse_action_impl("select", 0, "unrelated-selection".into());
+    b.finish_remote_handoff();
+    assert_eq!(b.session.playback.state().queue.len(), 45);
+    assert_eq!(b.session.queue_labels.len(), 45);
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPlay(..)
+    ));
+    b.finish_remote_handoff();
+    b.browse_action_impl("append", 2, local.as_ref().into());
+    assert_eq!(b.session.playback.state().queue.last(), Some(&local));
+    assert_eq!(b.session.queue_labels.last().unwrap().track_id, local);
+    assert!(searches.try_recv().is_err());
+    b.browse_action_impl("play", 2, local.as_ref().into());
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        Command::ApplicationPause
+    ));
+    b.finish_remote_handoff();
+    assert_eq!(b.session.playback.state().queue, vec![local.clone()]);
+    assert_eq!(b.active_backend, ActiveBackend::Local);
+    b.clear_resolved_queue();
     b.session.defer_confirmations();
     b.session
         .playback
@@ -422,6 +473,36 @@ impl Bridge {
                 self.route_message = "Spotify changed externally or restarted; use Play or Next to resume the application queue".into();
             }
             None => {}
+        }
+    }
+
+    pub(crate) fn replace_library_queue(
+        &mut self,
+        rows: Vec<music_library::domain::TrackSearchResult>,
+    ) {
+        if self.real_audio && matches!(self.active_backend, ActiveBackend::Remote(_)) {
+            self.route_pending = Some(Pending::LibraryAfterRemote(rows));
+            if !self.send_remote(Command::ApplicationPause) {
+                self.route_pending = None;
+            }
+        } else {
+            self.start_library_queue(rows);
+        }
+    }
+
+    fn start_library_queue(&mut self, rows: Vec<music_library::domain::TrackSearchResult>) {
+        if let Err(error) = self.session.replace_queue(rows) {
+            self.session.error = error;
+            return;
+        }
+        self.active_backend = ActiveBackend::None;
+        self.restart_playback = true;
+        if let Some(id) = self.session.playback.state().current_track().cloned() {
+            if self.real_audio {
+                self.resolve_current_play(id.as_ref());
+            } else {
+                self.session.command("play");
+            }
         }
     }
 
@@ -763,6 +844,7 @@ impl Bridge {
             return;
         }
         match pending {
+            Some(Pending::LibraryAfterRemote(rows)) => self.start_library_queue(rows),
             Some(Pending::PageAfterRemote) => {
                 self.active_backend = ActiveBackend::None;
                 self.session.queue_page();

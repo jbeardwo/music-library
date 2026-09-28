@@ -1,0 +1,969 @@
+{
+  "artist": "tricot",
+  "programs": [
+    {
+      "album": {
+        "external_id": "7zNn3gNnkOp2XywYEbQBQN",
+        "kind": "album",
+        "provider": "spotify"
+      },
+      "complete": true,
+      "date": "2013-10-02",
+      "tracks": [
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 61760,
+          "identities": [
+            {
+              "external_id": "1bQu3S9Au6lY3RQ9TbxL3R",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 1,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "pool side"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 237906,
+          "identities": [
+            {
+              "external_id": "6qL7sccU4FQS6zUgKCzNu6",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 2,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "POOL"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 235066,
+          "identities": [
+            {
+              "external_id": "4yb8u8rdkpafKal7meoIPT",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 3,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "飛べ"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 208546,
+          "identities": [
+            {
+              "external_id": "1ltBCWKsPWh0IfnJ9lQGnV",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 4,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "おもてなし"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 302440,
+          "identities": [
+            {
+              "external_id": "7Jzw6ZqrFefr5KlrQzgGJr",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 5,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "artsick"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 188040,
+          "identities": [
+            {
+              "external_id": "5b3L1LA18fP8D97d7WjreA",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 6,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "C&C"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 168146,
+          "identities": [
+            {
+              "external_id": "7pVJtMyNMXlYBh4MevJ692",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 7,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "おちゃんせんすぅす"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 238053,
+          "identities": [
+            {
+              "external_id": "1jCS7yVL3BO6XqSIfXQ3MT",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 8,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "初耳"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 261079,
+          "identities": [
+            {
+              "external_id": "1bhmtYR8dE9XtRAJzQwbZe",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 9,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "99.974℃"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 293213,
+          "identities": [
+            {
+              "external_id": "5vxvGloL8a45hF0Y1iZl2I",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 10,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "タラッタラッタ"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 226133,
+          "identities": [
+            {
+              "external_id": "1KyaOlvdJopOUx0NHWIhic",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 11,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "CGPP"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 267546,
+          "identities": [
+            {
+              "external_id": "1NWtbuB1HwYuLu4ANqxG0M",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 12,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "Swimmer"
+        },
+        {
+          "artists": [
+            {
+              "identities": [
+                {
+                  "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+                  "kind": "artist",
+                  "provider": "spotify"
+                }
+              ],
+              "join_phrase": "",
+              "name": "tricot"
+            }
+          ],
+          "disc": 1,
+          "duration_ms": 210386,
+          "identities": [
+            {
+              "external_id": "5I69tId73dLeUUvj6G9rYL",
+              "kind": "track",
+              "provider": "spotify"
+            }
+          ],
+          "number": 13,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          },
+          "title": "おやすみ"
+        }
+      ]
+    }
+  ],
+  "title": "T H E",
+  "tracks": [
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "2b8824f6-9cd2-41e0-b007-d242811a44d7",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 1,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "39a3e00c-5605-43c2-b6f7-e60ace1e0b15",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308762"
+        ]
+      },
+      "title": "pool side"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "71d7a9b0-387b-45fc-9aa7-f27f9497d8d5",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 2,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "b2e2b4ad-c35f-4898-a346-4ba31148a4f3",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308631"
+        ]
+      },
+      "title": "POOL"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "ab11525f-5519-45d1-b943-e04a124f1606",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 3,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "fd026723-a30a-4b68-bbaf-0215dae3a35e",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308634"
+        ]
+      },
+      "title": "Tobe"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "170499c5-0d08-415e-8137-3a1e82d0e61e",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 4,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "19d95a03-451d-4592-91c3-1a1d6be381cf",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921211840"
+        ]
+      },
+      "title": "Omotenashi"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "5130d96d-3828-4e19-bb1d-18328688c5df",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 5,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "421a6e4c-c57e-4791-a508-caff1758089f",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308637"
+        ]
+      },
+      "title": "art sick"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "12993a8f-fed3-4421-be1d-bea73128111c",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 6,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "922d8768-267f-4633-a7a8-bf250d1d2722",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308636"
+        ]
+      },
+      "title": "C&C"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "5ac2ca28-e414-4ed2-a15f-bb4f45429b5b",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 7,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "d333c1c3-09ed-4a50-88f6-d6888d873670",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308639"
+        ]
+      },
+      "title": "Ochansensu-Su"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "a9ccd459-28e3-406b-b15e-e54d06a9932a",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 8,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "bce4b7ec-b630-4c5f-bd30-e60b822cc89e",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308635"
+        ]
+      },
+      "title": "Hatsumimi"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "26f3762f-e12c-48e1-87ae-f7cfd91e6fcb",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 9,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "fdda29d2-b3f5-4fee-9124-b9d1ad2a1eb0",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921303024"
+        ]
+      },
+      "title": "99.974℃"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "43dfea50-d564-4cb7-9a6c-0c9f24db09d5",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 10,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "b093d630-516a-445b-9f84-1ab215a46a62",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308633"
+        ]
+      },
+      "title": "Tarattaratta"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "c853557d-cd0a-44a4-9465-e8707c945cdd",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 11,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "00da4e8c-0780-46f1-8002-84a74d032275",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308632"
+        ]
+      },
+      "title": "CGPP"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "066b6d0f-18a1-40cd-a500-fd3bb014e79c",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 12,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "46126cd6-a84f-4731-97a2-128648bbc360",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308638"
+        ]
+      },
+      "title": "Swimmer"
+    },
+    {
+      "artists": [
+        {
+          "identities": [
+            {
+              "external_id": "8849da42-cbf6-452b-9220-95c7c691014b",
+              "kind": "artist",
+              "provider": "musicbrainz"
+            },
+            {
+              "external_id": "5IKKS7LhpdlmMwqIagqf3f",
+              "kind": "artist",
+              "provider": "spotify"
+            }
+          ],
+          "join_phrase": "",
+          "name": "tricot"
+        }
+      ],
+      "disc": 1,
+      "duration_ms": null,
+      "identities": [
+        {
+          "external_id": "d22aafe9-7dbe-4b37-9f80-511b9d251344",
+          "kind": "track",
+          "provider": "musicbrainz"
+        }
+      ],
+      "number": 13,
+      "recording": {
+        "identities": [
+          {
+            "external_id": "d547f440-0be8-4bc2-8ef4-83b881e8d977",
+            "kind": "recording",
+            "provider": "musicbrainz"
+          }
+        ],
+        "isrcs": [
+          "JPZ921308629"
+        ]
+      },
+      "title": "Oyasumi"
+    }
+  ],
+  "year": 2013
+}

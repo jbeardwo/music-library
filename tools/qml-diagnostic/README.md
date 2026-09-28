@@ -1,4 +1,21 @@
-# Disposable Qt Quick diagnostic
+# Music Library desktop prototype
+
+The main window is now a three-pane Artists / Albums / Songs library with a persistent
+player and temporary Now Playing drawer. See the [interaction and validation guide](../../docs/library-player-ui.md).
+
+Open an existing library without scanning or requiring a local folder:
+
+```sh
+cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- \
+  --library /absolute/path/library.sqlite --no-auto-match
+```
+
+Double-click to replace the queue and play; right-click to append. Use **Show all**
+or Escape to clear Artist/Album selection. **Add Music** opens the existing catalog
+workflow; global library Search is reserved for the next slice. Playback connection
+and diagnostic matching tools are under **⋯**. No rendering overrides are installed
+by the application. The older diagnostic recipes below remain available for development.
+
 
 ## Unified explicit Play (GStreamer mode)
 

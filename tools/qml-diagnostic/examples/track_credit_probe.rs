@@ -20,10 +20,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     })?;
     let mut spotify = music_library_spotify::Spotify::from_env()?;
-    for title in ["El mañana", "Feel Good Inc.", "Dirty Harry", "DARE"] {
+    let mut titles: Vec<String> = std::env::args().skip(1).collect();
+    if titles.is_empty() {
+        titles = ["El mañana", "Feel Good Inc.", "Dirty Harry", "DARE"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+    }
+    for title in titles {
         let row = rows
             .iter()
-            .find(|r| r.title.eq_ignore_ascii_case(title))
+            .find(|r| r.title.eq_ignore_ascii_case(&title))
             .ok_or("Track absent")?;
         let input = library.song_resolution_input(&row.track_id)?;
         println!("INPUT {input:?}");

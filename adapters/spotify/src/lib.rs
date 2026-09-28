@@ -612,7 +612,7 @@ impl CatalogProvider for Spotify {
         vec![("spotify".into(), "album".into())]
     }
     fn search_artists(&mut self, name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
-        let response: ArtistSearch = self.get(
+        let mut response: ArtistSearch = self.get(
             "search",
             &[
                 ("q", format!("artist:{}", quoted(name))),
@@ -621,6 +621,26 @@ impl CatalogProvider for Spotify {
                 ("offset", "0".into()),
             ],
         )?;
+        // Spotify can interpret the field-qualified query as unrelated text
+        // (observed for toe). Retry discovery once using the quoted name only
+        // when the original page contains no exact-name candidate. Acceptance
+        // still validates the returned Artist and Album through the core matcher.
+        if !response.artists.items.iter().any(|a| {
+            music_library::matching::normalize(&a.name) == music_library::matching::normalize(name)
+        }) {
+            Timing::event(format_args!(
+                "spotify artist name-only discovery fallback={name:?}"
+            ));
+            response = self.get(
+                "search",
+                &[
+                    ("q", quoted(name)),
+                    ("type", "artist".into()),
+                    ("limit", "10".into()),
+                    ("offset", "0".into()),
+                ],
+            )?;
+        }
         let more = response.artists.more();
         Timing::event(format_args!(
             "spotify artist query={name:?} total={} more={more}",

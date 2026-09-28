@@ -1,3 +1,4 @@
+mod browser;
 mod catalog;
 #[cfg(feature = "gstreamer")]
 mod local;
@@ -490,6 +491,21 @@ struct Bridge {
         music_library::album_matching::MatchOutcome,
         String,
     )>,
+    queue_offset: usize,
+    queue_window: qt_method!(
+        fn queue_window(&mut self, offset: i32) {
+            self.queue_offset = (offset.max(0) as usize / 200) * 200;
+            self.changed();
+        }
+    ),
+    browser: browser::Browser,
+    browse_snapshot: qt_property!(QVariantMap; READ browse_value NOTIFY browse_changed),
+    browse_changed: qt_signal!(),
+    browse_action: qt_method!(
+        fn browse_action(&mut self, action: String, pane: i32, id: String) {
+            self.browse_action_impl(&action, pane as usize, id);
+        }
+    ),
     set_volume: qt_method!(
         fn set_volume(&mut self, value: f64) {
             self.session.set_volume(value);
@@ -680,6 +696,12 @@ impl Bridge {
             matcher: None,
             matching_tracks: Default::default(),
             matching_rows: Vec::new(),
+            queue_offset: 0,
+            queue_window: Default::default(),
+            browser: Default::default(),
+            browse_snapshot: Default::default(),
+            browse_changed: Default::default(),
+            browse_action: Default::default(),
             set_volume: Default::default(),
             search: Default::default(),
             page_next: Default::default(),
@@ -1385,6 +1407,7 @@ impl Bridge {
                         let refresh =
                             music_library::catalog::Timing::new("post_import.search_refresh");
                         self.session.search(release.album.title);
+                        self.browse_action_impl("refresh", 0, String::new());
                         drop(refresh);
                         format!(
                             "Added Album: {} Tracks (no playback started).",
@@ -1480,6 +1503,11 @@ impl Bridge {
             .queue
             .iter()
             .enumerate()
+            .skip(
+                self.queue_offset
+                    .min(state.queue.len().saturating_sub(1) / 200 * 200),
+            )
+            .take(200)
             .map(|(i, id)| {
                 // IDs/position come from PlaybackState, labels are presentation-only snapshots.
                 let label = s.queue_labels.get(i).filter(|row| &row.track_id == id);
@@ -1487,6 +1515,8 @@ impl Bridge {
                     ("title", string(label.map_or(id.as_ref(), |row| &row.title))),
                     ("trackId", string(id.as_ref())),
                     ("current", (state.position == Some(i)).into()),
+                    ("artist", string(label.map_or("", |row| &row.artist_names))),
+                    ("album", string(label.map_or("", |row| &row.release_title))),
                 ]
                 .into_iter()
                 .collect();
@@ -1495,8 +1525,33 @@ impl Bridge {
             .collect();
         let current = state.position.and_then(|i| s.queue_labels.get(i));
         [
+            (
+                "currentArtist",
+                string(current.map_or("", |row| &row.artist_names)),
+            ),
+            (
+                "currentAlbum",
+                string(current.map_or("", |row| &row.release_title)),
+            ),
+            (
+                "playing",
+                (if remote_active {
+                    self.spotify_playback_state.state.playing
+                } else {
+                    state.status == music_library::playback::PlaybackStatus::Playing
+                })
+                .into(),
+            ),
             ("rows", rows.into()),
             ("queue", queue.into()),
+            ("queueTotal", (state.queue.len() as i32).into()),
+            (
+                "queueOffset",
+                (self
+                    .queue_offset
+                    .min(state.queue.len().saturating_sub(1) / 200 * 200) as i32)
+                    .into(),
+            ),
             (
                 "currentTitle",
                 string(current.map_or("—", |row| &row.title)),
@@ -1527,6 +1582,7 @@ impl Bridge {
                 ),
             ),
             ("volume", state.volume.get().into()),
+            ("volumeAvailable", (!remote_active).into()),
             ("realAudio", self.real_audio.into()),
             ("route", string(&self.route_message)),
             (
@@ -1947,6 +2003,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spotify = providers[0] == "spotify";
     let auto_match = !args.iter().any(|a| a == "--no-auto-match");
     args.retain(|a| a != "--no-auto-match");
+    let database = if let Some(index) = args.iter().position(|a| a == "--library") {
+        let path = args
+            .get(index + 1)
+            .ok_or("--library requires a database path")?
+            .clone();
+        args.drain(index..=index + 1);
+        Some(std::path::PathBuf::from(path))
+    } else {
+        None
+    };
     let (smoke, folder) = match args.as_slice() {
         [] => (false, None),
         [arg] if arg == "--smoke-test" => (true, None),
@@ -1956,23 +2022,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         _ => {
             return Err(
-                "usage: qml-diagnostic [--catalog-provider musicbrainz|spotify | --catalog-providers spotify,musicbrainz] [--no-auto-match] [--smoke-test | --gstreamer FOLDER [--smoke-test]]".into(),
+                "usage: qml-diagnostic [--catalog-provider musicbrainz|spotify | --catalog-providers spotify,musicbrainz] [--no-auto-match] [--library DATABASE | --gstreamer FOLDER] [--smoke-test]".into(),
             );
         }
     };
+    if database.is_some() && folder.is_some() {
+        return Err("Choose --library DATABASE or --gstreamer FOLDER".into());
+    }
+    let persistent = database.is_some();
     #[cfg(not(feature = "gstreamer"))]
     if folder.is_some() {
         return Err("rebuild with --features gstreamer to use real audio".into());
     }
     #[cfg(feature = "gstreamer")]
-    let (_temp, library, imports) = if let Some(folder) = &folder {
+    let (_temp, library, imports) = if let Some(path) = &database {
+        (
+            tempfile::tempdir()?,
+            music_library::Library::open(path)?,
+            vec![],
+        )
+    } else if let Some(folder) = &folder {
         local::load(folder)?
     } else {
         let (temp, library) = sample::create()?;
         (temp, library, vec![])
     };
     #[cfg(not(feature = "gstreamer"))]
-    let (_temp, library, imports) = {
+    let (_temp, library, imports) = if let Some(path) = &database {
+        (
+            tempfile::tempdir()?,
+            music_library::Library::open(path)?,
+            vec![],
+        )
+    } else {
         let (temp, library) = sample::create()?;
         (temp, library, vec![])
     };
@@ -1983,7 +2065,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bridge.pinned().borrow_mut().catalog_providers = providers;
     let mut engine = QmlEngine::new();
     #[cfg(feature = "gstreamer")]
-    if folder.is_some() {
+    if folder.is_some() || persistent {
         let deliver = engine_callback(bridge.pinned());
         let audio = music_library_gstreamer::GStreamerEngine::new(deliver)?;
         let pinned = bridge.pinned();
@@ -2000,7 +2082,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "QML did not create the diagnostic window; check Qt module errors above".into(),
             );
         }
-        if smoke && folder.is_some() {
+        if smoke && (folder.is_some() || persistent) {
             // Real-mode startup/teardown check, deliberately without audible playback.
             println!("QML real-engine startup smoke test passed (no playback)");
         } else if smoke {
@@ -2285,33 +2367,67 @@ mod event_delivery_tests {
         assert!(engine.invoke_method("ready".into(), &[]).to_bool());
         engine.invoke_method("auditSearch".into(), &[]);
         engine.exec();
-        let index = bridge.pinned().borrow().catalog.groups.iter().position(|a|
-            a.title == "Demon Days" && a.artist == "Gorillaz" && a.primary_type == "Album"
-        ).expect("catalog Album");
+        let index = bridge
+            .pinned()
+            .borrow()
+            .catalog
+            .groups
+            .iter()
+            .position(|a| {
+                a.title == "Demon Days" && a.artist == "Gorillaz" && a.primary_type == "Album"
+            })
+            .expect("catalog Album");
         engine.invoke_method("addAlbum".into(), &[(index as u32).into()]);
         engine.exec();
-        assert!(bridge.pinned().borrow().catalog.status.starts_with("Added Album"));
-        assert!(bridge.pinned().borrow().spotify_album_matcher.is_some(), "Add must schedule Spotify");
+        assert!(
+            bridge
+                .pinned()
+                .borrow()
+                .catalog
+                .status
+                .starts_with("Added Album")
+        );
+        assert!(
+            bridge.pinned().borrow().spotify_album_matcher.is_some(),
+            "Add must schedule Spotify"
+        );
         engine.invoke_method("auditWait".into(), &[]);
         engine.exec();
-        let rows = bridge.pinned().borrow().session.library.search(&music_library::domain::SearchRequest {
-            limit: 100, ..Default::default()
-        }).unwrap();
+        let rows = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .search(&music_library::domain::SearchRequest {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap();
         assert_eq!(rows.len(), 15);
-        println!("LIVE catalog Add: {}", bridge.pinned().borrow().spotify_resolution_message);
+        println!(
+            "LIVE catalog Add: {}",
+            bridge.pinned().borrow().spotify_resolution_message
+        );
         bridge.pinned().borrow_mut().spotify_album_matcher.take();
         bridge.pinned().borrow_mut().catalog.worker.take();
         drop(engine);
         drop(bridge);
         let library = music_library::Library::open(&path).unwrap();
         for row in &rows {
-            let ids = library.track_provider_occurrences(&row.track_id, "spotify").unwrap();
+            let ids = library
+                .track_provider_occurrences(&row.track_id, "spotify")
+                .unwrap();
             assert_eq!(ids.len(), 1, "{}", row.title);
             let capability = music_library::playback_resolver::RemoteCapability {
-                provider: "spotify", unavailable: None, catalog_available: true, accepts: |_| true,
+                provider: "spotify",
+                unavailable: None,
+                catalog_available: true,
+                accepts: |_| true,
             };
-            assert!(matches!(library.playback_route(&row.track_id, &capability).unwrap(),
-                music_library::playback_resolver::Route::Remote(_)));
+            assert!(matches!(
+                library.playback_route(&row.track_id, &capability).unwrap(),
+                music_library::playback_resolver::Route::Remote(_)
+            ));
         }
         println!("LIVE catalog Add: reopened 15/15; playback catalog requests=0");
     }
@@ -3661,5 +3777,76 @@ mod event_delivery_tests {
         assert!(state.manual_associations[&album].is_empty());
         // Join while the test's main-thread engine owner still exists.
         bridge.pinned().borrow_mut().matcher.take();
+    }
+}
+
+#[cfg(test)]
+mod library_ui_tests {
+    use super::*;
+    #[cfg(feature = "gstreamer")]
+    #[test]
+    #[ignore = "opt-in desktop/audio audit on a disposable copy of a real library"]
+    fn real_library_desktop_audit() {
+        let path = std::env::var("MUSIC_LIBRARY_UI_AUDIT_DATABASE")
+            .expect("set a disposable library copy");
+        let library = music_library::Library::open(path).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        let audio = std::env::var_os("MUSIC_LIBRARY_UI_AUDIT_AUDIO").is_some();
+        if audio {
+            let deliver = engine_callback(bridge.pinned());
+            let player = music_library_gstreamer::GStreamerEngine::new(deliver).unwrap();
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.real_audio = true;
+            b.session.playback =
+                music_library::playback::Playback::new(session::Engine::GStreamer(player));
+        }
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LibraryDesktopAudit.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let result = engine
+            .invoke_method("desktopAudit".into(), &[audio.into()])
+            .to_qstring()
+            .to_string();
+        bridge.pinned().borrow_mut().session.shutdown_audio();
+        assert_eq!(result, "ok");
+    }
+
+    #[test]
+    fn mouse_keyboard_selection_queue_and_drawer() {
+        let (_temp, library) = sample::create().unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LibraryUiTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseLibraryUi".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
     }
 }

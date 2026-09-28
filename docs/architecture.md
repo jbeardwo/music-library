@@ -1482,12 +1482,21 @@ ignoring their display join phrases. Omitted contributors are incomplete evidenc
 unresolved additional contributors can support exact title/position human-program
 correlation without establishing occurrence IDs while the representation is unresolved.
 After a Spotify Album representation is accepted, `complete_album_program` revalidates
-that identity and the Track snapshot, then may associate an otherwise unresolved
-occurrence by matching explicit disc/Track position and safely normalized musical
-title. Contributor disagreement does not veto this occurrence-only association.
-The fallback requires a unique occurrence agreed by every complete supplied program;
-it never creates Recording, contributor/alias, or exact-edition identity. Manual
-choices remain authoritative. Album selection and explicit Track search keep their
+that identity and the Track snapshot, then evaluates Spotify occurrences inside the
+accepted program. Explicit disc/Track position is required. A safely normalized title
+corroborates the occurrence; an uncorroborated title can also associate when at least
+three distinct present positions have exact title agreement in that program. This
+reuses the program corroboration threshold without requiring complete library membership.
+No script, transliteration, translation or contributor equivalence is inferred.
+Duplicate/missing positions, insufficient program length, and known titles occurring
+at different positions make the surrounding structure unusable. Semantic version
+qualifiers and trusted occurrence/Recording/primary-Artist identity conflicts veto
+the affected occurrence. Every complete supplied program must agree on its unique ID.
+No Recording, contributor/alias, or exact-edition identity is created. Manual choices
+remain authoritative. The program rule is never used during unresolved Album candidate
+consensus or global Track search. Global search lacks a revalidated provider Album
+identity and surrounding program; title corroboration remains required there. Both
+paths share musical-title normalization and semantic qualifier comparison. Album selection and explicit Track search keep their
 existing credit checks. A trailing featured-title annotation is removed
 only in comparison, when fully corroborated by that provider's additional Artist
 list. Missing duration is unknown. Different Spotify Track IDs can describe two
@@ -1969,3 +1978,21 @@ closes the channel and joins the worker without waiting for cooldown; an already
 active HTTP operation retains its existing bounded shutdown behavior. Callers of
 `AlbumMatcher::new` route both completion and retry callbacks to the application
 owner; Qt is only the callback transport, not the timer owner.
+
+Spotify Artist discovery retains its bounded field-qualified query. If that page
+contains no exact normalized Artist name, one quoted-name-only retry is permitted;
+the usual Artist/Album acceptance rules still apply. No retry occurs when a matching
+Artist is already present, and no pagination or per-Track discovery is added.
+See [established-program occurrence audit](spotify-established-program-audit.md) for
+toe/tricot evidence, the query discrepancy, safeguards and live request counts.
+
+
+## Desktop library/player prototype
+
+The QML shell now uses provider-neutral bounded library browsing (`browse`) for
+Artists, Albums and Songs. Membership and credit filtering occur in SQL with stable
+cursor ordering and dedicated browse indexes. Artist/Album queue preparation uses a
+read-only connection off the Qt thread; the existing playback boundary and resolver
+still own queue execution. QML receives at most 200 rows per pane/queue page, and
+playback notifications do not rebuild library lists. This remains a frontend
+prototype, not a public skin format. See [interaction, performance and validation](library-player-ui.md).

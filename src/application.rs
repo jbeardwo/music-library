@@ -10,7 +10,7 @@ use crate::storage::{Result, Store};
 
 /// Frontend-independent entry point for backend product operations.
 pub struct Library {
-    store: Store,
+    pub(crate) store: Store,
 }
 
 impl Library {

@@ -4,3 +4,8 @@ DROP TABLE manual_track_recording_claim;
 DROP TABLE recording_manual_identity;
 DROP TABLE manual_track_association;
 DROP TABLE IF EXISTS provider_track_association;
+
+-- Downgrade fixtures also remove the later library browsing indexes.
+DROP INDEX IF EXISTS artist_browse_name;
+DROP INDEX IF EXISTS album_browse_title;
+DROP INDEX IF EXISTS track_browse_title;

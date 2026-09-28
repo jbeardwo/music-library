@@ -250,7 +250,7 @@ impl Session {
         self.finish("previous search page", result);
     }
 
-    fn replace_queue(&mut self, rows: Vec<TrackSearchResult>) -> Result<(), String> {
+    pub(crate) fn replace_queue(&mut self, rows: Vec<TrackSearchResult>) -> Result<(), String> {
         self.playback
             .set_queue(rows.iter().map(|row| row.track_id.clone()).collect())
             .map_err(|e| e.to_string())?;

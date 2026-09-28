@@ -676,6 +676,15 @@ Tracks, independent of partial saved membership or local source availability.
 for explicit overrides, without more HTTP. Filtering to one visible result never
 by itself persists an association; automatic acceptance remains stricter.
 
+Inside an accepted, revalidated provider Album/program, explicit matching disc/Track
+position can establish an occurrence even when title strings do not corroborate,
+provided surrounding program evidence is strong (at least three distinct exact
+position/title anchors). Partial Albums remain supported; absent Tracks are never
+created. Structural ordering contradictions, semantic version differences and trusted
+identity conflicts must still block automatic association. Title, contributor and
+Recording relationships remain unresolved independently of the occurrence. This rule
+must not establish an otherwise unresolved provider Album or infer linguistic equivalence.
+
 These Track associations are independently useful for playback, survive reopen, and
 avoid catalog search on Play. Manual associations remain authoritative. Spotify Track
 identity does not imply Recording identity; Spotify Album identity does not imply exact
@@ -871,3 +880,16 @@ Track occurrence despite contributor-credit disagreement. Semantic versions such
 as Live or Remix must still agree. This rule must not choose an unresolved Album
 representation, infer contributor aliases, Recording identity or exact edition,
 or overwrite a manual association.
+
+
+## Initial desktop library/player
+
+The initial interface uses Artists, Albums and Songs panes without permanent sidebar
+navigation. Artist selection filters Albums/Songs while preserving Artists; Album
+selection filters Songs and switches to disc/Track order. Song selection never
+filters other panes. Clearing Artist also clears Album; clearing Album retains Artist.
+Double-click replaces and starts the relevant saved Track program; Add to queue
+appends it. A persistent current-Track/player area opens a temporary Now Playing
+panel. Global library search is a future independent operation, with a visible hook
+in this slice; Add Music reuses the existing catalog Add flow. See
+[the implemented interaction model](library-player-ui.md).

@@ -197,11 +197,20 @@ fn exact(left: &str, right: &str) -> bool {
     !left.trim().is_empty() && crate::matching::normalize(left) == crate::matching::normalize(right)
 }
 fn same_title(input: &Input, c: &Candidate) -> bool {
-    exact(
-        crate::artist_credit::musical_title(&input.title, &input.artists),
-        crate::artist_credit::musical_title(&c.title, &c.artists),
-    )
+    let left = crate::edition::TrackEvidence {
+        title: Some(input.title.clone()),
+        artists: input.artists.clone(),
+        ..Default::default()
+    };
+    let right = crate::edition::TrackEvidence {
+        title: Some(c.title.clone()),
+        artists: c.artists.clone(),
+        ..Default::default()
+    };
+    crate::album_program::title_relation(&left, &right)
+        == crate::album_program::TitleRelation::Agrees
 }
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FeasibilityClass {
     Preferred,

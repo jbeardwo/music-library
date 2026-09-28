@@ -102,13 +102,28 @@ impl CatalogProvider for Provider {
         vec![("plain-catalog".into(), "album".into())]
     }
     fn search_artists(&mut self, _: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
-        Ok(Page { next_offset: None, items: vec![ArtistCandidate {
-            identity: id("artist", "artist"), name: "Artist".into(), aliases: vec![],
-            comment: String::new(), country: String::new(), artist_type: String::new(), score: None,
-        }] })
+        Ok(Page {
+            next_offset: None,
+            items: vec![ArtistCandidate {
+                identity: id("artist", "artist"),
+                name: "Artist".into(),
+                aliases: vec![],
+                comment: String::new(),
+                country: String::new(),
+                artist_type: String::new(),
+                score: None,
+            }],
+        })
     }
-    fn artist_albums(&mut self, _: &ExternalIdentity, _: &str) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
-        Ok(Page { next_offset: None, items: self.albums.clone() })
+    fn artist_albums(
+        &mut self,
+        _: &ExternalIdentity,
+        _: &str,
+    ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+        Ok(Page {
+            next_offset: None,
+            items: self.albums.clone(),
+        })
     }
 
     fn album_candidate_programs(&self) -> bool {
@@ -1271,7 +1286,10 @@ fn preferred_demon_days_persists_dare_with_unresolved_contributors() {
 #[test]
 fn preferred_representation_survives_import_worker_completion_and_restart() {
     use music_library::album_matching::{AlbumMatcher, AutoMatchPolicy, MatchReply};
-    enum Event { Album(Box<MatchReply>), Program(Box<music_library::album_program::Reply>) }
+    enum Event {
+        Album(Box<MatchReply>),
+        Program(Box<music_library::album_program::Reply>),
+    }
     for (year, alternate_date, expected) in [
         (Some(2005), "2014-04-11", true),
         (Some(2005), "2005-01-01", false),
@@ -1281,35 +1299,79 @@ fn preferred_representation_survives_import_worker_completion_and_restart() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("db");
         let mut lib = music_library::Library::open(&path).unwrap();
-        let imported = lib.create_catalog_release(&CatalogReleaseInput {
-            title: "Album".into(), year,
-            artists: vec![ArtistCreditInput { name: "Artist".into(), role: None }],
-            tracks: (1..=5).map(|n| CatalogTrackInput {
-                title: format!("Song {n}"), artists: vec![], disc_number: Some(1), track_number: Some(n),
-            }).collect(),
-        }).unwrap();
-        let album = lib.album_for_release(&imported.release_id).unwrap().album_id;
+        let imported = lib
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Album".into(),
+                year,
+                artists: vec![ArtistCreditInput {
+                    name: "Artist".into(),
+                    role: None,
+                }],
+                tracks: (1..=5)
+                    .map(|n| CatalogTrackInput {
+                        title: format!("Song {n}"),
+                        artists: vec![],
+                        disc_number: Some(1),
+                        track_number: Some(n),
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let album = lib
+            .album_for_release(&imported.release_id)
+            .unwrap()
+            .album_id;
         let mut provider = Provider::new();
         provider.albums = vec![
-            ArtistAlbumCandidate { date: alternate_date.into(), ..candidate("b") },
-            ArtistAlbumCandidate { date: "2005-05-23".into(), ..candidate("a") },
+            ArtistAlbumCandidate {
+                date: alternate_date.into(),
+                ..candidate("b")
+            },
+            ArtistAlbumCandidate {
+                date: "2005-05-23".into(),
+                ..candidate("a")
+            },
         ];
         for t in &mut provider.programs.get_mut("b").unwrap().programs[0].tracks {
             t.identities = vec![id("song", &format!("alternate{}", t.number.unwrap()))];
         }
         let (tx, rx) = std::sync::mpsc::channel();
         let program_tx = tx.clone();
-        let mut matcher = AlbumMatcher::for_provider(provider, MatchingScope {
-            provider: "plain-catalog".into(), artist_kind: "artist".into(), album_kind: "album".into(),
-        }, move |r| { tx.send(Event::Album(Box::new(r))).unwrap(); },
-        move |r| { program_tx.send(Event::Program(Box::new(r))).unwrap(); }, |_| {}).unwrap();
-        matcher.after_import(&lib, std::slice::from_ref(&imported), AutoMatchPolicy::default()).unwrap();
+        let mut matcher = AlbumMatcher::for_provider(
+            provider,
+            MatchingScope {
+                provider: "plain-catalog".into(),
+                artist_kind: "artist".into(),
+                album_kind: "album".into(),
+            },
+            move |r| {
+                tx.send(Event::Album(Box::new(r))).unwrap();
+            },
+            move |r| {
+                program_tx.send(Event::Program(Box::new(r))).unwrap();
+            },
+            |_| {},
+        )
+        .unwrap();
+        matcher
+            .after_import(
+                &lib,
+                std::slice::from_ref(&imported),
+                AutoMatchPolicy::default(),
+            )
+            .unwrap();
         assert!(matcher.pending_count() > 0);
         while matcher.pending_count() > 0 {
             match rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap() {
                 Event::Album(reply) => {
-                    if expected { assert_eq!(reply.outcome, MatchOutcome::Matched(id("album", "a"))); }
-                    else { assert!(matches!(reply.outcome, MatchOutcome::AlbumEquivalent { .. })); }
+                    if expected {
+                        assert_eq!(reply.outcome, MatchOutcome::Matched(id("album", "a")));
+                    } else {
+                        assert!(matches!(
+                            reply.outcome,
+                            MatchOutcome::AlbumEquivalent { .. }
+                        ));
+                    }
                     matcher.complete(&mut lib, *reply);
                 }
                 Event::Program(reply) => {
@@ -1322,17 +1384,39 @@ fn preferred_representation_survives_import_worker_completion_and_restart() {
         drop(matcher);
         drop(lib);
         let lib = music_library::Library::open(&path).unwrap();
-        assert!(lib.list_release_external_identities(&imported.release_id).unwrap().is_empty());
+        assert_eq!(
+            lib.list_album_external_identities(&album).unwrap().len(),
+            usize::from(expected)
+        );
+        assert!(
+            lib.list_release_external_identities(&imported.release_id)
+                .unwrap()
+                .is_empty()
+        );
         for (n, track) in imported.track_ids.iter().enumerate() {
-            let ids = lib.track_provider_occurrences(track, "plain-catalog").unwrap();
+            let ids = lib
+                .track_provider_occurrences(track, "plain-catalog")
+                .unwrap();
             if expected {
                 let occurrence = id("song", &format!("song{}", n + 1));
                 assert_eq!(ids, vec![occurrence.clone()]);
                 // No provider exists after reopen, and catalog access is disabled.
-                assert_eq!(lib.playback_route(track, &music_library::playback_resolver::RemoteCapability {
-                    provider: "plain-catalog", unavailable: None, catalog_available: false, accepts: |_| true,
-                }).unwrap(), music_library::playback_resolver::Route::Remote(occurrence));
-            } else { assert!(ids.is_empty()); }
+                assert_eq!(
+                    lib.playback_route(
+                        track,
+                        &music_library::playback_resolver::RemoteCapability {
+                            provider: "plain-catalog",
+                            unavailable: None,
+                            catalog_available: false,
+                            accepts: |_| true,
+                        }
+                    )
+                    .unwrap(),
+                    music_library::playback_resolver::Route::Remote(occurrence)
+                );
+            } else {
+                assert!(ids.is_empty());
+            }
         }
     }
 }

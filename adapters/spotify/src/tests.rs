@@ -253,6 +253,8 @@ fn client_credentials_cache_refresh_and_redaction() {
         )
     );
     assert!(requests[1].contains("market=US"));
+    assert!(requests[1].contains("q=artist%3A%22Artist%22"));
+    assert!(requests[1].contains("type=artist"));
     assert!(requests[1].contains("limit=10"));
 }
 
@@ -538,4 +540,62 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
         .1
         .into_owned();
     assert_eq!(query, "track:\"Feel Good Inc.\" artist:\"Gorillaz\"");
+}
+
+#[test]
+#[ignore = "read-only live Artist-query diagnosis"]
+fn live_artist_query_forms() {
+    let mut client = Spotify::from_env().unwrap();
+    for query in ["artist:\"toe\"", "\"toe\"", "toe"] {
+        let page: ArtistSearch = client
+            .get(
+                "search",
+                &[
+                    ("q", query.into()),
+                    ("type", "artist".into()),
+                    ("limit", "10".into()),
+                    ("offset", "0".into()),
+                ],
+            )
+            .unwrap();
+        println!(
+            "QUERY {query:?} total={} more={} artists={:?}",
+            page.artists.total,
+            page.artists.more(),
+            page.artists
+                .items
+                .iter()
+                .map(|a| (&a.name, &a.id))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn artist_name_only_retry_is_bounded_and_preserves_exact_acceptance() {
+    let unrelated = (
+        200,
+        json!({"artists":{"items":[{"id":"wrong","name":"Artist Joe Smith"}],"total":1,"next":null}}),
+        None,
+    );
+    let toe = (
+        200,
+        json!({"artists":{"items":[{"id":"toe1","name":"toe"},{"id":"other","name":"Lil Toe"}],"total":2,"next":null}}),
+        None,
+    );
+    let mut mock = Mock::new(vec![token(), unrelated.clone(), toe]);
+    let page = mock.client.search_artists("toe").unwrap();
+    assert_eq!(
+        music_library::album_matching::resolve_artist("toe", &page).unwrap(),
+        id("artist", "toe1")
+    );
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[1].contains("q=artist%3A%22toe%22"));
+    assert!(requests[2].contains("q=%22toe%22"));
+    assert!(requests[2].contains("limit=10"));
+    let mut mock = Mock::new(vec![token(), unrelated.clone(), unrelated]);
+    let page = mock.client.search_artists("toe").unwrap();
+    assert!(music_library::album_matching::resolve_artist("toe", &page).is_err());
+    assert_eq!(mock.finish().len(), 3);
 }

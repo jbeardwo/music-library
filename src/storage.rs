@@ -212,7 +212,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 12 {
+        } else if version > 13 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -297,6 +297,9 @@ impl Store {
             connection.execute_batch(include_str!(
                 "../migrations/0012_provider_track_associations.sql"
             ))?;
+        }
+        if version < 13 {
+            connection.execute_batch(include_str!("../migrations/0013_library_browse.sql"))?;
         }
         Ok(Self {
             connection,

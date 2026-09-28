@@ -5,16 +5,28 @@ import QtQuick.Layouts
 
 ApplicationWindow {
     id: window
-    width: 1050
-    height: 840
+    width: 1180
+    height: 740
     minimumWidth: 800
-    minimumHeight: 700
+    minimumHeight: 480
     visible: true
-    title: window.view.realAudio ? "Music Library — GstPlay local audio diagnostic" : "Music Library — fake engine (NO AUDIO)"
+    title: window.view.realAudio ? "Music Library" : "Music Library — Demo (no audio)"
     // One dynamic context object; the Rust/QML smoke test checks this boundary.
     // qmllint disable unqualified
     readonly property var bridge: diagnostic
     // qmllint enable unqualified
+    readonly property var library: window.bridge.browse_snapshot
+    Component.onCompleted: { window.bridge.browse_action("refresh", 0, ""); syncQueue(); }
+    property string queueSignature: ""
+    ListModel { id: queueRows; dynamicRoles: true }
+    function syncQueue() {
+        const signature = JSON.stringify(view.queue);
+        if (signature === queueSignature) return;
+        queueSignature = signature;
+        queueRows.clear();
+        for (const row of view.queue) queueRows.append({rowData: row});
+    }
+    onViewChanged: syncQueue()
     readonly property var view: window.bridge.snapshot
     readonly property var matchingView: window.bridge.matching_snapshot
     readonly property var catalogView: window.bridge.catalog_snapshot
@@ -236,33 +248,7 @@ ApplicationWindow {
         }
     }
 
-    header: ToolBar {
-        RowLayout {
-            Button {
-                text: "Local Album matches…"
-                onClicked: matchingDialog.open()
-            }
-            Button {
-                text: "Spotify Playback…"
-                onClicked: spotifyPlaybackDialog.open()
-            }
-            Button {
-                text: window.bridge.matching_provider.probe ? "Retrying…" : "Retry Matching"
-                visible: window.bridge.matching_provider.paused
-                enabled: !window.bridge.matching_provider.probe
-                onClicked: window.bridge.retry_matching()
-            }
-            Label {
-                visible: window.bridge.matching_provider.paused || window.bridge.matching_provider.queued > 0
-                text: window.bridge.matching_provider.paused ? window.bridge.matching_provider.message + " (" + window.bridge.matching_provider.queued + " preserved)" : window.bridge.matching_provider.name + " matching: " + window.bridge.matching_provider.queued + " queued/running"
-                Layout.maximumWidth: 550
-                wrapMode: Text.Wrap
-            }
-            Label {
-                text: "Local music is usable while matching runs. " + window.matchingView.length + " imported Albums"
-            }
-        }
-    }
+
     Dialog {
         id: matchingDialog
         title: "Local Album matching [" + window.bridge.matching_provider.name + "] — " + (window.bridge.matching_provider.paused ? "unavailable; retrying automatically" : window.bridge.matching_provider.processing ? "processing; " + (window.bridge.matching_provider.queued - 1) + " waiting" : window.bridge.matching_provider.queued > 0 ? window.bridge.matching_provider.queued + " waiting" : "queue idle")
@@ -474,7 +460,7 @@ ApplicationWindow {
 
     Dialog {
         id: catalogDialog
-        title: "MusicBrainz catalog (diagnostic)"
+        title: "Add Music"
         width: Math.min(window.width - 40, 980)
         height: 560
         property bool showEditions: false
@@ -613,7 +599,7 @@ ApplicationWindow {
             window.bridge.set_volume(1);
             check(view.volume === 1, "restore volume");
             check(view.rows.length === 20, "bounded initial page");
-            check(results.count === 20, "list model binding");
+            check(window.library.panes.length === 3 && window.library.panes[2].rows.length === 45, "three pane binding");
             const firstId = view.rows[0].trackId;
             window.bridge.page_next();
             check(view.page === 2 && view.rows[0].trackId !== firstId, "cursor next");
@@ -649,7 +635,7 @@ ApplicationWindow {
             window.bridge.play_row(view.rows[0].trackId);
             check(view.status === "Stopped" && view.error.length > 0, "unavailable error");
             window.bridge.search("nothingmatches");
-            check(view.rows.length === 0 && results.count === 0 && !view.hasNext, "empty results");
+            check(view.rows.length === 0 && !view.hasNext, "empty results");
             clearButton.clicked();
             check(view.queue.length === 0 && queue.count === 0 && view.position === -1, "clear queue binding");
             check(!previousButton.enabled && !nextButton.enabled, "empty movement disabled");
@@ -702,214 +688,292 @@ ApplicationWindow {
         }
     }
 
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 12
-        spacing: 8
-        Label {
-            text: window.view.realAudio ? "DIAGNOSTIC ONLY · Real local audio · Temporary library from supplied folder" : "DIAGNOSTIC ONLY · Synthetic 45-Track library · Fake engine · No audio or real files"
+    palette.window: "#f6f5f3"
+    palette.highlight: "#96506d"
+    palette.highlightedText: "white"
+    color: palette.window
+
+    property int contextPane: 0
+    property string contextId: ""
+    Menu {
+        id: libraryMenu
+        MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("play", window.contextPane, window.contextId) }
+        MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
+    }
+
+    component LibraryPane: ColumnLayout {
+        id: pane
+        required property int paneIndex
+        required property string heading
+        readonly property var pageData: window.library.panes[paneIndex]
+        readonly property string selectedId: paneIndex === 0 ? window.library.artist : paneIndex === 1 ? window.library.album : songId
+        property string songId: ""
+        property string rowsSignature: ""
+        ListModel { id: paneRows; dynamicRoles: true }
+        function syncRows() {
+            const signature = JSON.stringify(pageData.rows);
+            if (signature === rowsSignature) return;
+            rowsSignature = signature;
+            paneRows.clear();
+            for (const row of pageData.rows) paneRows.append({rowData: row});
+            songId = "";
+            list.currentIndex = -1;
+            list.positionViewAtBeginning();
+        }
+        onPageDataChanged: syncRows()
+        Component.onCompleted: syncRows()
+        Layout.fillHeight: true
+        spacing: 0
+        function selectRow(index) {
+            if (index < 0 || index >= pageData.rows.length) return;
+            list.currentIndex = index;
+            songId = pageData.rows[index].id;
+            window.bridge.browse_action("select", paneIndex, songId);
+        }
+        function playRow(index) {
+            if (index >= 0 && index < pageData.rows.length)
+                window.bridge.browse_action("play", paneIndex, pageData.rows[index].id);
+        }
+        RowLayout {
             Layout.fillWidth: true
-            wrapMode: Text.Wrap
-        }
-        RowLayout {
-            Button {
-                text: "Catalog…"
-                enabled: window.bridge.matching_provider.catalogAddSupported
-                onClicked: catalogDialog.open()
-            }
-            TextField {
-                id: query
-                Layout.fillWidth: true
-                placeholderText: "Search title, Artist, Release"
-                onAccepted: window.bridge.search(text)
-            }
-            Button {
-                text: "Search / reset page"
-                onClicked: window.bridge.search(query.text)
+            Layout.preferredHeight: 44
+            Label { text: pane.heading; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true }
+            ToolButton {
+                text: "Show all"
+                visible: pane.paneIndex < 2 && pane.selectedId.length > 0
+                Accessible.name: "Clear " + pane.heading.toLowerCase() + " selection"
+                onClicked: { window.bridge.browse_action("select", pane.paneIndex, ""); list.currentIndex = -1; }
             }
         }
-        RowLayout {
-            Label {
-                text: "Results for “" + window.view.searchText + "” · Page " + window.view.page
-                Layout.fillWidth: true
-            }
-            Button {
-                text: "Previous page"
-                enabled: window.view.page > 1
-                onClicked: window.bridge.page_previous()
-            }
-            Button {
-                text: "Next page"
-                enabled: window.view.hasNext
-                onClicked: window.bridge.page_next()
-            }
-            Button {
-                text: "Queue this page (stops)"
-                enabled: window.view.rows.length > 0
-                onClicked: window.bridge.queue_page()
-            }
-        }
+        Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#d9d6d3" }
         ListView {
-            id: results
+            id: list
+            objectName: "libraryPane" + pane.paneIndex
             Layout.fillWidth: true
             Layout.fillHeight: true
-            Layout.minimumHeight: 160
             clip: true
-            model: window.view.rows
+            model: paneRows
+            currentIndex: -1
+            activeFocusOnTab: true
+            keyNavigationEnabled: false
+            boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            delegate: RowLayout {
-                id: resultRow
-                required property var modelData
-                width: results.width - 18
-                height: 54
-                Label {
-                    text: resultRow.modelData.title + "\n" + resultRow.modelData.artist + " · " + resultRow.modelData.release
-                    textFormat: Text.PlainText
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-                Label {
-                    text: resultRow.modelData.available ? "Available" : "Unavailable"
-                }
-                Button {
-                    text: "Add to queue"
-                    onClicked: window.bridge.enqueue_row(resultRow.modelData.trackId)
-                }
-                Button {
-                    text: "Spotify…"
-                    onClicked: {
-                        window.bridge.spotify_playback_action("track", resultRow.modelData.trackId);
-                        spotifyPlaybackDialog.open();
+            Keys.onDownPressed: { pane.selectRow(Math.min(count - 1, currentIndex + 1)); positionViewAtIndex(currentIndex, ListView.Contain); }
+            Keys.onUpPressed: { pane.selectRow(Math.max(0, currentIndex - 1)); positionViewAtIndex(currentIndex, ListView.Contain); }
+            Keys.onReturnPressed: pane.playRow(currentIndex)
+            Keys.onEnterPressed: pane.playRow(currentIndex)
+            Keys.onEscapePressed: {
+                if (pane.paneIndex < 2) window.bridge.browse_action("select", pane.paneIndex, "");
+                else pane.songId = "";
+                currentIndex = -1;
+            }
+            delegate: Rectangle {
+                id: row
+                required property var rowData
+                readonly property var modelData: rowData
+                required property int index
+                width: list.width
+                height: pane.paneIndex === 0 ? 34 : 48
+                color: pane.selectedId === modelData.id ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
+                border.width: list.activeFocus && list.currentIndex === index ? 1 : 0
+                border.color: "#96506d"
+                Accessible.role: Accessible.ListItem
+                Accessible.name: modelData.title + " " + modelData.subtitle
+                Accessible.selected: pane.selectedId === modelData.id
+                Column {
+                    anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    anchors.leftMargin: 9; anchors.rightMargin: 16
+                    spacing: 2
+                    Label { width: parent.width; text: row.modelData.title || "Untitled"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                    Label {
+                        width: parent.width
+                        visible: pane.paneIndex > 0
+                        text: pane.paneIndex === 2 ? row.modelData.subtitle + " · " + row.modelData.track.release : row.modelData.subtitle
+                        textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
                     }
                 }
-                Button {
-                    text: "Replace queue & play"
-                    onClicked: window.bridge.play_row(resultRow.modelData.trackId)
+                MouseArea {
+                    id: mouse
+                    anchors.fill: parent
+                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                    hoverEnabled: true
+                    onClicked: event => {
+                        list.forceActiveFocus();
+                        if (event.button === Qt.RightButton) {
+                            window.contextPane = pane.paneIndex;
+                            window.contextId = row.modelData.id;
+                            libraryMenu.popup();
+                        } else pane.selectRow(row.index);
+                    }
+                    onDoubleClicked: event => { if (event.button === Qt.LeftButton) pane.playRow(row.index); }
                 }
             }
             Label {
                 anchors.centerIn: parent
-                visible: results.count === 0
-                text: "No matching library Tracks"
-            }
-        }
-        Label {
-            text: "Current: " + window.view.currentTitle + " · " + window.view.status + window.view.pending + " · " + window.view.time + " · Queue position " + (window.view.position < 0 ? "—" : (window.view.position + 1) + "/" + window.view.queue.length)
-            textFormat: Text.PlainText
-            font.bold: true
-            Layout.fillWidth: true
-            elide: Text.ElideRight
-        }
-        Label {
-            text: window.view.route.length > 0 ? window.view.route : "Track ID: " + window.view.currentId + " · Source: " + window.view.source
-            textFormat: Text.PlainText
-            Layout.fillWidth: true
-            elide: Text.ElideRight
-        }
-        RowLayout {
-            Button {
-                id: previousButton
-                text: "Previous"
-                enabled: window.view.canPrevious
-                onClicked: window.bridge.command("previous")
-            }
-            Button {
-                text: "Play / resume"
-                onClicked: window.bridge.command("play")
-            }
-            Button {
-                text: "Pause"
-                onClicked: window.bridge.command("pause")
-            }
-            Button {
-                text: "Stop"
-                onClicked: window.bridge.command("stop")
-            }
-            Button {
-                id: nextButton
-                text: "Next"
-                enabled: window.view.canNext
-                onClicked: window.bridge.command("next")
-            }
-            Button {
-                visible: !window.view.realAudio
-                text: window.view.failureArmed ? "Failure ARMED — cancel" : "Fail next engine call"
-                onClicked: window.bridge.toggle_failure()
-            }
-        }
-        RowLayout {
-            Label {
-                text: "Volume"
-            }
-            Slider {
-                id: volumeSlider
-                from: 0
-                to: 100
-                stepSize: 1
-                value: window.view.volume * 100
-                onMoved: window.bridge.set_volume(value / 100)
-                Layout.fillWidth: true
-            }
-            Label {
-                text: Math.round(window.view.volume * 100) + "%"
-            }
-        }
-        RowLayout {
-            Label {
-                text: "Queue · all entries retained · current selection marked ▶ · no wrapping"
-                Layout.fillWidth: true
+                width: parent.width - 24
+                horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
+                visible: list.count === 0
+                text: pane.paneIndex === 2 ? "No songs in this view" : "No " + pane.heading.toLowerCase() + " in this view"
+                color: "#777078"
+            }
+        }
+        RowLayout {
+            Layout.fillWidth: true
+            visible: pane.pageData.more || pane.pageData.page > 1
+            ToolButton { text: "‹"; Accessible.name: "Previous " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.page > 1; onClicked: window.bridge.browse_action("previous", pane.paneIndex, "") }
+            Label { text: "Page " + pane.pageData.page; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; color: "#68636a" }
+            ToolButton { text: "›"; Accessible.name: "Next " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.more; onClicked: window.bridge.browse_action("next", pane.paneIndex, "") }
+        }
+    }
+
+    ColumnLayout {
+        anchors.fill: parent
+        spacing: 0
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.margins: 16
+            Label { text: "music"; font.pixelSize: 26; font.weight: Font.Light; Layout.fillWidth: true }
+            TextField {
+                id: query
+                Layout.preferredWidth: 260
+                placeholderText: "Search library — coming next"
+                readOnly: true
+                Accessible.description: "Global library search will be available in the next update."
             }
             Button {
-                id: clearButton
-                text: "Clear queue"
-                enabled: window.view.queue.length > 0
-                onClicked: window.bridge.clear_queue()
+                text: "Add Music"
+                onClicked: {
+                    if (window.bridge.matching_provider.catalogAddSupported) catalogDialog.open();
+                    else addMusicHook.open();
+                }
             }
+            ToolButton { text: "⋯"; Accessible.name: "Settings and diagnostics"; onClicked: settingsMenu.popup() }
         }
-        ListView {
-            id: queue
+        RowLayout {
             Layout.fillWidth: true
-            Layout.preferredHeight: 105
-            clip: true
-            model: window.view.queue
-            ScrollBar.vertical: ScrollBar {}
-            delegate: Label {
-                required property var modelData
-                required property int index
-                width: queue.width - 18
-                height: 26
-                text: (modelData.current ? "▶ " : "   ") + (index + 1) + ". " + modelData.title
-                textFormat: Text.PlainText
-                font.bold: modelData.current
-                elide: Text.ElideRight
-            }
+            Layout.fillHeight: true
+            Layout.leftMargin: 16; Layout.rightMargin: 16
+            spacing: 16
+            LibraryPane { paneIndex: 0; heading: "ARTISTS"; Layout.fillWidth: true; Layout.preferredWidth: 230 }
+            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#dedbd8" }
+            LibraryPane { paneIndex: 1; heading: "ALBUMS"; Layout.fillWidth: true; Layout.preferredWidth: 320 }
+            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#dedbd8" }
+            LibraryPane { paneIndex: 2; heading: "SONGS"; Layout.fillWidth: true; Layout.preferredWidth: 470 }
         }
         Label {
-            text: window.view.error ? "Error: " + window.view.error : "No command error"
+            visible: text.length > 0
+            text: window.library.error || window.view.error || (window.library.pending ? "Preparing queue…" : "")
             textFormat: Text.PlainText
-            color: window.view.error ? "#b00020" : "#333333"
-            Layout.fillWidth: true
+            color: window.library.pending ? "#68636a" : "#9d263d"
             wrapMode: Text.Wrap
+            Layout.fillWidth: true; Layout.margins: visible ? 12 : 0
         }
-        Label {
-            text: "State update " + window.view.revision + " · " + window.view.outcome
-            textFormat: Text.PlainText
-        }
-        Label {
-            visible: !window.view.realAudio
-            text: "Last 12 engine calls (Failed means output is unknown; recovery stops before restarting):"
-        }
-        ScrollView {
-            visible: !window.view.realAudio
+        Rectangle {
+            id: player
             Layout.fillWidth: true
-            Layout.preferredHeight: 110
-            TextArea {
-                text: window.view.engineCalls
-                readOnly: true
-                textFormat: TextEdit.PlainText
-                selectByMouse: true
+            implicitHeight: 104
+            color: "#ebe8e5"
+            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: "#d4cfcc" }
+            RowLayout {
+                anchors.fill: parent; anchors.margins: 14
+                Label { text: window.view.realAudio ? "" : "DEMO · NO AUDIO"; font.pixelSize: 10; color: "#777078"; Layout.preferredWidth: 120 }
+                Button {
+                    id: currentTrack
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 650
+                    Layout.alignment: Qt.AlignHCenter
+                    flat: true
+                    Accessible.name: "Now Playing: " + window.view.currentTitle
+                    onClicked: { if (queueDrawer.opened) queueDrawer.close(); else queueDrawer.open(); }
+                    contentItem: Column {
+                        spacing: 4
+                        Label { width: parent.width; text: window.view.position < 0 ? "Choose something to play" : window.view.currentTitle; font.pixelSize: 16; textFormat: Text.PlainText; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
+                        Label { width: parent.width; text: window.view.position < 0 ? "Now Playing ⌃" : window.view.currentArtist + " — " + window.view.currentAlbum + "  ⌃"; color: "#68636a"; textFormat: Text.PlainText; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
+                    }
+                }
+                ColumnLayout {
+                    RowLayout {
+                        Button { id: previousButton; text: "Previous"; Accessible.name: "Previous"; enabled: window.view.canPrevious; onClicked: window.bridge.command("previous") }
+                        Button { text: window.view.playing ? "Pause" : "Play"; Accessible.name: window.view.playing ? "Pause" : "Play"; enabled: window.view.position >= 0; onClicked: window.bridge.command(window.view.playing ? "pause" : "play") }
+                        Button { id: nextButton; text: "Next"; Accessible.name: "Next"; enabled: window.view.canNext; onClicked: window.bridge.command("next") }
+                    }
+                    RowLayout {
+                        Label { text: window.view.time; font.pixelSize: 10; color: "#68636a" }
+                        Slider { id: volumeSlider; from: 0; to: 100; stepSize: 1; value: window.view.volume * 100; onMoved: window.bridge.set_volume(value / 100); Layout.preferredWidth: 100; Accessible.name: "Volume"; enabled: window.view.volumeAvailable; ToolTip.visible: hovered && !enabled; ToolTip.text: "Volume is controlled by your playback device" }
+                    }
+                }
             }
         }
     }
+    Popup {
+        id: queueDrawer
+        x: Math.max(16, (window.width - width) / 2)
+        y: player.y - height
+        width: Math.min(820, window.width - 32)
+        height: Math.min(380, player.y - 90)
+        padding: 16
+        focus: true
+        closePolicy: Popup.CloseOnEscape
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 140 }
+                NumberAnimation { property: "y"; from: player.y; to: player.y - queueDrawer.height; duration: 140; easing.type: Easing.OutCubic }
+            }
+        }
+        onOpened: { window.bridge.queue_window(Math.max(0, window.view.position)); queue.positionViewAtIndex(Math.max(0, window.view.position - window.view.queueOffset), ListView.Contain); queue.forceActiveFocus(); }
+        onClosed: currentTrack.forceActiveFocus()
+        ColumnLayout {
+            anchors.fill: parent
+            RowLayout {
+                Label { text: "NOW PLAYING · " + window.view.queueTotal + " songs"; font.bold: true; Layout.fillWidth: true }
+                Button { id: clearButton; text: "Clear queue"; enabled: window.view.queueTotal > 0 && !window.library.pending; onClicked: window.bridge.clear_queue() }
+                ToolButton { text: "✕"; Accessible.name: "Close Now Playing"; onClicked: queueDrawer.close() }
+            }
+            RowLayout {
+                visible: window.view.queueTotal > 200
+                ToolButton { text: "Previous page"; enabled: window.view.queueOffset > 0; onClicked: window.bridge.queue_window(window.view.queueOffset - 200) }
+                ToolButton { text: "Current song"; onClicked: window.bridge.queue_window(window.view.position) }
+                ToolButton { text: "Next page"; enabled: window.view.queueOffset + 200 < window.view.queueTotal; onClicked: window.bridge.queue_window(window.view.queueOffset + 200) }
+            }
+            ListView {
+                id: queue
+                Layout.fillWidth: true; Layout.fillHeight: true
+                clip: true
+                model: queueRows
+                activeFocusOnTab: true
+                ScrollBar.vertical: ScrollBar {}
+                delegate: Rectangle {
+                    id: queueRow
+                    required property var rowData
+                    readonly property var modelData: rowData
+                    required property int index
+                    width: queue.width; height: 46
+                    color: modelData.current ? "#e8d9e0" : "transparent"
+                    Column {
+                        anchors.fill: parent; anchors.margins: 5
+                        Label { width: parent.width; text: (queueRow.modelData.current ? "▶ " : "") + (window.view.queueOffset + queueRow.index + 1) + ". " + queueRow.modelData.title; textFormat: Text.PlainText; elide: Text.ElideRight }
+                        Label { width: parent.width; text: queueRow.modelData.artist + " — " + queueRow.modelData.album; font.pixelSize: 11; color: "#68636a"; textFormat: Text.PlainText; elide: Text.ElideRight }
+                    }
+                }
+                Label { anchors.centerIn: parent; visible: queue.count === 0; text: "Your queue is empty" }
+            }
+        }
+    }
+    Menu {
+        id: settingsMenu
+        MenuItem { text: "Playback connection…"; onTriggered: spotifyPlaybackDialog.open() }
+        MenuItem { text: "Local Album matches…"; onTriggered: matchingDialog.open() }
+        MenuItem { text: "Retry matching"; visible: window.bridge.matching_provider.paused; enabled: !window.bridge.matching_provider.probe; onTriggered: window.bridge.retry_matching() }
+    }
+    Dialog {
+        id: addMusicHook
+        title: "Add Music"
+        anchors.centerIn: parent
+        standardButtons: Dialog.Close
+        Label { text: "Adding music is not available with this catalog configuration yet."; wrapMode: Text.Wrap; width: 380 }
+    }
+    // Existing diagnostic assertions remain available without occupying the player.
+    Label { visible: false; text: "Current: " + window.view.currentTitle + " · " + window.view.status + window.view.pending + " · " + window.view.time }
+    Label { visible: false; text: "State update " + window.view.revision + " · " + window.view.outcome }
 }

@@ -97,6 +97,9 @@ fn qualifiers(s: &str) -> Vec<&str> {
                     | "remastered"
                     | "mix"
                     | "version"
+                    | "instrumental"
+                    | "radio"
+                    | "extended"
             )
         })
         .collect()
@@ -172,19 +175,7 @@ pub fn inspect_candidate(
         crate::artist_credit::musical_title(c.title.as_deref().unwrap_or(""), &c.artists);
     let name = comparison_title(local_title);
     let candidate = comparison_title(provider_title);
-    // Preserve the previous punctuation-only comparison as well as conjunction
-    // equivalence (e.g. the established R & R / R+R comparison).
-    let punctuation = |s: &str| {
-        s.to_lowercase()
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    };
-    let exact = !name.is_empty()
-        && (name == candidate || punctuation(local_title) == punctuation(provider_title));
+    let exact = title_relation(l, c) == TitleRelation::Agrees;
     let trusted = shared(&l.recording.identities, &c.recording.identities);
     let position = l.number.is_some()
         && (l.number == c.number && l.disc.unwrap_or(1) == c.disc.unwrap_or(1)
@@ -265,56 +256,140 @@ pub fn inspect_candidate(
     check
 }
 
-/// Only call after the provider Album has been accepted and revalidated. This
-/// establishes an occurrence, never a Recording or contributor relationship.
-fn established_occurrence(local: &LocalTrackEvidence, programs: &Programs) -> Option<Match> {
-    // A MusicBrainz release group is not an established provider representation.
-    if programs.album.provider != "spotify" || programs.album.kind != "album" {
-        return None;
+/// A title can corroborate an occurrence, supply no corroboration, or explicitly
+/// contradict its musical version. This never asserts linguistic equivalence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleRelation {
+    Agrees,
+    Uncorroborated,
+    Contradictory,
+}
+pub fn title_relation(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
+    let a = crate::artist_credit::musical_title(left.title.as_deref().unwrap_or(""), &left.artists);
+    let b =
+        crate::artist_credit::musical_title(right.title.as_deref().unwrap_or(""), &right.artists);
+    let punctuation = |s: &str| {
+        s.to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let punctuation_agrees = !a.trim().is_empty() && punctuation(a) == punctuation(b);
+    let a = comparison_title(a);
+    let b = comparison_title(b);
+    if !a.is_empty() && (a == b || punctuation_agrees) {
+        TitleRelation::Agrees
+    } else if qualifiers(&a) != qualifiers(&b) {
+        TitleRelation::Contradictory
+    } else {
+        TitleRelation::Uncorroborated
     }
-    let mut agreed: Option<Vec<ExternalIdentity>> = None;
+}
+
+fn position(t: &TrackEvidence) -> Option<(u32, u32)> {
+    Some((t.disc.unwrap_or(1), t.number.filter(|n| *n > 0)?))
+}
+
+fn occurrence_identity_conflict(a: &TrackEvidence, b: &TrackEvidence) -> bool {
+    conflict(&a.recording.identities, &b.recording.identities)
+        || conflict(&a.identities, &b.identities)
+        || a.artists
+            .first()
+            .zip(b.artists.first())
+            .is_some_and(|(a, b)| conflict(&a.identities, &b.identities))
+}
+
+/// Only used after revalidating the accepted Spotify representation and snapshot.
+/// Build context once per program. Uncorroborated titles need three independent
+/// exact title/position anchors; neither library completeness nor scripts matter.
+fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) -> Vec<TrackOutcome> {
+    let _timing = crate::catalog::Timing::detail("album_program.established_occurrences");
+    let empty = || vec![TrackOutcome::NoConfidentMatch; local.len()];
+    if programs.album.provider != "spotify"
+        || programs.album.kind != "album"
+        || programs.programs.is_empty()
+        || programs.programs.iter().any(|p| !p.complete)
+    {
+        return empty();
+    }
+    let mut agreed: Vec<Option<Vec<ExternalIdentity>>> = vec![None; local.len()];
     for program in &programs.programs {
-        if !program.complete {
-            return None;
+        let mut positions = std::collections::HashMap::new();
+        for c in &program.tracks {
+            if let Some(pos) = position(c)
+                && positions.insert(pos, c).is_some()
+            {
+                return empty(); // conflicting placements are not a usable program
+            }
         }
-        let candidates: Vec<_> = program
-            .tracks
-            .iter()
-            .enumerate()
-            .filter(|(i, c)| {
-                local.evidence.number.is_some()
-                    && local.evidence.number == c.number
-                    && local.evidence.disc.unwrap_or(1) == c.disc.unwrap_or(1)
-                    && inspect_candidate(local, c, *i).exact_title
-            })
-            .map(|(_, c)| c)
-            .collect();
-        let [candidate] = candidates.as_slice() else {
-            return None;
-        };
-        let ids: Vec<_> = candidate
-            .identities
-            .iter()
-            .filter(|id| id.provider == programs.album.provider && id.kind == "track")
-            .cloned()
-            .collect();
-        if let Some(agreed) = &mut agreed {
-            agreed.retain(|id| ids.contains(id));
-        } else {
-            agreed = Some(ids);
+        if !crate::album_candidates::can_accommodate(
+            crate::album_candidates::required_tracks(local),
+            Some(program.tracks.len() as u32),
+        ) {
+            return empty();
+        }
+        let mut anchors = std::collections::HashSet::new();
+        for t in local {
+            let Some(pos) = position(&t.evidence) else {
+                continue;
+            };
+            let Some(c) = positions.get(&pos) else {
+                return empty();
+            };
+            // A known title occurring elsewhere contradicts this ordering. Do not
+            // hide a shifted/reordered program behind position-only association.
+            if title_relation(&t.evidence, c) != TitleRelation::Agrees
+                && program.tracks.iter().any(|other| {
+                    position(other) != Some(pos)
+                        && title_relation(&t.evidence, other) == TitleRelation::Agrees
+                })
+            {
+                return empty();
+            }
+            if title_relation(&t.evidence, c) == TitleRelation::Agrees
+                && !occurrence_identity_conflict(&t.evidence, c)
+            {
+                anchors.insert(pos);
+            }
+        }
+        for (i, t) in local.iter().enumerate() {
+            let ids = position(&t.evidence)
+                .and_then(|pos| positions.get(&pos))
+                .map(|c| {
+                    let relation = title_relation(&t.evidence, c);
+                    if occurrence_identity_conflict(&t.evidence, c)
+                        || relation == TitleRelation::Contradictory
+                        || (relation == TitleRelation::Uncorroborated && anchors.len() < 3)
+                    {
+                        return vec![];
+                    }
+                    c.identities
+                        .iter()
+                        .filter(|id| id.provider == programs.album.provider && id.kind == "track")
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let Some(agreed) = &mut agreed[i] {
+                agreed.retain(|id| ids.contains(id));
+            } else {
+                agreed[i] = Some(ids);
+            }
         }
     }
-    let occurrences = agreed?;
-    if occurrences.len() != 1 {
-        return None;
-    }
-    Some(Match {
-        title: local.evidence.title.clone().unwrap_or_default(),
-        recording: RecordingEvidence::default(),
-        recording_status: RecordingStatus::NotProvided,
-        occurrences,
-        explanation: "Established provider Album; matching disc/Track position and musical title; contributor identity unresolved".into(),
-    })
+    local.iter().zip(agreed).map(|(t, ids)| {
+        let ids = ids.unwrap_or_default();
+        if ids.len() != 1 { return TrackOutcome::NoConfidentMatch; }
+        TrackOutcome::Matched(Match {
+            title: t.evidence.title.clone().unwrap_or_default(),
+            recording: RecordingEvidence::default(), recording_status: RecordingStatus::NotProvided,
+            occurrences: ids,
+            explanation: "Established provider Album and compatible program; matching explicit disc/Track position; title/contributor relationship not inferred".into(),
+        })
+    }).collect()
 }
 
 fn mappings(local: &LocalTrackEvidence, program: &Program) -> Vec<(usize, CandidateCheck)> {
@@ -830,14 +905,24 @@ impl Store {
             })
             .cloned()
             .collect();
-        let comparisons = compare_album(&eligible, &programs);
+        let comparisons = if programs.album.provider == "spotify" && programs.album.kind == "album"
+        {
+            established_occurrences(&reply.input.tracks, &programs)
+        } else {
+            compare_album(&eligible, &programs)
+        };
         let manual: std::collections::HashMap<_, _> =
             crate::manual_track::load(&tx, &reply.input.album_id)?
                 .into_iter()
                 .filter(|m| m.album.provider == reply.input.album.provider)
                 .map(|m| (m.track_id.clone(), m))
                 .collect();
-        let mut comparisons: std::collections::HashMap<_, _> = eligible
+        let compared = if programs.album.provider == "spotify" && programs.album.kind == "album" {
+            reply.input.tracks.clone()
+        } else {
+            eligible
+        };
+        let mut comparisons: std::collections::HashMap<_, _> = compared
             .into_iter()
             .map(|t| t.track_id)
             .zip(comparisons)
@@ -850,16 +935,9 @@ impl Store {
                 let outcome = if let Some(m) = manual.get(&t.track_id) {
                     TrackOutcome::ManuallyMatched(m.matched())
                 } else {
-                    let previous = comparisons
+                    comparisons
                         .remove(&t.track_id)
-                        .unwrap_or(TrackOutcome::NoConfidentMatch);
-                    if matches!(&previous, TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) if !m.occurrences.is_empty()) {
-                        previous
-                    } else {
-                        established_occurrence(&t, &programs)
-                            .map(TrackOutcome::Matched)
-                            .unwrap_or(previous)
-                    }
+                        .unwrap_or(TrackOutcome::NoConfidentMatch)
                 };
                 (t, outcome)
             })
