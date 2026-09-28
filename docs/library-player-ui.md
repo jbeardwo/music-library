@@ -18,11 +18,13 @@ an implementation prototype, not the public skin format or a final frontend deci
 - Song selection only highlights a row. Artist/Album “Show all” controls and Escape
   clear filters. Clearing Artist also clears Album; clearing Album retains Artist.
 - Up/Down selects in the focused pane; Enter plays; Tab traverses controls.
-- Double-click and context-menu Play now replace the queue and start its first Track.
-  Artist queues use Album title, Release, disc and Track ordering. Album queues use
-  Release, disc and Track ordering. Song queues contain one Track.
-- Add to queue appends the same complete saved Track set, preserving duplicates and
-  existing playback. Queue construction never contacts a catalog. Playback uses the
+- Double-click, Enter and context-menu Play now replace the queue with the complete
+  Songs program. A Song starts at its Track ID's position; Artist/Album Play selects
+  that scope and starts at the first Track. All Songs and Artist programs are
+  alphabetical by title with Track ID as the tie-breaker. Album programs retain
+  Release/disc/Track order. Single-clicking a Song remains selection only.
+- Add to queue appends one Song, an Artist's complete alphabetical program, or an
+  Album's complete ordered program, preserving duplicates and existing playback. Queue construction never contacts a catalog. Playback uses the
   existing resolver, including its existing explicit-Play enrichment policy.
 - The persistent player shows title, Artist and Album, Previous/Play/Pause/Next,
   elapsed/seek/duration controls and a shared 0–100 volume slider. Missing Track artist text falls back to
@@ -50,11 +52,15 @@ Playback still owns the complete explicitly requested queue and presentation lab
 
 `Library::library_queue` reads a complete requested program in one query.
 `Library::library_queue_reader` supplies a read-only connection for the QML adapter's
-background Artist/Album queue preparation. It runs no migrations or network work.
+background preparation of all replacement programs and Artist/Album appends. It runs no migrations or network work.
 Only one preparation is accepted at a time. A visible “Preparing queue…” state keeps
 browsing and playback controls usable; the existing queue remains until replacement
 can proceed. Remote replacement waits for the existing remote-stop acknowledgement.
-The captured program is independent of later browsing selections.
+The captured program and starting index survive later browsing selections and remote
+stop acknowledgements. The chosen Track is found by opaque ID in the complete
+result, never by title or visible-page index. If it has left the library, Play
+reports an error and retains the old queue. The drawer opens on the starting
+occurrence's page. Full program labels remain in the player, not QML.
 
 Measurements on the existing deterministic 200k fixture, debug build, warm filesystem:
 
@@ -84,13 +90,14 @@ Existing `--gstreamer FOLDER` import/startup and environment-based database sele
 remain available. Launch without arguments for the fake-audio demo. The application
 does not set Qt rendering, platform or cursor environment variables.
 
-Search is an explicit read-only “Search library — coming next” hook for future global
-search independent of selections. Add Music opens the existing Add Album workflow;
+Search opens a temporary global local-library panel with grouped results, type
+filters and exact browser navigation. See [local-library search](local-library-search.md).
+Add Music opens the existing Add Album workflow;
 configurations without catalog Add support explain that in a small dialog. Local
 folder import still uses the existing launcher path. Provider setup and matching
 remain available under the small settings menu, outside ordinary row actions.
 
-Next UX work: global search, a unified Add Music/local-folder flow, smoother continuous
+Next UX work: a unified Add Music/local-folder flow, smoother continuous
 browsing across page boundaries, and queue editing. Duplicate Artist labels reflect
 distinct identities when insufficient evidence exists; the UI never groups by name. Artwork, playlists, skins,
 locale collation, matching changes and catalog redesign are deliberately deferred.
@@ -157,8 +164,8 @@ request on release, ignores a drag when the Track changes, and previews progress
 Spotify volume targets the selected device, checks capability, and acknowledges
 requests by revision. Older polls cannot overwrite the pending slider value.
 After a successful command the adapter tolerates stale device volume for up to
-eight seconds, then accepts external device changes again. Errors preserve the
-last accepted volume and are shown in the existing error area.
+eight seconds, then accepts external device changes again. Errors are shown in the existing error area. The authoritative-volume follow-up
+below defines how requested master volume is retained on failure.
 
 Follow-up validation: core tests, QML tests, focused GStreamer and Spotify playback
 tests, strict Clippy for all four crates, formatting and diff whitespace checks
@@ -170,3 +177,34 @@ volume acknowledgements and local/remote handoff. Live Spotify device seek/volum
 and a human cursor-visibility check remain unverified. Qt test teardown still
 prints an existing timer-thread warning; the normal desktop backend also reports
 Mesa/EGL fallback warnings. No rendering environment changes were added.
+
+## Authoritative volume and source calibration
+
+The application owns one logical session volume. The player slider always shows
+that value, including during a backend switch. Starting Spotify sends its calibrated
+volume before Play; local starts apply the current master and local trim. Rejected
+remote volume requests report an error but retain the requested logical master, so
+a later handoff cannot resurrect the provider's old value. Existing pending request
+and stale-poll protections remain. Genuine changed-volume observations on the same
+active Spotify device can update the master, after reversing the trim and clamping
+to the logical range; handoff and acknowledgement snapshots cannot do so.
+
+Settings → Output calibration stores Local and Spotify trims in migration 15's
+singleton SQLite settings row. Both default to 0.0 dB and accept −24.0 to 0.0 dB.
+They persist per library database; master volume remains session state.
+Effective output = master × 10^(trim dB / 20). GStreamer receives that bounded
+linear gain. Spotify receives its nearest integer percentage, clamped to 0–100.
+The range provides attenuation only. Unsupported Spotify volume devices or failed
+volume requests block the automatic remote start and report the existing error.
+
+Calibration does not normalize Tracks, change relative levels between recordings,
+alter stored audio, or analyze loudness. No ReplayGain, LUFS, per-Track gain,
+Spotify normalization setting, or audio DSP was added.
+
+Validation for this slice includes complete 451-Track programs against concatenated
+browse pages in every scope, duplicate titles, actual QML page-two Play at global
+index 203, a bounded queue drawer showing that occurrence, all primary Play actions,
+and additive actions. Controlled mixed-source tests cover 80% → 70% handoffs with
+zero and −6 dB trims, pending acknowledgements and stale polls. A real-library desktop
+audit exercised Album Track 3, Artist Track, global Track Play, and Local trim with
+actual GStreamer audio. Live Spotify device handoff remains unverified in this slice.

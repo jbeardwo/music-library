@@ -1051,3 +1051,53 @@ fn seek_is_confirmed_without_queue_or_transport_changes_and_stale_input_events_a
     assert_eq!(p.state().media_position_ms, 0);
     assert_eq!(p.state().queue, vec![f.tracks[0].clone()]);
 }
+
+#[test]
+fn output_trim_is_fixed_calibration_and_master_remains_logical() {
+    let engine = Rc::new(RefCell::new(EngineState::default()));
+    let mut p = Playback::new(FakeEngine(engine.clone()));
+    assert_eq!(p.state().output_trim_db, 0.);
+    p.set_volume(0.7).unwrap();
+    p.set_output_trim(-6.).unwrap();
+    assert_eq!(p.state().volume.get(), 0.7);
+    let expected = Volume::new(0.7 * 10_f64.powf(-6. / 20.)).unwrap();
+    assert_eq!(engine.borrow().calls.last(), Some(&Call::Volume(expected)));
+    p.set_volume(0.8).unwrap();
+    assert_eq!(p.state().volume.get(), 0.8);
+    assert_eq!(p.state().output_trim_db, -6.);
+    for db in [-24., -12., 0.] {
+        p.set_output_trim(db).unwrap();
+        for master in [0., 0.7, 1.] {
+            let gain = music_library::output::effective(Volume::new(master).unwrap(), db);
+            assert!((0.0..=1.).contains(&gain.get()));
+            assert!(gain.get() <= master);
+        }
+    }
+    for db in [0.1, -24.1, f64::NAN] {
+        assert!(p.set_output_trim(db).is_err());
+    }
+}
+
+#[test]
+fn output_trims_default_to_zero_and_persist_without_master_volume() {
+    use music_library::output::OutputTrims;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    assert_eq!(library.output_trims().unwrap(), OutputTrims::default());
+    let trims = OutputTrims {
+        local_db: -8.5,
+        spotify_db: -2.,
+    };
+    library.set_output_trims(trims).unwrap();
+    assert!(
+        library
+            .set_output_trims(OutputTrims {
+                local_db: 1.,
+                ..trims
+            })
+            .is_err()
+    );
+    drop(library);
+    assert_eq!(Library::open(path).unwrap().output_trims().unwrap(), trims);
+}

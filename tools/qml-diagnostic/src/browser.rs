@@ -12,12 +12,15 @@ pub struct Page {
     rows: Vec<Row>,
     cursors: Vec<Option<Cursor>>,
     more: bool,
+    seek: Option<String>,
 }
 #[derive(Default)]
 pub struct Browser {
     pages: [Page; 3],
     artist: String,
     album: String,
+    song: String,
+    navigation: u32,
     pub error: String,
     pub pending: bool,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -29,6 +32,7 @@ impl Bridge {
         }
         match action {
             "select" => {
+                self.browser.song = if pane == 2 { id.clone() } else { String::new() };
                 if pane == 0 {
                     self.browser.artist = id;
                     self.browser.album.clear();
@@ -53,6 +57,8 @@ impl Bridge {
                 if self.browser.pages[pane].cursors.len() > 1 {
                     self.browser.pages[pane].cursors.pop();
                     self.load_pane(pane, false);
+                } else if self.browser.pages[pane].seek.is_some() {
+                    self.load_pane(pane, true);
                 }
             }
             "refresh" => {
@@ -71,24 +77,37 @@ impl Bridge {
                     self.changed();
                     return;
                 }
+                if action == "play" && pane < 2 {
+                    self.browse_action_impl("select", pane, id.clone());
+                }
                 let mut request = Request {
                     pane: Pane::Songs,
-                    program: true,
                     limit: 200,
                     ..Default::default()
                 };
                 match pane {
-                    0 => request.artist = Some(ArtistId(id)),
-                    1 => request.album = Some(AlbumId(id)),
-                    _ => request.track = Some(TrackId(id)),
+                    0 => request.artist = Some(ArtistId(id.clone())),
+                    1 => request.album = Some(AlbumId(id.clone())),
+                    _ if action == "append" => request.track = Some(TrackId(id.clone())),
+                    _ if !self.browser.album.is_empty() => {
+                        request.album = Some(AlbumId(self.browser.album.clone()))
+                    }
+                    _ if !self.browser.artist.is_empty() => {
+                        request.artist = Some(ArtistId(self.browser.artist.clone()))
+                    }
+                    _ => {}
                 }
-                if pane == 2 {
+                let start = (pane == 2 && action == "play").then_some(TrackId(id));
+                if pane == 2 && action == "append" {
                     let result = self
                         .session
                         .library
                         .library_queue(&request)
                         .map_err(|e| e.to_string());
-                    self.finish_library_queue(action == "append", result);
+                    self.finish_library_queue(
+                        true,
+                        result.and_then(|tracks| prepare_program(tracks, None)),
+                    );
                 } else {
                     let reader = match self.session.library.library_queue_reader() {
                         Ok(reader) => reader,
@@ -108,7 +127,12 @@ impl Bridge {
                     self.browser.pending = true;
                     self.browser.error.clear();
                     self.browser.worker = Some(std::thread::spawn(move || {
-                        deliver(reader.read(&request).map_err(|e| e.to_string()));
+                        deliver(
+                            reader
+                                .read(&request)
+                                .map_err(|e| e.to_string())
+                                .and_then(|tracks| prepare_program(tracks, start.as_ref())),
+                        );
                     }));
                 }
             }
@@ -116,18 +140,14 @@ impl Bridge {
         }
         self.browse_changed();
     }
-    fn finish_library_queue(
-        &mut self,
-        append: bool,
-        result: Result<Vec<music_library::domain::TrackSearchResult>, String>,
-    ) {
+    fn finish_library_queue(&mut self, append: bool, result: Result<Program, String>) {
         self.browser.pending = false;
         if let Some(worker) = self.browser.worker.take() {
             let _ = worker.join();
         }
         match result {
             Err(error) => self.browser.error = error,
-            Ok(tracks) if append => {
+            Ok((tracks, _)) if append => {
                 for row in tracks {
                     self.session.playback.enqueue(row.track_id.clone());
                     self.session.queue_labels.push(row);
@@ -137,9 +157,9 @@ impl Bridge {
             Ok(_) if self.route_pending.is_some() || self.automatic_song_search => {
                 self.browser.error = "Playback is switching. Please try Play again.".into();
             }
-            Ok(tracks) => {
+            Ok((tracks, position)) => {
                 if !tracks.is_empty() {
-                    self.replace_library_queue(tracks);
+                    self.replace_library_program(tracks, position);
                 }
             }
         }
@@ -151,6 +171,7 @@ impl Bridge {
         let page = &mut self.browser.pages[pane];
         if reset {
             page.cursors = vec![None];
+            page.seek = None;
         }
         let request = Request {
             pane: [Pane::Artists, Pane::Albums, Pane::Songs][pane],
@@ -171,7 +192,14 @@ impl Bridge {
             limit: 201,
             ..Default::default()
         };
-        match self.session.library.browse(&request) {
+        let result = if page.cursors.len() == 1
+            && let Some(id) = &page.seek
+        {
+            self.session.library.browse_around(&request, id)
+        } else {
+            self.session.library.browse(&request)
+        };
+        match result {
             Ok(mut rows) => {
                 page.more = rows.len() > PAGE;
                 rows.truncate(PAGE);
@@ -185,6 +213,74 @@ impl Bridge {
             }
         }
     }
+    pub fn navigate_search(
+        &mut self,
+        hit: &music_library::library_search::Hit,
+    ) -> Result<(), String> {
+        use music_library::library_search::Kind;
+        let artist = hit
+            .artist_id
+            .as_ref()
+            .map(|a| a.as_ref().to_string())
+            .unwrap_or_default();
+        let album = if hit.kind == Kind::Artist {
+            String::new()
+        } else {
+            hit.album_id
+                .as_ref()
+                .map(|a| a.as_ref().to_string())
+                .unwrap_or_default()
+        };
+        let song = if hit.kind == Kind::Song {
+            hit.id.clone()
+        } else {
+            String::new()
+        };
+        let targets = [artist.clone(), album.clone(), song.clone()];
+        let mut pages = Vec::new();
+        for (pane, target) in targets.iter().enumerate() {
+            let request = Request {
+                pane: [Pane::Artists, Pane::Albums, Pane::Songs][pane],
+                artist: if pane > 0 && !artist.is_empty() && (pane == 1 || album.is_empty()) {
+                    Some(ArtistId(artist.clone()))
+                } else {
+                    None
+                },
+                album: if pane == 2 && !album.is_empty() {
+                    Some(AlbumId(album.clone()))
+                } else {
+                    None
+                },
+                limit: 201,
+                ..Default::default()
+            };
+            let mut rows = if target.is_empty() {
+                self.session.library.browse(&request)
+            } else {
+                self.session.library.browse_around(&request, target)
+            }
+            .map_err(|e| e.to_string())?;
+            let more = rows.len() > PAGE;
+            rows.truncate(PAGE);
+            pages.push(Page {
+                rows,
+                more,
+                cursors: vec![None],
+                seek: (!target.is_empty()).then_some(target.clone()),
+            });
+        }
+        self.browser.pages = pages
+            .try_into()
+            .map_err(|_| "Invalid navigation".to_string())?;
+        self.browser.artist = artist;
+        self.browser.album = album;
+        self.browser.song = song;
+        self.browser.navigation = self.browser.navigation.wrapping_add(1);
+        self.browser.error.clear();
+        self.browse_changed();
+        Ok(())
+    }
+
     pub fn browse_value(&self) -> QVariantMap {
         let panes: QVariantList = self
             .browser
@@ -212,6 +308,7 @@ impl Bridge {
                     [
                         ("rows", QVariant::from(rows)),
                         ("more", p.more.into()),
+                        ("anchored", p.seek.is_some().into()),
                         ("page", (p.cursors.len() as i32).into()),
                     ]
                     .into_iter()
@@ -223,6 +320,8 @@ impl Bridge {
             ("panes", panes.into()),
             ("artist", string(&self.browser.artist)),
             ("album", string(&self.browser.album)),
+            ("song", string(&self.browser.song)),
+            ("navigation", self.browser.navigation.into()),
             ("error", string(&self.browser.error)),
             ("pending", self.browser.pending.into()),
         ]
@@ -237,4 +336,22 @@ impl Drop for Browser {
             let _ = worker.join();
         }
     }
+}
+
+type Program = (Vec<music_library::domain::TrackSearchResult>, usize);
+
+fn prepare_program(
+    tracks: Vec<music_library::domain::TrackSearchResult>,
+    start: Option<&TrackId>,
+) -> Result<Program, String> {
+    let position = match start {
+        Some(id) => tracks
+            .iter()
+            .position(|r| &r.track_id == id)
+            .ok_or_else(|| {
+                "This Track is no longer in the library program. Please refresh.".to_string()
+            })?,
+        None => 0,
+    };
+    Ok((tracks, position))
 }

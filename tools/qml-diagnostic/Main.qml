@@ -715,6 +715,22 @@ ApplicationWindow {
         readonly property string selectedId: paneIndex === 0 ? window.library.artist : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
         property string rowsSignature: ""
+        property int navigation: window.library.navigation
+        onNavigationChanged: Qt.callLater(function() {
+            const target = pane.paneIndex === 0 ? window.library.artist : pane.paneIndex === 1 ? window.library.album : window.library.song;
+            if (pane.paneIndex === 2) pane.songId = target;
+            for (let i = 0; i < pane.pageData.rows.length; ++i) {
+                if (pane.pageData.rows[i].id === target) {
+                    list.currentIndex = i;
+                    list.positionViewAtIndex(i, ListView.Contain);
+                    if ((pane.paneIndex === 2 && window.library.song.length > 0)
+                        || (pane.paneIndex === 1 && window.library.song.length === 0 && window.library.album.length > 0)
+                        || (pane.paneIndex === 0 && window.library.album.length === 0))
+                        list.forceActiveFocus();
+                    break;
+                }
+            }
+        })
         ListModel { id: paneRows; dynamicRoles: true }
         function syncRows() {
             const signature = JSON.stringify(pageData.rows);
@@ -827,7 +843,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             visible: pane.pageData.more || pane.pageData.page > 1
-            ToolButton { text: "‹"; Accessible.name: "Previous " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.page > 1; onClicked: window.bridge.browse_action("previous", pane.paneIndex, "") }
+            ToolButton { text: "‹"; Accessible.name: "Previous " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.page > 1 || pane.pageData.anchored; onClicked: window.bridge.browse_action("previous", pane.paneIndex, "") }
             Label { text: "Page " + pane.pageData.page; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; color: "#68636a" }
             ToolButton { text: "›"; Accessible.name: "Next " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.more; onClicked: window.bridge.browse_action("next", pane.paneIndex, "") }
         }
@@ -840,12 +856,12 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.margins: 16
             Label { text: "music"; font.pixelSize: 26; font.weight: Font.Light; Layout.fillWidth: true }
-            TextField {
+            Button {
                 id: query
                 Layout.preferredWidth: 260
-                placeholderText: "Search library — coming next"
-                readOnly: true
-                Accessible.description: "Global library search will be available in the next update."
+                text: "Search library…"
+                Accessible.name: "Search library"
+                onClicked: searchPanel.open()
             }
             Button {
                 text: "Add Music"
@@ -1008,8 +1024,168 @@ ApplicationWindow {
             }
         }
     }
+    Dialog {
+        id: searchPanel
+        objectName: "librarySearchPanel"
+        title: "Search library"
+        anchors.centerIn: parent
+        width: Math.min(820, window.width - 48)
+        height: Math.min(620, window.height - 80)
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        property int filter: 0
+        readonly property var results: window.bridge.local_search_snapshot
+        function request() {
+            searchDelay.stop();
+            searchResults.currentIndex = -1;
+            window.bridge.search_library(searchText.text, filter);
+        }
+        function activate(index) {
+            if (!searchDelay.running && window.bridge.navigate_search_result(index)) close();
+        }
+        onOpened: { searchText.forceActiveFocus(); searchText.selectAll(); request(); }
+        onClosed: { searchDelay.stop(); window.bridge.close_search(); }
+        Timer { id: searchDelay; interval: 150; onTriggered: searchPanel.request() }
+        ColumnLayout {
+            anchors.fill: parent
+            TextField {
+                id: searchText
+                objectName: "librarySearchText"
+                Layout.fillWidth: true
+                placeholderText: "Artist, Album or Song"
+                maximumLength: 256
+                Accessible.name: "Search query"
+                onTextChanged: if (searchPanel.opened) searchDelay.restart()
+                Keys.onDownPressed: { searchResults.forceActiveFocus(); searchResults.currentIndex = 0; }
+                onAccepted: if (searchResults.count > 0) searchPanel.activate(Math.max(0, searchResults.currentIndex))
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                ColumnLayout {
+                    Layout.alignment: Qt.AlignTop
+                    Layout.preferredWidth: 120
+                    Label { text: "FILTERS"; font.bold: true; font.pixelSize: 12 }
+                    ButtonGroup { id: searchTypes }
+                    Repeater {
+                        model: ["All", "Artists", "Albums", "Songs", "Playlists"]
+                        RadioButton {
+                            required property int index
+                            required property string modelData
+                            text: modelData
+                            ButtonGroup.group: searchTypes
+                            checked: searchPanel.filter === index
+                            onClicked: { searchPanel.filter = index; searchPanel.request(); }
+                        }
+                    }
+                }
+                Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#d9d6d3" }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Label {
+                        text: searchPanel.results.error || (searchPanel.results.busy || searchDelay.running ? "Searching…" : "Best matches · up to 40 per type")
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        color: searchPanel.results.error ? "#a03030" : "#68636a"
+                    }
+                    ListView {
+                        id: searchResults
+                        objectName: "librarySearchResults"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        enabled: !searchDelay.running
+                        model: searchPanel.results.rows
+                        currentIndex: -1
+                        keyNavigationEnabled: true
+                        ScrollBar.vertical: ScrollBar {}
+                        section.property: "section"
+                        section.delegate: Label {
+                            required property string section
+                            text: section
+                            font.bold: true; font.pixelSize: 12
+                            topPadding: 16; bottomPadding: 6
+                        }
+                        Keys.onReturnPressed: searchPanel.activate(currentIndex)
+                        Keys.onEnterPressed: searchPanel.activate(currentIndex)
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            required property int index
+                            width: searchResults.width
+                            height: modelData.context.length > 0 ? 50 : 36
+                            highlighted: searchResults.currentIndex === index
+                            Accessible.name: modelData.title + " " + modelData.context
+                            contentItem: Column {
+                                Label { text: modelData.title; width: parent.width; elide: Text.ElideRight; textFormat: Text.PlainText }
+                                Label { visible: modelData.context.length > 0; text: modelData.context; width: parent.width; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"; textFormat: Text.PlainText }
+                            }
+                            onClicked: searchPanel.activate(index)
+                        }
+                        Label {
+                            anchors.centerIn: parent
+                            visible: searchResults.count === 0 && !searchPanel.results.busy
+                            text: searchPanel.filter === 4 ? "No playlists yet" : searchText.text.trim().length === 0 ? "Type to search your library" : "No matching library items"
+                        }
+                    }
+                    Label { visible: searchPanel.filter === 0; text: "PLAYLISTS · No playlists yet"; font.pixelSize: 11; color: "#68636a" }
+                }
+            }
+        }
+    }
+
+    Dialog {
+        id: outputCalibration
+        title: "Output calibration"
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Close
+        width: Math.min(480, window.width - 40)
+        ColumnLayout {
+            width: parent.width
+            Label {
+                text: "Adjust a fixed output difference between sources. This does not normalize Tracks, change relative loudness between recordings, or alter stored audio. 0 dB means no adjustment."
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+            Label { text: "Local output trim" }
+            RowLayout {
+                SpinBox {
+                    from: -240; to: 0; stepSize: 5
+                    value: Math.round(window.view.localTrim * 10)
+                    editable: true
+                    objectName: "localOutputTrim"
+                    Accessible.name: "Local output trim"
+                    textFromValue: (value, locale) => Number(value / 10).toLocaleString(locale, 'f', 1)
+                    valueFromText: (text, locale) => Math.round(Number.fromLocaleString(locale, text) * 10)
+                    validator: DoubleValidator { bottom: -24; top: 0; decimals: 1 }
+                    onValueModified: window.bridge.output_trims(value / 10, window.view.spotifyTrim)
+                    Layout.fillWidth: true
+                }
+                Label { text: window.view.localTrim.toFixed(1) + " dB"; Layout.preferredWidth: 66 }
+            }
+            Label { text: "Spotify output trim" }
+            RowLayout {
+                SpinBox {
+                    from: -240; to: 0; stepSize: 5
+                    value: Math.round(window.view.spotifyTrim * 10)
+                    editable: true
+                    Accessible.name: "Spotify output trim"
+                    textFromValue: (value, locale) => Number(value / 10).toLocaleString(locale, 'f', 1)
+                    valueFromText: (text, locale) => Math.round(Number.fromLocaleString(locale, text) * 10)
+                    validator: DoubleValidator { bottom: -24; top: 0; decimals: 1 }
+                    onValueModified: window.bridge.output_trims(window.view.localTrim, value / 10)
+                    Layout.fillWidth: true
+                }
+                Label { text: window.view.spotifyTrim.toFixed(1) + " dB"; Layout.preferredWidth: 66 }
+            }
+            Label { text: "Both controls attenuate only (−24 to 0 dB). Spotify output is rounded to its device's 0–100 scale."; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+            Button { text: "Reset trims"; onClicked: window.bridge.output_trims(0, 0) }
+        }
+    }
     Menu {
         id: settingsMenu
+        MenuItem { text: "Output calibration…"; onTriggered: outputCalibration.open() }
         MenuItem { text: "Playback connection…"; onTriggered: spotifyPlaybackDialog.open() }
         MenuItem { text: "Local Album matches…"; onTriggered: matchingDialog.open() }
         MenuItem { text: "Retry matching"; visible: window.bridge.matching_provider.paused; enabled: !window.bridge.matching_provider.probe; onTriggered: window.bridge.retry_matching() }

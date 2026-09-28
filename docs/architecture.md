@@ -1996,3 +1996,29 @@ read-only connection off the Qt thread; the existing playback boundary and resol
 still own queue execution. QML receives at most 200 rows per pane/queue page, and
 playback notifications do not rebuild library lists. This remains a frontend
 prototype, not a public skin format. See [interaction, performance and validation](library-player-ui.md).
+
+### Player programs and output calibration
+
+The Songs query also defines replacement queue order: alphabetical title/Track ID
+without an Album, existing Release/disc/Track order within an Album. Full programs
+are read off the UI thread; a chosen Track ID determines the starting occurrence.
+QML retains bounded pages. Add Song remains a one-Track append.
+
+PlaybackState volume is the logical session master. Fixed engine output trim is
+applied only when sending gain to the engine. Migration 15 persists two source
+calibrations (Local/Spotify, −24 to 0 dB, default zero). Spotify handoff applies the
+current calibrated master before starting the Track; it never adopts a historical
+device volume merely because the source changed. See docs/library-player-ui.md
+for polling, error behavior and calibration limits. No loudness normalization is
+part of this boundary.
+
+### Global local-library search
+
+Migration 16 adds trigger-maintained external-content Artist and Album FTS indexes.
+The provider-neutral library_search API combines direct title/name retrieval with
+bounded expansion through existing credit and Album relationships. Track membership
+is authoritative; providers, playback availability and browser filters are absent
+from search requests. The QML adapter coalesces background reads and retains at most
+120 result rows. Direct keyset navigation loads bounded windows around stable IDs,
+including targets outside the current browse page. See
+[local-library search](local-library-search.md) for ranking, limits and measurements.

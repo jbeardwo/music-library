@@ -11,7 +11,7 @@ use music_library_spotify::playback::{AuthorizationState, Error, Song};
 
 pub enum Pending {
     ClearAfterRemote,
-    LibraryAfterRemote(Vec<music_library::domain::TrackSearchResult>),
+    LibraryAfterRemote(Vec<music_library::domain::TrackSearchResult>, usize),
     PageAfterRemote,
     QueueAfterLocal(Option<usize>),
     QueueAfterRemote(Option<usize>),
@@ -70,6 +70,42 @@ pub(crate) fn test_handoffs() {
     let (worker, commands) = Worker::fake();
     b.spotify_playback_worker = Some(worker);
 
+    b.spotify_playback_state.devices[0].supports_volume = true;
+    for trim in [0., -6.] {
+        b.set_output_trims(trim, trim);
+        b.resolve_play(remote.as_ref());
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::ApplicationPlay(..)
+        ));
+        b.finish_remote_handoff();
+        b.player_volume(0.8);
+        assert!(matches!(commands.try_recv().unwrap(), Command::Volume(..)));
+        b.resolve_play(local.as_ref());
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::ApplicationPause
+        ));
+        b.finish_remote_handoff();
+        assert_eq!(b.player_volume_value(), 0.8);
+        b.player_volume(0.7);
+        b.resolve_play(remote.as_ref());
+        let expected = (70. * 10_f64.powf(trim / 20.)).round() as u8;
+        assert!(
+            matches!(commands.try_recv().unwrap(), Command::ApplicationPlay(_, _, _, volume) if volume == expected)
+        );
+        b.finish_remote_handoff();
+        assert_eq!(b.player_volume_value(), 0.7);
+        b.resolve_play(local.as_ref());
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            Command::ApplicationPause
+        ));
+        b.finish_remote_handoff();
+        assert_eq!(b.player_volume_value(), 0.7);
+        assert_eq!(b.session.playback.state().output_trim_db, trim);
+    }
+    b.set_output_trims(0., 0.);
     b.resolve_play(local.as_ref());
     assert_eq!(b.active_backend, ActiveBackend::Local);
     assert!(commands.try_recv().is_err()); // zero Spotify playback requests
@@ -314,14 +350,14 @@ pub(crate) fn test_mixed_queue() {
     assert_eq!(b.session.playback.state().status, PlaybackStatus::Stopped);
     assert!(matches!(
         requests.try_recv().unwrap(),
-        Command::ApplicationPlay(_, _, true)
+        Command::ApplicationPlay(_, _, true, _)
     ));
     b.finish_remote_handoff();
     assert_eq!(b.session.playback.state().position, Some(2));
     b.resolve_current_play(remote.as_ref()); // ordinary Play/Resume retains position
     assert!(matches!(
         requests.try_recv().unwrap(),
-        Command::ApplicationPlay(_, _, false)
+        Command::ApplicationPlay(_, _, false, _)
     ));
     b.finish_remote_handoff();
     let completed_generation = b.playback_generation;
@@ -363,7 +399,7 @@ pub(crate) fn test_mixed_queue() {
     b.navigate_queue(true); // Previous resolves current availability afresh
     assert!(matches!(
         requests.try_recv().unwrap(),
-        Command::ApplicationPlay(_, _, true)
+        Command::ApplicationPlay(_, _, true, _)
     ));
     b.finish_remote_handoff();
     b.navigate_queue(false);
@@ -390,7 +426,13 @@ pub(crate) fn test_mixed_queue() {
         .album_for_release(&b.session.rows[0].release_id)
         .unwrap()
         .album_id;
-    b.browse_action_impl("play", 2, remote.as_ref().into());
+    let all = b
+        .session
+        .library
+        .library_queue(&music_library::browse::Request::default())
+        .unwrap();
+    let start = all.iter().position(|r| r.track_id == remote).unwrap();
+    b.replace_library_program(all, start);
     assert!(matches!(
         requests.try_recv().unwrap(),
         Command::ApplicationPlay(..)
@@ -404,7 +446,7 @@ pub(crate) fn test_mixed_queue() {
             ..Default::default()
         })
         .unwrap();
-    b.replace_library_queue(rows);
+    b.replace_library_program(rows, 0);
     assert!(matches!(
         requests.try_recv().unwrap(),
         Command::ApplicationPause
@@ -422,13 +464,20 @@ pub(crate) fn test_mixed_queue() {
     assert_eq!(b.session.playback.state().queue.last(), Some(&local));
     assert_eq!(b.session.queue_labels.last().unwrap().track_id, local);
     assert!(searches.try_recv().is_err());
-    b.browse_action_impl("play", 2, local.as_ref().into());
+    let all = b
+        .session
+        .library
+        .library_queue(&music_library::browse::Request::default())
+        .unwrap();
+    let start = all.iter().position(|r| r.track_id == local).unwrap();
+    b.replace_library_program(all, start);
     assert!(matches!(
         requests.try_recv().unwrap(),
         Command::ApplicationPause
     ));
     b.finish_remote_handoff();
-    assert_eq!(b.session.playback.state().queue, vec![local.clone()]);
+    assert_eq!(b.session.playback.state().queue.len(), 45);
+    assert_eq!(b.session.playback.state().current_track(), Some(&local));
     assert_eq!(b.active_backend, ActiveBackend::Local);
     b.clear_resolved_queue();
     b.session.defer_confirmations();
@@ -478,25 +527,35 @@ impl Bridge {
         }
     }
 
-    pub(crate) fn replace_library_queue(
+    pub(crate) fn replace_library_program(
         &mut self,
         rows: Vec<music_library::domain::TrackSearchResult>,
+        position: usize,
     ) {
         if self.real_audio && matches!(self.active_backend, ActiveBackend::Remote(_)) {
-            self.route_pending = Some(Pending::LibraryAfterRemote(rows));
+            self.route_pending = Some(Pending::LibraryAfterRemote(rows, position));
             if !self.send_remote(Command::ApplicationPause) {
                 self.route_pending = None;
             }
         } else {
-            self.start_library_queue(rows);
+            self.start_library_queue(rows, position);
         }
     }
 
-    fn start_library_queue(&mut self, rows: Vec<music_library::domain::TrackSearchResult>) {
+    fn start_library_queue(
+        &mut self,
+        rows: Vec<music_library::domain::TrackSearchResult>,
+        position: usize,
+    ) {
         if let Err(error) = self.session.replace_queue(rows) {
             self.session.error = error;
             return;
         }
+        if let Err(error) = self.session.playback.select_queue_position(position) {
+            self.session.error = error.to_string();
+            return;
+        }
+        self.queue_offset = position / 200 * 200;
         self.active_backend = ActiveBackend::None;
         self.restart_playback = true;
         if let Some(id) = self.session.playback.state().current_track().cloned() {
@@ -735,6 +794,14 @@ impl Bridge {
             return;
         }
         self.active_backend = ActiveBackend::None;
+        if let Err(error) = self
+            .session
+            .playback
+            .set_output_trim(self.controls.trims.local_db)
+        {
+            self.session.error = error.to_string();
+            return;
+        }
         match self.session.playback.start_source(source) {
             Ok(()) => {
                 self.restart_playback = false;
@@ -802,6 +869,7 @@ impl Bridge {
                 song,
                 self.playback_generation,
                 self.restart_playback,
+                self.remote_output_percent(),
             )) {
                 self.route_pending = None;
             }
@@ -846,7 +914,9 @@ impl Bridge {
             return;
         }
         match pending {
-            Some(Pending::LibraryAfterRemote(rows)) => self.start_library_queue(rows),
+            Some(Pending::LibraryAfterRemote(rows, position)) => {
+                self.start_library_queue(rows, position)
+            }
             Some(Pending::PageAfterRemote) => {
                 self.active_backend = ActiveBackend::None;
                 self.session.queue_page();

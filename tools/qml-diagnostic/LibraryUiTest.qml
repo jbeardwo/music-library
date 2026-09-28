@@ -57,9 +57,10 @@
             uiTest.keyClick(Qt.Key_Up);
             check(list(2).currentIndex === 2, "keyboard Up");
             uiTest.keyClick(Qt.Key_Return);
-            check(view.queueTotal === 1 && view.status === "Playing", "Enter starts Song");
+            queued();
+            check(view.position === 2 && view.queueTotal === 45 && view.status === "Playing", "Enter starts Song");
             doubleClick(2, 3);
-            check(view.queueTotal === 1 && view.currentTitle === "03 Multiple available sources", "Song double-click replaces");
+            check(view.queueTotal === 45 && view.position === 3 && view.currentTitle === "03 Multiple available sources", "Song double-click replaces");
             for (let pane = 0; pane < 3; ++pane) {
                 click(pane, 0, Qt.RightButton);
                 check(libraryMenu.opened, "context menu opens " + pane);
@@ -67,18 +68,29 @@
                 libraryMenu.itemAt(1).triggered();
                 libraryMenu.close();
                 queued();
-                check(view.queueTotal > before, "context append " + pane);
+                check(view.queueTotal === before + (pane === 0 ? filteredSongs : pane === 1 ? songCount : 1), "context append " + pane);
             }
             doubleClick(1, 0);
+            doubleClick(2, 2);
+            check(view.queueTotal === 45 && view.position === 2 && view.currentId === library.panes[2].rows[2].id, "Album Track 3 preserves full program");
+            click(1, 0, Qt.RightButton);
+            libraryMenu.itemAt(0).triggered(); libraryMenu.close(); queued();
             check(view.queueTotal === 45 && view.position === 0, "Album double-click queues full library program");
             doubleClick(0, 0);
             check(view.queueTotal > 0 && view.queueTotal < 45 && view.position === 0, "Artist double-click replaces queue");
+            const artistProgram = library.panes[2].rows.map(row => row.id);
+            doubleClick(2, 1);
+            check(view.queueTotal === artistProgram.length && view.position === 1 && view.currentId === artistProgram[1], "Artist Song starts within full program");
+            click(2, 1, Qt.RightButton);
+            libraryMenu.itemAt(0).triggered(); libraryMenu.close(); queued();
+            check(view.queueTotal === artistProgram.length && view.position === 1, "Song context Play keeps program");
+            for (let i = 0; i < artistProgram.length; ++i) check(view.queue[i].trackId === artistProgram[i], "Artist queue matches Songs order");
             window.bridge.browse_action("select", 0, "");
             doubleClick(2, 2);
             check(view.currentArtist.length > 0 && view.currentAlbum.length > 0, "current metadata");
             uiTest.mouseClick(currentTrack);
             uiTest.wait(180);
-            check(queueDrawer.opened && queue.count === 1, "queue drawer opens");
+            check(queueDrawer.opened && queue.count === 45 && view.position === 2, "queue drawer opens");
             check(queueDrawer.y + queueDrawer.height <= player.y + 1, "drawer stays above player controls");
             uiTest.keyClick(Qt.Key_Escape);
             uiTest.wait(20);
@@ -96,9 +108,9 @@
                 window.bridge.browse_action("append", 1, library.panes[1].rows[0].id);
                 queued();
             }
-            check(view.queueTotal === 226 && queue.count === 200, "large queue presentation bounded");
+            check(view.queueTotal === 270 && queue.count === 200, "large queue presentation bounded");
             window.bridge.queue_window(200);
-            check(view.queueOffset === 200 && queue.count === 26, "last queue page");
+            check(view.queueOffset === 200 && queue.count === 70, "last queue page");
             window.bridge.queue_window(0);
             check(queue.count === 200, "queue page back");
             return "ok";
@@ -113,3 +125,21 @@
         return "ok";
     }
     function seekControlEnabled() { return seekSlider.enabled; }
+
+    function exercisePagedProgram() {
+        window.bridge.browse_action("select", 0, "");
+        window.bridge.browse_action("refresh", 0, "");
+        window.bridge.browse_action("next", 2, "");
+        uiTest.wait(30);
+        const list = uiTest.findChild(window.contentItem, "libraryPane2");
+        list.forceLayout();
+        const selected = library.panes[2].rows[3].id;
+        const row = list.itemAtIndex(3);
+        uiTest.mouseDoubleClickSequence(row, 30, row.height / 2, Qt.LeftButton);
+        for (let n = 0; n < 250 && library.pending; ++n) uiTest.wait(20);
+        if (library.pending || view.queueTotal !== 496 || view.position !== 203 || view.currentId !== selected)
+            return "later-page program/start mismatch";
+        if (library.panes[2].rows.length !== 200 || view.queueOffset !== 200 || view.queue.length !== 200 || !view.queue[3].current)
+            return "bounded drawer/current occurrence mismatch";
+        return "ok";
+    }

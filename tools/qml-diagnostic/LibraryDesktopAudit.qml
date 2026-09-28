@@ -9,8 +9,9 @@
         function click(n, i, doubleClick, button) {
             const view = list(n);
             view.forceLayout();
-            view.positionViewAtIndex(i, ListView.Contain);
-            desktopTest.wait(20);
+            view.positionViewAtIndex(i, ListView.Center);
+            desktopTest.wait(120);
+            view.forceLayout();
             const row = view.itemAtIndex(i);
             check(row !== null, "row visible");
             if (doubleClick) desktopTest.mouseDoubleClickSequence(row, 30, row.height / 2, Qt.LeftButton);
@@ -56,8 +57,8 @@
                 desktopTest.mouseClick(seekSlider, seekSlider.width / 4, seekSlider.height / 2);
                 desktopTest.wait(700);
                 check(view.progressMs > view.durationMs * 0.15 && view.progressMs < view.durationMs * 0.4, "local slider seek");
-                desktopTest.mouseClick(volumeSlider, volumeSlider.width * 0.1, volumeSlider.height / 2);
-                check(view.volume < 0.2, "local slider volume");
+                desktopTest.mouseClick(volumeSlider, volumeSlider.width * 0.2, volumeSlider.height / 2);
+                check(view.volume > 0 && view.volume < 0.2, "local slider volume");
                 window.bridge.command("pause");
                 for (let n = 0; n < 100 && view.playing; ++n) desktopTest.wait(20);
                 check(!view.playing, "pause");
@@ -67,7 +68,38 @@
                 window.bridge.command("previous"); playing(0);
                 check(view.position === 0, "previous");
             }
+            // Album Track 3, Artist Track, then the same Track in all Songs.
+            click(1, 0, false);
+            const albumTotal = list(2).count;
+            click(2, 2, true);
+            if (audio) playing(2);
+            check(view.position === 2 && view.queueTotal === albumTotal, "Album Track 3 full program");
+            click(0, 0, false);
+            const artistTotal = list(2).count;
+            const selected = library.panes[2].rows[2].id;
+            click(2, 2, true);
+            if (audio) playing(2);
+            check(view.position === 2 && view.queueTotal === artistTotal && view.currentId === selected, "Artist Track full program");
             window.bridge.browse_action("select", 0, "");
+            let globalIndex = 0;
+            let found = false;
+            for (let page = 0; page < 20; ++page) {
+                const rows = library.panes[2].rows;
+                const index = rows.findIndex(row => row.id === selected);
+                if (index >= 0) { click(2, index, true); globalIndex += index; found = true; break; }
+                globalIndex += rows.length;
+                if (!library.panes[2].more) break;
+                window.bridge.browse_action("next", 2, ""); desktopTest.wait(20);
+            }
+            check(found && view.position === globalIndex && view.queueTotal > artistTotal, "global full program at chosen Track: found=" + found + " position=" + view.position + "/" + globalIndex + " total=" + view.queueTotal + "/" + artistTotal + " error=" + view.error);
+            if (audio) playing(globalIndex);
+            const master = view.volume;
+            outputCalibration.open(); desktopTest.wait(50);
+            const trim = desktopTest.findChild(window.contentItem, "localOutputTrim");
+            trim.value = -60; trim.valueModified();
+            check(view.localTrim === -6 && view.volume === master, "trim preserves logical master");
+            trim.value = 0; trim.valueModified();
+            outputCalibration.close();
             capture("/tmp/music-library-ui-library.png");
             desktopTest.mouseClick(currentTrack); desktopTest.wait(200);
             check(queueDrawer.opened && queue.count > 0, "drawer");

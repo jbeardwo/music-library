@@ -99,8 +99,10 @@ pub enum PlaybackStatus {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaybackState {
-    /// Accepted session gain; independent of media/transport confirmation.
+    /// Logical master volume, independent of source calibration and transport.
     pub volume: Volume,
+    /// Fixed calibration for this engine output; never Track-dependent.
+    pub output_trim_db: f64,
     pub queue: Vec<TrackId>,
     /// Selected queue entry, including an entry whose playback attempt failed.
     pub position: Option<usize>,
@@ -153,8 +155,19 @@ impl<E: PlaybackEngine> Playback<E> {
 
     pub fn set_volume(&mut self, value: f64) -> Result<(), PlaybackError> {
         let volume = Volume::new(value)?;
-        self.engine.set_volume(volume)?;
+        self.engine
+            .set_volume(crate::output::effective(volume, self.state.output_trim_db))?;
         self.state.volume = volume;
+        Ok(())
+    }
+
+    pub fn set_output_trim(&mut self, db: f64) -> Result<(), PlaybackError> {
+        if !db.is_finite() || !(-24.0..=0.0).contains(&db) {
+            return Err(PlaybackError::InvalidVolume);
+        }
+        self.engine
+            .set_volume(crate::output::effective(self.state.volume, db))?;
+        self.state.output_trim_db = db;
         Ok(())
     }
 

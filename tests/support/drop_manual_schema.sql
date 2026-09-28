@@ -1,3 +1,12 @@
+DROP TRIGGER IF EXISTS artist_lookup_insert;
+DROP TRIGGER IF EXISTS artist_lookup_update;
+DROP TRIGGER IF EXISTS artist_lookup_delete;
+DROP TRIGGER IF EXISTS album_lookup_insert;
+DROP TRIGGER IF EXISTS album_lookup_update;
+DROP TRIGGER IF EXISTS album_lookup_delete;
+DROP TABLE IF EXISTS artist_lookup;
+DROP TABLE IF EXISTS album_lookup;
+DROP TABLE IF EXISTS output_calibration;
 DROP TRIGGER recording_manual_confirmation;
 DROP TRIGGER manual_recording_claim_removed;
 DROP TABLE manual_track_recording_claim;

@@ -9,9 +9,18 @@ use std::time::Instant;
 #[derive(Default)]
 pub struct Controls {
     revision: u64,
-    volume: Option<(u64, f64, String)>,
+    pub trims: music_library::output::OutputTrims,
+    volume: Option<u64>,
     seek: Option<(u64, u64)>,
     observed: Option<Instant>,
+}
+impl Controls {
+    pub fn new(trims: music_library::output::OutputTrims) -> Self {
+        Self {
+            trims,
+            ..Self::default()
+        }
+    }
 }
 impl Bridge {
     fn remote_controls(&self) -> bool {
@@ -33,27 +42,40 @@ impl Bridge {
                     .is_some_and(|d| d.supports_volume && !d.is_restricted))
     }
     pub fn player_volume_value(&self) -> f64 {
-        if !self.remote_controls() {
-            return self.session.playback.state().volume.get();
+        self.session.playback.state().volume.get()
+    }
+    pub fn remote_output_percent(&self) -> u8 {
+        (music_library::output::effective(
+            self.session.playback.state().volume,
+            self.controls.trims.spotify_db,
+        )
+        .get()
+            * 100.)
+            .round() as u8
+    }
+    pub fn set_output_trims(&mut self, local: f64, spotify: f64) {
+        let trims = music_library::output::OutputTrims {
+            local_db: local,
+            spotify_db: spotify,
+        };
+        if let Err(error) = self.session.library.set_output_trims(trims) {
+            self.session.error = error.to_string();
+            return;
         }
-        if let Some((_, value, device)) = &self.controls.volume
-            && self.spotify_playback_state.selected_device.as_ref() == Some(device)
-        {
-            return *value;
+        self.controls.trims = trims;
+        if let Err(error) = self.session.playback.set_output_trim(local) {
+            self.session.error = error.to_string();
+            return;
         }
-        self.remote_device()
-            .and_then(|d| d.volume_percent)
-            .map_or(self.session.playback.state().volume.get(), |v| {
-                f64::from(v) / 100.
-            })
+        self.player_volume(self.player_volume_value());
     }
     pub fn player_volume(&mut self, value: f64) {
         if let Err(error) = Volume::new(value) {
             self.session.error = error.to_string();
             return;
         }
-        if !self.remote_controls() {
-            self.session.set_volume(value);
+        self.session.set_volume(value);
+        if !self.session.error.is_empty() || !self.remote_controls() {
             return;
         }
         if !self.player_volume_available() {
@@ -61,7 +83,7 @@ impl Bridge {
                 "This playback device does not currently support volume control".into();
             return;
         }
-        let percent = (value * 100.).round() as u8;
+        let percent = self.remote_output_percent();
         self.controls.revision += 1;
         let revision = self.controls.revision;
         if self
@@ -69,14 +91,7 @@ impl Bridge {
             .as_ref()
             .is_some_and(|w| w.send(Command::Volume(percent, revision)))
         {
-            self.controls.volume = Some((
-                revision,
-                f64::from(percent) / 100.,
-                self.spotify_playback_state
-                    .selected_device
-                    .clone()
-                    .unwrap_or_default(),
-            ));
+            self.controls.volume = Some(revision);
             self.session.error.clear();
         } else {
             self.session.error = "Playback device is busy; please retry volume".into();
@@ -177,15 +192,30 @@ impl Bridge {
                 self.session.error = error.to_string();
             }
         }
-        if let Some((revision, value, _)) = &self.controls.volume
+        if let Some(revision) = &self.controls.volume
             && update.volume_ack == Some(*revision)
         {
             if let Some(error) = &update.snapshot.error {
                 self.session.error = error.to_string();
-            } else {
-                self.session.set_volume(*value);
             }
             self.controls.volume = None;
+        }
+        let old_device = &self.spotify_playback_state.state.device;
+        let new_device = &update.snapshot.state.device;
+        if self.remote_controls()
+            && self.route_pending.is_none()
+            && self.controls.volume.is_none()
+            && update.volume_ack.is_none()
+            && !update.application_command
+            && let (Some(old), Some(new)) = (old_device, new_device)
+            && old.id == new.id
+            && new.id == update.snapshot.selected_device
+            && old.volume_percent != new.volume_percent
+            && let Some(percent) = new.volume_percent
+        {
+            let gain = 10_f64.powf(self.controls.trims.spotify_db / 20.);
+            self.session
+                .set_volume((f64::from(percent) / 100. / gain).clamp(0., 1.));
         }
         self.spotify_playback_state = update.snapshot;
         if update.application_command {
@@ -314,10 +344,58 @@ pub(crate) fn test_controls(
         application_command: false,
         completion: None,
     });
-    assert_eq!(b.player_volume_value(), 0.35);
+    assert_eq!(b.player_volume_value(), 0.7);
     assert!(!b.session.error.is_empty());
+    // External changes on the stable selected device still update logical volume.
+    let mut external = b.spotify_playback_state.clone();
+    external.error = None;
+    external.state.device.as_mut().unwrap().volume_percent = Some(25);
+    b.apply_player_update(Update {
+        snapshot: external.clone(),
+        generation,
+        volume_ack: None,
+        application_command: false,
+        completion: None,
+    });
+    assert_eq!(b.player_volume_value(), 0.25);
+    b.set_output_trims(-6., -6.);
+    let Command::Volume(percent, revision) = commands.try_recv().unwrap() else {
+        panic!("trim output");
+    };
+    assert_eq!(percent, 13);
+    assert_eq!(b.player_volume_value(), 0.25);
+    // A stale poll during the trim request cannot reinterpret old output as master.
+    external.state.device.as_mut().unwrap().volume_percent = Some(35);
+    b.apply_player_update(Update {
+        snapshot: external.clone(),
+        generation,
+        volume_ack: None,
+        application_command: false,
+        completion: None,
+    });
+    assert_eq!(b.player_volume_value(), 0.25);
+    external.state.device.as_mut().unwrap().volume_percent = Some(13);
+    b.apply_player_update(Update {
+        snapshot: external.clone(),
+        generation,
+        volume_ack: Some(revision),
+        application_command: false,
+        completion: None,
+    });
+    assert_eq!(b.player_volume_value(), 0.25); // integer device rounding never feeds back on ack
+    external.state.device.as_mut().unwrap().volume_percent = Some(20);
+    b.apply_player_update(Update {
+        snapshot: external,
+        generation,
+        volume_ack: None,
+        application_command: false,
+        completion: None,
+    });
+    assert!((b.player_volume_value() - 0.2 / 10_f64.powf(-6. / 20.)).abs() < 0.00001);
     b.active_backend = ActiveBackend::Local;
-    assert_eq!(b.player_volume_value(), 0.35);
+    b.set_output_trims(0., 0.);
+    b.player_volume(0.7);
+    assert_eq!(b.player_volume_value(), 0.7);
     assert_eq!(b.player_clock(), (0, None, false)); // clock reset across handoff
     b.spotify_playback_worker.take();
     b.real_audio = false;

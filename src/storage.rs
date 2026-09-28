@@ -212,7 +212,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 14 {
+        } else if version > 16 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -308,6 +308,12 @@ impl Store {
             crate::artist_identity::backfill(&tx)?;
             tx.pragma_update(None, "user_version", 14)?;
             tx.commit()?;
+        }
+        if version < 15 {
+            connection.execute_batch(include_str!("../migrations/0015_output_calibration.sql"))?;
+        }
+        if version < 16 {
+            connection.execute_batch(include_str!("../migrations/0016_library_search.sql"))?;
         }
         Ok(Self {
             connection,

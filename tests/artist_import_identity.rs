@@ -184,8 +184,18 @@ fn migration_preserves_conflicting_artist_ids_and_unrelated_equal_names() {
         ],
     )
     .unwrap();
-    db.execute_batch("DROP TABLE local_artist_context; PRAGMA user_version=13;")
-        .unwrap();
+    db.execute_batch(
+        "DROP TRIGGER IF EXISTS artist_lookup_insert;
+DROP TRIGGER IF EXISTS artist_lookup_update;
+DROP TRIGGER IF EXISTS artist_lookup_delete;
+DROP TRIGGER IF EXISTS album_lookup_insert;
+DROP TRIGGER IF EXISTS album_lookup_update;
+DROP TRIGGER IF EXISTS album_lookup_delete;
+DROP TABLE IF EXISTS artist_lookup;
+DROP TABLE IF EXISTS album_lookup;
+DROP TABLE output_calibration; DROP TABLE local_artist_context; PRAGMA user_version=13;",
+    )
+    .unwrap();
     drop(db);
     let l = Library::open(&path).unwrap();
     assert_eq!(

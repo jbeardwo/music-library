@@ -16,8 +16,6 @@ pub struct Request {
     pub artist: Option<ArtistId>,
     pub album: Option<AlbumId>,
     pub track: Option<TrackId>,
-    /// Group an Artist's queue by Album and Release, then disc/Track position.
-    pub program: bool,
     pub after: Option<Cursor>,
     pub limit: u32,
 }
@@ -47,11 +45,10 @@ impl QueueReader {
     pub fn read(self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         let request = Request {
             pane: Pane::Songs,
-            program: true,
             after: None,
             ..request.clone()
         };
-        Ok(query(&self.0, &request, true)?
+        Ok(query(&self.0, &request, true, false, false)?
             .into_iter()
             .filter_map(|r| r.track)
             .collect())
@@ -78,6 +75,73 @@ impl Library {
         Ok(QueueReader(connection))
     }
 
+    /// Seek directly to an identity's ordering key, including the target row.
+    fn browse_cursor(&self, request: &Request, id: &str) -> Result<Cursor> {
+        let sql = match request.pane {
+            Pane::Artists => "SELECT lower(name),'',0,0,id FROM artist WHERE id=?1",
+            Pane::Albums => {
+                "SELECT lower(title),'',0,0,album_id FROM album_application_metadata WHERE album_id=?1"
+            }
+            Pane::Songs if request.album.is_some() => {
+                "SELECT lower(a.title),r.id,COALESCE(t.disc_number,1),COALESCE(t.track_number,2147483647),t.id FROM track t JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id WHERE t.id=?1"
+            }
+            Pane::Songs => {
+                "SELECT lower(title),'',0,0,track_id FROM effective_track_metadata WHERE track_id=?1"
+            }
+        };
+        let cursor = self.store.connection.query_row(sql, [id], |r| {
+            Ok(Cursor {
+                title: r.get(0)?,
+                release: r.get(1)?,
+                disc: r.get(2)?,
+                position: r.get(3)?,
+                id: r.get(4)?,
+            })
+        })?;
+        Ok(cursor)
+    }
+
+    pub fn browse_from(&self, request: &Request, id: &str) -> Result<Vec<Row>> {
+        let request = Request {
+            after: Some(self.browse_cursor(request, id)?),
+            ..request.clone()
+        };
+        let rows = query(&self.store.connection, &request, false, true, false)?;
+        if rows.first().is_none_or(|r| r.id != id) {
+            return Err(crate::storage::Error::Invalid(
+                "Search result is no longer in this library view".into(),
+            ));
+        }
+        Ok(rows)
+    }
+
+    /// Bounded keyset window around a target, without counting or walking pages.
+    pub fn browse_around(&self, request: &Request, id: &str) -> Result<Vec<Row>> {
+        let cursor = self.browse_cursor(request, id)?;
+        let before = Request {
+            after: Some(cursor.clone()),
+            limit: request.limit.clamp(1, 201).saturating_sub(1).min(100),
+            ..request.clone()
+        };
+        let preceding = if before.limit == 0 {
+            vec![]
+        } else {
+            query(&self.store.connection, &before, false, false, true)?
+        };
+        let first = preceding.last().map(|r| r.cursor.clone()).unwrap_or(cursor);
+        let request = Request {
+            after: Some(first),
+            ..request.clone()
+        };
+        let rows = query(&self.store.connection, &request, false, true, false)?;
+        if !rows.iter().any(|r| r.id == id) {
+            return Err(crate::storage::Error::Invalid(
+                "Search result is no longer in this library view".into(),
+            ));
+        }
+        Ok(rows)
+    }
+
     pub fn browse(&self, request: &Request) -> Result<Vec<Row>> {
         self.store.browse(request, false)
     }
@@ -87,7 +151,6 @@ impl Library {
     pub fn library_queue(&self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         let request = Request {
             pane: Pane::Songs,
-            program: true,
             after: None,
             ..request.clone()
         };
@@ -102,11 +165,17 @@ impl Library {
 
 impl Store {
     pub(crate) fn browse(&self, request: &Request, queue: bool) -> Result<Vec<Row>> {
-        query(&self.connection, request, queue)
+        query(&self.connection, request, queue, false, false)
     }
 }
 
-fn query(connection: &rusqlite::Connection, request: &Request, queue: bool) -> Result<Vec<Row>> {
+fn query(
+    connection: &rusqlite::Connection,
+    request: &Request,
+    queue: bool,
+    inclusive: bool,
+    reverse: bool,
+) -> Result<Vec<Row>> {
     // Credit relationships are indexed. UNION prevents duplicate Tracks when
     // an Artist is credited at several levels. No filesystem reads or HTTP here.
     let artist_tracks = "SELECT track_id FROM track_artist_credit WHERE artist_id=?1
@@ -140,7 +209,7 @@ fn query(connection: &rusqlite::Connection, request: &Request, queue: bool) -> R
                 lower(a.title), '', 0, 0, '', '', '', NULL
                 FROM album_application_metadata a WHERE EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id {saved} WHERE r.album_id=a.album_id) {album_scope}"),
             Pane::Songs => {
-                let (title, release, disc, position) = if request.program || request.album.is_some() {
+                let (title, release, disc, position) = if request.album.is_some() {
                     ("lower(a.title)", "r.id", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
                 } else { ("lower(e.title)", "''", "0", "0") };
                 let album_filter = if request.album.is_some() { " AND r.album_id=?2" } else { "" };
@@ -158,7 +227,7 @@ fn query(connection: &rusqlite::Connection, request: &Request, queue: bool) -> R
             }
         };
     let c = request.after.clone().unwrap_or_default();
-    let program = request.pane == Pane::Songs && (request.program || request.album.is_some());
+    let program = request.pane == Pane::Songs && request.album.is_some();
     let order = if program {
         "sort_title,release_key,disc,position,id"
     } else {
@@ -170,6 +239,25 @@ fn query(connection: &rusqlite::Connection, request: &Request, queue: bool) -> R
         "WHERE sort_title >= ?5 AND (sort_title,release_key,disc,position,id) > (?5,?6,?7,?8,?9)"
     } else {
         "WHERE sort_title >= ?5 AND (sort_title,id) > (?5,?9)"
+    };
+    let cursor = if inclusive {
+        cursor.replace(" > ", " >= ")
+    } else {
+        cursor.to_string()
+    };
+    let cursor = if reverse {
+        cursor.replace(" >= ", " <= ").replace(" > ", " < ")
+    } else {
+        cursor
+    };
+    let order = if reverse {
+        order
+            .split(',')
+            .map(|key| format!("{key} DESC"))
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        order.to_string()
     };
     let available = if request.pane == Pane::Songs {
         "EXISTS(SELECT 1 FROM track_source ts CROSS JOIN local_file_observation l WHERE ts.track_id=rows.id AND l.source_id=ts.source_id AND l.available=1)"

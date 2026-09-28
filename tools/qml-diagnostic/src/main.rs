@@ -1,5 +1,6 @@
 mod browser;
 mod catalog;
+mod library_search;
 #[cfg(feature = "gstreamer")]
 mod local;
 mod playback_route;
@@ -493,6 +494,24 @@ struct Bridge {
             self.changed();
         }
     ),
+    library_search: library_search::Search,
+    local_search_snapshot: qt_property!(QVariantMap; READ local_search_value NOTIFY local_search_changed),
+    local_search_changed: qt_signal!(),
+    search_library: qt_method!(
+        fn search_library(&mut self, text: String, filter: i32) {
+            self.local_search_start(text, filter);
+        }
+    ),
+    close_search: qt_method!(
+        fn close_search(&mut self) {
+            self.local_search_cancel();
+        }
+    ),
+    navigate_search_result: qt_method!(
+        fn navigate_search_result(&mut self, index: i32) -> bool {
+            self.local_search_go(index)
+        }
+    ),
     browser: browser::Browser,
     browse_snapshot: qt_property!(QVariantMap; READ browse_value NOTIFY browse_changed),
     browse_changed: qt_signal!(),
@@ -502,6 +521,12 @@ struct Bridge {
         }
     ),
     controls: player_controls::Controls,
+    output_trims: qt_method!(
+        fn output_trims(&mut self, local: f64, spotify: f64) {
+            self.set_output_trims(local, spotify);
+            self.changed();
+        }
+    ),
     seek: qt_method!(
         fn seek(&mut self, milliseconds: f64) {
             self.player_seek(milliseconds);
@@ -649,7 +674,17 @@ fn row_value(row: &music_library::domain::TrackSearchResult) -> QVariant {
 }
 
 impl Bridge {
-    fn new(session: Session) -> Self {
+    fn new(mut session: Session) -> Self {
+        let trims = match session.library.output_trims() {
+            Ok(trims) => trims,
+            Err(error) => {
+                session.error = error.to_string();
+                Default::default()
+            }
+        };
+        if let Err(error) = session.playback.set_output_trim(trims.local_db) {
+            session.error = error.to_string();
+        }
         Self {
             base: Default::default(),
             active_backend: Default::default(),
@@ -705,11 +740,18 @@ impl Bridge {
             matching_rows: Vec::new(),
             queue_offset: 0,
             queue_window: Default::default(),
+            library_search: Default::default(),
+            local_search_snapshot: Default::default(),
+            local_search_changed: Default::default(),
+            search_library: Default::default(),
+            close_search: Default::default(),
+            navigate_search_result: Default::default(),
             browser: Default::default(),
             browse_snapshot: Default::default(),
             browse_changed: Default::default(),
             browse_action: Default::default(),
-            controls: Default::default(),
+            controls: player_controls::Controls::new(trims),
+            output_trims: Default::default(),
             seek: Default::default(),
             refresh_clock: Default::default(),
             set_volume: Default::default(),
@@ -1592,6 +1634,8 @@ impl Bridge {
                         .map_or(String::new(), |s| format!(" → {s:?} pending")),
                 ),
             ),
+            ("localTrim", self.controls.trims.local_db.into()),
+            ("spotifyTrim", self.controls.trims.spotify_db.into()),
             ("volume", self.player_volume_value().into()),
             ("volumeAvailable", self.player_volume_available().into()),
             ("progressMs", (progress as f64).into()),
@@ -3820,8 +3864,9 @@ mod library_ui_tests {
             .replacen(
                 "    function ready() {",
                 &format!(
-                    "{}\n    function ready() {{",
-                    include_str!("../LibraryDesktopAudit.qml")
+                    "{}\n{}\n    function ready() {{",
+                    include_str!("../LibraryDesktopAudit.qml"),
+                    include_str!("../LibrarySearchTest.qml").replace("uiTest", "desktopTest")
                 ),
                 1,
             );
@@ -3833,11 +3878,36 @@ mod library_ui_tests {
             .to_string();
         bridge.pinned().borrow_mut().session.shutdown_audio();
         assert_eq!(result, "ok");
+        if std::env::var_os("MUSIC_LIBRARY_SEARCH_AUDIT").is_some() {
+            assert_eq!(
+                engine
+                    .invoke_method("exerciseLocalSearch".into(), &[true.into()])
+                    .to_qstring()
+                    .to_string(),
+                "ok"
+            );
+        }
     }
 
     #[test]
     fn mouse_keyboard_selection_queue_and_drawer() {
-        let (_temp, library) = sample::create().unwrap();
+        let (_temp, mut library) = sample::create().unwrap();
+        // Explicit fixture identities: one 44-Track Artist and one separate Artist.
+        let artists = library
+            .browse(&music_library::browse::Request {
+                pane: music_library::browse::Pane::Artists,
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap();
+        for row in artists.iter().skip(1).take(43) {
+            library
+                .merge_artist(
+                    &music_library::domain::ArtistId(row.id.clone()),
+                    &music_library::domain::ArtistId(artists[0].id.clone()),
+                )
+                .unwrap();
+        }
         let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
         let mut engine = QmlEngine::new();
         engine.set_object_property("diagnostic".into(), bridge.pinned());
@@ -3846,8 +3916,9 @@ mod library_ui_tests {
             .replacen(
                 "    function ready() {",
                 &format!(
-                    "{}\n    function ready() {{",
-                    include_str!("../LibraryUiTest.qml")
+                    "{}\n{}\n    function ready() {{",
+                    include_str!("../LibraryUiTest.qml"),
+                    include_str!("../LibrarySearchTest.qml")
                 ),
                 1,
             );
@@ -3862,5 +3933,146 @@ mod library_ui_tests {
         );
         #[cfg(feature = "gstreamer")]
         player_controls::test_controls(&bridge, &mut engine);
+        {
+            use music_library::domain::{CatalogReleaseInput, CatalogTrackInput};
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            let imported = b
+                .session
+                .library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: "Paged program".into(),
+                    year: None,
+                    artists: vec![],
+                    tracks: (0..451)
+                        .map(|i| CatalogTrackInput {
+                            title: format!("Paged duplicate {}", i % 3),
+                            artists: vec![],
+                            disc_number: Some(1),
+                            track_number: Some(i + 1),
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for track in imported.track_ids {
+                b.session.library.add_to_library(&track).unwrap();
+            }
+        }
+        assert_eq!(
+            engine
+                .invoke_method("exercisePagedProgram".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        {
+            use music_library::domain::{
+                ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput,
+            };
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            let release = b
+                .session
+                .library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: "Painted Shut".into(),
+                    year: None,
+                    artists: vec![ArtistCreditInput {
+                        name: "Hop Along".into(),
+                        role: None,
+                    }],
+                    tracks: ["First", "Second", "Waitress"]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, title)| CatalogTrackInput {
+                            title: (*title).into(),
+                            artists: vec![],
+                            disc_number: Some(1),
+                            track_number: Some(i as u32 + 1),
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for id in release.track_ids {
+                b.session.library.add_to_library(&id).unwrap();
+            }
+            let artists = b
+                .session
+                .library
+                .browse(&music_library::browse::Request {
+                    pane: music_library::browse::Pane::Artists,
+                    limit: 200,
+                    ..Default::default()
+                })
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.title == "Hop Along")
+                .collect::<Vec<_>>();
+            for artist in artists.iter().skip(1) {
+                b.session
+                    .library
+                    .merge_artist(
+                        &music_library::domain::ArtistId(artist.id.clone()),
+                        &music_library::domain::ArtistId(artists[0].id.clone()),
+                    )
+                    .unwrap();
+            }
+            b.browse_action_impl("refresh", 0, String::new());
+        }
+        assert_eq!(
+            engine
+                .invoke_method("exerciseLocalSearch".into(), &[false.into()])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        {
+            use music_library::domain::{
+                ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput,
+            };
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            for i in 0..211 {
+                let release = b
+                    .session
+                    .library
+                    .create_catalog_release(&CatalogReleaseInput {
+                        title: format!("ZZZ Album {i:03}"),
+                        year: None,
+                        artists: vec![ArtistCreditInput {
+                            name: format!("ZZZ Artist {i:03}"),
+                            role: None,
+                        }],
+                        tracks: (0..if i == 210 { 211 } else { 1 })
+                            .map(|n| CatalogTrackInput {
+                                title: if n == 210 {
+                                    "ZZZ target".into()
+                                } else {
+                                    "ZZZ duplicate".into()
+                                },
+                                artists: vec![],
+                                disc_number: Some(1),
+                                track_number: Some(n + 1),
+                            })
+                            .collect(),
+                    })
+                    .unwrap();
+                for id in release.track_ids {
+                    b.session.library.add_to_library(&id).unwrap();
+                }
+            }
+        }
+        assert_eq!(
+            engine
+                .invoke_method("exerciseDistantSearch".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let pinned = bridge.pinned();
+        let b = pinned.borrow();
+        assert!(b.spotify_resolution_worker.is_none());
+        assert!(b.spotify_playback_worker.is_none());
+        assert!(b.matcher.is_none());
     }
 }

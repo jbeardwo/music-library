@@ -23,7 +23,7 @@ pub enum Command {
     Volume(u8, u64),
     Visible(bool),
     /// Acknowledged commands used only by explicit application backend handoff.
-    ApplicationPlay(Song, u64, bool),
+    ApplicationPlay(Song, u64, bool, u8),
     ApplicationPause,
 }
 pub struct Update {
@@ -142,16 +142,18 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 Command::Refresh => playback.devices(),
                 Command::Select(id) => playback.select_device(&id),
                 Command::Play(song) => playback.play(&song),
-                Command::ApplicationPlay(song, current_generation, restart) => {
+                Command::ApplicationPlay(song, current_generation, restart, volume) => {
                     generation = current_generation;
                     application_command = true;
                     application_active = false;
                     detector = None;
-                    let result = if restart {
-                        playback.play_from_start(&song)
-                    } else {
-                        playback.play(&song)
-                    };
+                    let result = playback.set_volume(volume).and_then(|()| {
+                        if restart {
+                            playback.play_from_start(&song)
+                        } else {
+                            playback.play(&song)
+                        }
+                    });
                     result.inspect(|()| {
                         application_active = true;
                         detector = Some(crate::spotify_completion::Detector::new(&song.uri()));

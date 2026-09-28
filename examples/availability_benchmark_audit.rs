@@ -16,6 +16,10 @@ mod artist_credit;
 #[path = "../src/artist_identity.rs"]
 mod artist_identity;
 #[allow(dead_code)]
+#[path = "../src/output.rs"]
+mod output;
+use music_library::playback;
+#[allow(dead_code)]
 #[path = "../src/catalog.rs"]
 mod catalog;
 #[allow(dead_code)]

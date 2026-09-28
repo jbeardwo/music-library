@@ -126,14 +126,13 @@ fn membership_filters_partial_albums_and_program_order() {
     let queue = l
         .browse(&Request {
             artist: Some(artist),
-            program: true,
             limit: 200,
             ..Default::default()
         })
         .unwrap();
     assert_eq!(
         queue.iter().map(|r| &r.id).collect::<Vec<_>>(),
-        ordered.iter().map(|r| &r.id).collect::<Vec<_>>()
+        artist_songs.iter().map(|r| &r.id).collect::<Vec<_>>()
     );
     // No source is needed for visibility. Removing membership affects every pane.
     l.remove_from_library(&b.track_ids[0]).unwrap();
@@ -162,10 +161,20 @@ fn cursor_is_complete_for_duplicate_titles_positions_and_empty_titles() {
     for id in &a.track_ids {
         l.add_to_library(id).unwrap();
     }
-    for program in [false, true] {
+    let album = AlbumId(
+        l.browse(&Request {
+            pane: Pane::Albums,
+            limit: 1,
+            ..Default::default()
+        })
+        .unwrap()[0]
+            .id
+            .clone(),
+    );
+    for scope in [None, Some(album)] {
         let mut request = Request {
             limit: 1,
-            program,
+            album: scope,
             ..Default::default()
         };
         let mut ids = std::collections::HashSet::new();
@@ -238,4 +247,78 @@ fn queue_is_complete_beyond_a_page_and_track_display_falls_back_to_album_credit(
             .artist_names,
         ""
     );
+}
+
+#[test]
+fn complete_program_matches_paged_songs_in_every_scope_with_duplicate_titles() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut library = Library::open(temp.path().join("program.sqlite")).unwrap();
+    let input: Vec<_> = (0..451)
+        .map(|i| {
+            (
+                if i % 2 == 0 { "same" } else { "A song" },
+                i / 225 + 1,
+                451 - i,
+            )
+        })
+        .collect();
+    let imported = album(&mut library, "Program", "Artist", &input);
+    for id in &imported.track_ids {
+        library.add_to_library(id).unwrap();
+    }
+    let album = library
+        .album_for_release(&imported.release_id)
+        .unwrap()
+        .album_id;
+    let db = rusqlite::Connection::open(temp.path().join("program.sqlite")).unwrap();
+    let artist = ArtistId(
+        db.query_row(
+            "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    );
+    drop(db);
+    for request in [
+        Request::default(),
+        Request {
+            artist: Some(artist),
+            ..Default::default()
+        },
+        Request {
+            album: Some(album),
+            ..Default::default()
+        },
+    ] {
+        let mut page = Request {
+            limit: 200,
+            ..request.clone()
+        };
+        let mut visible = Vec::new();
+        loop {
+            let rows = library.browse(&page).unwrap();
+            if rows.is_empty() {
+                break;
+            }
+            page.after = Some(rows.last().unwrap().cursor.clone());
+            visible.extend(rows.into_iter().map(|r| TrackId(r.id)));
+        }
+        let queue = library
+            .library_queue_reader()
+            .unwrap()
+            .read(&request)
+            .unwrap();
+        assert_eq!(queue.len(), 451);
+        assert_eq!(
+            queue.iter().map(|r| r.track_id.clone()).collect::<Vec<_>>(),
+            visible
+        );
+        // Later-page duplicate title resolves by ID, not by first equal title.
+        let selected = &visible[403];
+        assert_eq!(
+            queue.iter().position(|r| &r.track_id == selected),
+            Some(403)
+        );
+    }
 }
