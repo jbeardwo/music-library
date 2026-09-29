@@ -817,6 +817,9 @@ The filesystem-based slice is a validation tool for difficult durable boundaries
 It must not cause the architecture to assume local files are required for the final product.
 
 The explicit catalog import slice creates Tracks/Releases/library membership with no local PlayableSource.
+Selective catalog import retains a complete known program while granting membership only
+to explicitly selected Track positions. The [Add Music panel](add-music.md) uses bounded
+provider discovery and background workers, then this existing import boundary.
 
 ## Performance
 

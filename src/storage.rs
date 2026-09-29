@@ -874,6 +874,16 @@ impl Store {
         &mut self,
         release: &crate::catalog::Release,
     ) -> Result<ImportedRelease> {
+        self.add_catalog_selection(release, None)
+    }
+
+    /// Import a complete program but save only the explicitly selected positions.
+    /// Other known Tracks remain outside the library, including on repeated adds.
+    pub fn add_catalog_selection(
+        &mut self,
+        release: &crate::catalog::Release,
+        selected: Option<&[(u32, u32)]>,
+    ) -> Result<ImportedRelease> {
         let _total = crate::catalog::Timing::new("persistence.total");
         crate::catalog::Timing::event(format_args!(
             "import_begin tracks={} media={} identities={}",
@@ -1069,11 +1079,50 @@ impl Store {
             imported
         };
         let membership = crate::catalog::Timing::detail("persistence.membership");
-        for id in &imported.track_ids {
-            tx.execute(
-                "INSERT INTO library_membership(track_id) VALUES (?1) ON CONFLICT DO NOTHING",
-                [id.as_ref()],
-            )?;
+        if let Some(positions) = selected {
+            if positions.is_empty() {
+                return Err(Error::Invalid("Select a Song".into()));
+            }
+            let mut by_position: std::collections::HashMap<(u32, u32), Vec<String>> =
+                Default::default();
+            {
+                let mut query = tx
+                    .prepare("SELECT id,disc_number,track_number FROM track WHERE release_id=?1")?;
+                for row in query.query_map([imported.release_id.as_ref()], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<u32>>(1)?,
+                        r.get::<_, Option<u32>>(2)?,
+                    ))
+                })? {
+                    let (id, disc, number) = row?;
+                    if let (Some(disc), Some(number)) = (disc, number) {
+                        by_position.entry((disc, number)).or_default().push(id);
+                    }
+                }
+            }
+            for position in positions {
+                let ids = by_position
+                    .get(position)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                if ids.len() != 1 {
+                    return Err(Error::Invalid(
+                        "Song position is ambiguous or missing".into(),
+                    ));
+                }
+                tx.execute(
+                    "INSERT INTO library_membership(track_id) VALUES (?1) ON CONFLICT DO NOTHING",
+                    [&ids[0]],
+                )?;
+            }
+        } else {
+            for id in &imported.track_ids {
+                tx.execute(
+                    "INSERT INTO library_membership(track_id) VALUES (?1) ON CONFLICT DO NOTHING",
+                    [id.as_ref()],
+                )?;
+            }
         }
         drop(membership);
         let commit = crate::catalog::Timing::detail("persistence.commit");

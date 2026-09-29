@@ -599,3 +599,61 @@ fn artist_name_only_retry_is_bounded_and_preserves_exact_acceptance() {
     assert!(music_library::album_matching::resolve_artist("toe", &page).is_err());
     assert_eq!(mock.finish().len(), 3);
 }
+
+#[test]
+fn interactive_catalog_search_browse_detail_and_selective_import_are_bounded() {
+    let a = json!({"id":"album1","name":"Album","artists":[{"id":"artist1","name":"Artist"}],"release_date":"2020","album_type":"album"});
+    let mut hit = song(1);
+    hit["album"] = a.clone();
+    let mut mock = Mock::new(vec![
+        token(),
+        (
+            200,
+            json!({"tracks":{"items":[hit],"total":300,"offset":0,"next":"untrusted"}}),
+            None,
+        ),
+        (
+            200,
+            json!({"items":[a],"total":100,"offset":10,"next":"untrusted"}),
+            None,
+        ),
+        (
+            200,
+            json!({"items":[song(1),song(2)],"total":2,"offset":0}),
+            None,
+        ),
+        (200, a.clone(), None),
+    ]);
+    let songs = mock.client.catalog_songs("Song").unwrap();
+    assert_eq!(songs.items.len(), 1);
+    assert_eq!(songs.items[0].album.title, "Album");
+    let albums = mock
+        .client
+        .browse_artist(&id("artist", "artist1"), 10)
+        .unwrap();
+    assert_eq!(albums.next_offset, Some(20));
+    let detail = mock.client.catalog_album(&albums.items[0]).unwrap();
+    assert_eq!(detail.media[0].tracks.len(), 2);
+    let temp = tempfile::tempdir().unwrap();
+    let mut library = music_library::Library::open(temp.path().join("catalog.sqlite")).unwrap();
+    let imported = library.add_catalog_selection(&detail, &[(1, 1)]).unwrap();
+    assert_eq!(
+        library.catalog_saved_positions(&detail).unwrap(),
+        vec![(1, 1)]
+    );
+    assert_eq!(library.add_catalog_release(&detail).unwrap(), imported);
+    assert_eq!(library.catalog_saved_positions(&detail).unwrap().len(), 2);
+    mock.client.catalog_album(&albums.items[0]).unwrap(); // Cached program, no Track lookups.
+    let reopened = mock.client.release(&detail.identity).unwrap();
+    assert_eq!(reopened.media[0].tracks.len(), 2);
+    let requests = mock.finish();
+    assert_eq!(
+        requests.len(),
+        5,
+        "one token, one search, one Artist page, one Album page, one reference metadata lookup"
+    );
+    assert!(requests[1].contains("type=track"));
+    assert!(requests[2].contains("artists/artist1/albums"));
+    assert!(requests[2].contains("offset=10"));
+    assert!(requests[3].contains("albums/album1/tracks"));
+}

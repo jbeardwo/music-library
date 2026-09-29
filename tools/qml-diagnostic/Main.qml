@@ -459,6 +459,179 @@ ApplicationWindow {
     }
 
     Dialog {
+        id: addMusicPanel
+        objectName: "addMusicPanel"
+        title: "Add Music"
+        anchors.centerIn: parent
+        width: Math.min(900, window.width - 48)
+        height: Math.min(650, window.height - 80)
+        modal: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        standardButtons: Dialog.Close
+        property int filter: 0
+        readonly property var view: window.bridge.music_snapshot
+        function request() {
+            musicDelay.stop();
+            window.bridge.add_music_action("search", filter + ":" + musicQuery.text);
+        }
+        onOpened: { musicQuery.forceActiveFocus(); musicQuery.selectAll(); request(); }
+        onClosed: { musicDelay.stop(); window.bridge.add_music_action("close", ""); }
+        Timer { id: musicDelay; interval: 300; onTriggered: addMusicPanel.request() }
+        contentItem: ColumnLayout {
+            TextField {
+                id: musicQuery
+                objectName: "addMusicQuery"
+                Layout.fillWidth: true
+                placeholderText: "Find an Artist, Album or Song to add"
+                maximumLength: 256
+                Accessible.name: "Search catalogs"
+                onTextChanged: if (addMusicPanel.opened) {
+                    window.bridge.add_music_action("invalidate", "");
+                    musicDelay.restart();
+                }
+                onAccepted: addMusicPanel.request()
+                Keys.onDownPressed: { musicResults.forceActiveFocus(); musicResults.currentIndex = 0; }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                ColumnLayout {
+                    Layout.alignment: Qt.AlignTop
+                    Layout.preferredWidth: 115
+                    Label { text: "FILTERS"; font.bold: true; font.pixelSize: 12 }
+                    ButtonGroup { id: musicTypes }
+                    Repeater {
+                        model: ["All", "Artists", "Albums", "Songs"]
+                        RadioButton {
+                            required property int index
+                            required property string modelData
+                            text: modelData
+                            ButtonGroup.group: musicTypes
+                            checked: addMusicPanel.filter === index
+                            onClicked: { addMusicPanel.filter = index; addMusicPanel.request(); }
+                        }
+                    }
+                }
+                Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#d9d6d3" }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    RowLayout {
+                        Button {
+                            text: "Back"
+                            visible: addMusicPanel.view.back
+                            onClicked: { musicDelay.stop(); window.bridge.add_music_action("back", ""); }
+                        }
+                        Label {
+                            text: addMusicPanel.view.heading || "CATALOG RESULTS"
+                            textFormat: Text.PlainText
+                            font.bold: true
+                            Layout.fillWidth: true
+                            elide: Text.ElideRight
+                        }
+                        BusyIndicator { running: addMusicPanel.view.busy; visible: running; implicitWidth: 28; implicitHeight: 28 }
+                    }
+                    Label {
+                        visible: addMusicPanel.view.detail
+                        text: addMusicPanel.view.artist + (addMusicPanel.view.date ? " · " + addMusicPanel.view.date : "")
+                        textFormat: Text.PlainText
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        visible: addMusicPanel.view.detail && !addMusicPanel.view.song
+                        Button {
+                            objectName: "addCatalogAlbum"
+                            text: addMusicPanel.view.complete ? "In library" : "Add Album"
+                            enabled: !addMusicPanel.view.complete
+                            onClicked: window.bridge.add_music_action("album", "")
+                        }
+                        Label { text: addMusicPanel.view.membership }
+                    }
+                    ListView {
+                        id: musicResults
+                        objectName: "addMusicResults"
+                        visible: !addMusicPanel.view.detail
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: addMusicPanel.view.hits
+                        section.property: "section"
+                        section.delegate: Label {
+                            required property string section
+                            text: section
+                            font.bold: true
+                            font.pixelSize: 12
+                            topPadding: 12
+                            bottomPadding: 6
+                        }
+                        delegate: ItemDelegate {
+                            required property var modelData
+                            required property int index
+                            width: musicResults.width
+                            height: 60
+                            highlighted: musicResults.currentIndex === index
+                            enabled: !musicDelay.running
+                            contentItem: Column {
+                                Label { width: parent.width; text: modelData.title + (modelData.membership ? "    ·    " + modelData.membership : ""); textFormat: Text.PlainText; elide: Text.ElideRight }
+                                Label { width: parent.width; text: modelData.context; textFormat: Text.PlainText; elide: Text.ElideRight; opacity: 0.7 }
+                            }
+                            onClicked: window.bridge.add_music_action("open", String(index))
+                        }
+                        Keys.onReturnPressed: if (currentIndex >= 0 && !musicDelay.running) window.bridge.add_music_action("open", String(currentIndex))
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                    ListView {
+                        id: musicTracks
+                        objectName: "addMusicTracks"
+                        visible: addMusicPanel.view.detail
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        model: addMusicPanel.view.tracks
+                        delegate: RowLayout {
+                            required property var modelData
+                            width: musicTracks.width
+                            height: 62
+                            Label { text: modelData.position; Layout.preferredWidth: 40 }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Label { text: modelData.title; textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight }
+                                Label { text: modelData.artist; textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight; opacity: 0.7 }
+                            }
+                            Button {
+                                text: modelData.saved ? "In library" : "Add Song"
+                                enabled: !modelData.saved
+                                onClicked: window.bridge.add_music_action("song", modelData.key)
+                            }
+                        }
+                        ScrollBar.vertical: ScrollBar {}
+                    }
+                    Label {
+                        visible: !addMusicPanel.view.busy && !addMusicPanel.view.detail && musicResults.count === 0
+                        text: musicQuery.text.trim() ? "No results. Try another Artist, Album or Song." : "Search external catalogs to add music to your library."
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                    }
+                    Label {
+                        visible: addMusicPanel.view.detail && addMusicPanel.view.song && musicTracks.count === 0
+                        text: "This Song could not be located in the Album’s track list. Go back and choose another result."
+                        Layout.fillWidth: true
+                        wrapMode: Text.Wrap
+                    }
+                    Button {
+                        visible: addMusicPanel.view.more && !addMusicPanel.view.detail
+                        enabled: !addMusicPanel.view.busy
+                        text: "Next Albums"
+                        onClicked: window.bridge.add_music_action("more", "")
+                    }
+                }
+            }
+            Label { text: addMusicPanel.view.status; visible: text.length > 0; Layout.fillWidth: true; wrapMode: Text.Wrap }
+        }
+    }
+
+    Dialog {
         id: catalogDialog
         title: "Add Music"
         width: Math.min(window.width - 40, 980)
@@ -866,8 +1039,7 @@ ApplicationWindow {
             Button {
                 text: "Add Music"
                 onClicked: {
-                    if (window.bridge.matching_provider.catalogAddSupported) catalogDialog.open();
-                    else addMusicHook.open();
+                    addMusicPanel.open();
                 }
             }
             ToolButton { text: "⋯"; Accessible.name: "Settings and diagnostics"; onClicked: settingsMenu.popup() }
@@ -1189,13 +1361,6 @@ ApplicationWindow {
         MenuItem { text: "Playback connection…"; onTriggered: spotifyPlaybackDialog.open() }
         MenuItem { text: "Local Album matches…"; onTriggered: matchingDialog.open() }
         MenuItem { text: "Retry matching"; visible: window.bridge.matching_provider.paused; enabled: !window.bridge.matching_provider.probe; onTriggered: window.bridge.retry_matching() }
-    }
-    Dialog {
-        id: addMusicHook
-        title: "Add Music"
-        anchors.centerIn: parent
-        standardButtons: Dialog.Close
-        Label { text: "Adding music is not available with this catalog configuration yet."; wrapMode: Text.Wrap; width: 380 }
     }
     // Existing diagnostic assertions remain available without occupying the player.
     Label { visible: false; text: "Current: " + window.view.currentTitle + " · " + window.view.status + window.view.pending + " · " + window.view.time }

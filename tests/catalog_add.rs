@@ -575,3 +575,215 @@ fn same_name_with_distinct_musicbrainz_artists_stays_distinct() {
         2
     );
 }
+
+#[test]
+fn selective_catalog_add_preserves_partial_membership_and_completes_without_duplicates() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let input = release("selective");
+    let imported = library.add_catalog_selection(&input, &[(2, 1)]).unwrap();
+    assert_eq!(imported.track_ids.len(), 2); // Known program is separate from saved state.
+    let saved = library
+        .search(&SearchRequest {
+            limit: 20,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(saved.len(), 1);
+    assert_eq!(saved[0].track_id, imported.track_ids[1]);
+    assert_eq!(
+        library.catalog_saved_positions(&input).unwrap(),
+        vec![(2, 1)]
+    );
+    assert_eq!(
+        library.add_catalog_selection(&input, &[(2, 1)]).unwrap(),
+        imported
+    );
+    assert_eq!(
+        library
+            .search(&SearchRequest {
+                limit: 20,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+        1
+    );
+    library
+        .set_track_title_override(&imported.track_ids[1], "My Song")
+        .unwrap();
+    assert_eq!(library.add_catalog_release(&input).unwrap(), imported);
+    assert_eq!(
+        library
+            .search(&SearchRequest {
+                limit: 20,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+        2
+    );
+    library.remove_from_library(&imported.track_ids[0]).unwrap();
+    library.add_catalog_selection(&input, &[(2, 1)]).unwrap();
+    assert_eq!(
+        library
+            .search(&SearchRequest {
+                limit: 20,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+        1
+    );
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM album", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        library
+            .search(&SearchRequest {
+                limit: 20,
+                ..Default::default()
+            })
+            .unwrap()[0]
+            .title,
+        "My Song"
+    );
+}
+
+#[test]
+fn invalid_catalog_selection_rolls_back_program_and_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    assert!(
+        library
+            .add_catalog_selection(&release("invalid"), &[(9, 9)])
+            .is_err()
+    );
+    assert!(
+        library
+            .add_catalog_selection(&release("invalid"), &[])
+            .is_err()
+    );
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM album", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn catalog_awareness_uses_identities_and_keeps_ambiguous_recording_occurrences_separate() {
+    use music_library::{
+        catalog::{AlbumCandidate, SongCandidate},
+        catalog_search::Hit,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let mut library = Library::open(temp.path().join("library.sqlite")).unwrap();
+    let input = release("awareness");
+    let album = AlbumCandidate {
+        identity: input.album.identity.clone(),
+        title: input.album.title.clone(),
+        artist: "Artist".into(),
+        credits: input.credits.clone(),
+        date: String::new(),
+        primary_type: String::new(),
+        secondary_types: vec![],
+        comment: String::new(),
+        score: None,
+    };
+    let song = SongCandidate {
+        identity: input.media[0].tracks[0].identities[0].clone(),
+        title: "Song".into(),
+        artist: "Artist".into(),
+        album: album.clone(),
+        release: Some(input.identity.clone()),
+        disc: Some(1),
+        position: Some(1),
+    };
+    let hits = vec![Hit::Album(album.clone()), Hit::Song(Box::new(song.clone()))];
+    assert!(
+        library
+            .catalog_context(&hits)
+            .unwrap()
+            .iter()
+            .all(|c| c.key.is_none() && c.saved == 0)
+    );
+    library.add_catalog_selection(&input, &[(1, 1)]).unwrap();
+    let context = library.catalog_context(&hits).unwrap();
+    assert_eq!(context[0].saved, 1);
+    assert_eq!(context[1].saved, 1);
+    let mut recording = song.clone();
+    recording.identity = id("musicbrainz", "recording", "recording");
+    assert!(
+        library
+            .catalog_context(&[Hit::Song(Box::new(recording))])
+            .unwrap()[0]
+            .key
+            .is_none()
+    );
+    let mut unknown = album;
+    unknown.identity.external_id = "same title, different identity".into();
+    assert_eq!(
+        library.catalog_context(&[Hit::Album(unknown)]).unwrap()[0].saved,
+        0
+    );
+    library.add_catalog_release(&input).unwrap();
+    assert_eq!(library.catalog_context(&hits).unwrap()[0].saved, 2);
+}
+
+#[test]
+fn catalog_preview_reuses_only_an_unambiguous_existing_reference() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("catalog.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let input = release("song-context");
+    let album = music_library::catalog::AlbumCandidate {
+        identity: input.album.identity.clone(),
+        title: input.album.title.clone(),
+        artist: "Artist".into(),
+        credits: input.credits.clone(),
+        date: String::new(),
+        primary_type: String::new(),
+        secondary_types: vec![],
+        comment: String::new(),
+        score: None,
+    };
+    assert!(
+        library
+            .catalog_existing_reference(&album)
+            .unwrap()
+            .is_none()
+    );
+    library.add_catalog_selection(&input, &[(1, 1)]).unwrap();
+    drop(library);
+    let mut library = Library::open(path).unwrap();
+    assert_eq!(
+        library.catalog_existing_reference(&album).unwrap(),
+        Some(input.identity)
+    );
+    library
+        .add_catalog_release(&release("other-edition"))
+        .unwrap();
+    assert!(
+        library
+            .catalog_existing_reference(&album)
+            .unwrap()
+            .is_none()
+    );
+}

@@ -9,6 +9,7 @@ mod artist_identity;
 pub mod browse;
 pub mod catalog;
 pub mod catalog_date;
+pub mod catalog_search;
 pub mod domain;
 pub mod edition;
 pub mod edition_storage;

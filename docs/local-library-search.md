@@ -121,4 +121,5 @@ and no provider workers. Existing Qt test teardown/EGL diagnostics are unrelated
 to search; no rendering overrides were added.
 
 Deferred: playlists, typo correction, locale-specific ranking/collation, search
-continuation pages, artwork, Add Music/catalog search and matching changes.
+continuation pages, artwork and matching changes. [Add Music/catalog search](add-music.md)
+is now a separate surface for finding and saving external music.

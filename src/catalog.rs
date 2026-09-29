@@ -138,8 +138,51 @@ pub struct ArtistAlbumCandidate {
     pub date: String,
 }
 
+/// A Song occurrence with Album context. Identity is evidence, never a local primary key.
+#[derive(Clone, Debug)]
+pub struct SongCandidate {
+    pub identity: ExternalIdentity,
+    pub title: String,
+    pub artist: String,
+    pub album: AlbumCandidate,
+    pub release: Option<ExternalIdentity>,
+    pub disc: Option<u32>,
+    pub position: Option<u32>,
+}
+
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    fn catalog_albums(&mut self, query: &str) -> Result<Page<AlbumCandidate>, CatalogError> {
+        self.search_albums(query, 0)
+    }
+    /// Interactive discovery only; independent of matching query strategies.
+    fn catalog_songs(&mut self, _query: &str) -> Result<Page<SongCandidate>, CatalogError> {
+        Ok(Page {
+            items: vec![],
+            next_offset: None,
+        })
+    }
+    fn browse_artist(
+        &mut self,
+        _artist: &ExternalIdentity,
+        _offset: u32,
+    ) -> Result<Page<AlbumCandidate>, CatalogError> {
+        Err(CatalogError::Other("Artist browsing is unavailable".into()))
+    }
+    fn catalog_album(&mut self, album: &AlbumCandidate) -> Result<Release, CatalogError> {
+        let page = self.representative_releases(&album.identity)?;
+        let selected = representative_release(album, &page.items).ok_or_else(|| {
+            CatalogError::Other("No track list is available for this Album".into())
+        })?;
+        let mut release = self.release(&selected.identity)?;
+        if release.album.identity != album.identity {
+            return Err(CatalogError::Other(
+                "Album context changed; search again".into(),
+            ));
+        }
+        release.album = album.album();
+        Ok(release)
+    }
     /// Opt-in: bounded candidate program discovery is meaningful for this provider.
     /// Existing providers retain their request strategy unless they expose this.
     fn album_candidate_programs(&self) -> bool {

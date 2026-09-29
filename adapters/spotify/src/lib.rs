@@ -471,6 +471,34 @@ struct Album {
     #[serde(default)]
     total_tracks: Option<u32>,
 }
+fn catalog_album_candidate(a: Album) -> AlbumCandidate {
+    let artist = display(&a.artists);
+    let count = a.artists.len();
+    AlbumCandidate {
+        identity: id("album", &a.id),
+        title: a.name,
+        artist,
+        date: a.release_date,
+        credits: a
+            .artists
+            .into_iter()
+            .enumerate()
+            .map(|(i, a)| Credit {
+                identity: Some(id("artist", &a.id)),
+                name: a.name,
+                join_phrase: if i + 1 < count {
+                    ", ".into()
+                } else {
+                    String::new()
+                },
+            })
+            .collect(),
+        primary_type: a.album_type,
+        secondary_types: vec![],
+        comment: String::new(),
+        score: None,
+    }
+}
 #[derive(Deserialize)]
 struct Paging<T> {
     items: Vec<T>,
@@ -600,6 +628,106 @@ impl music_library::song_resolution::SongSearch for Spotify {
     }
 }
 impl CatalogProvider for Spotify {
+    fn browse_artist(
+        &mut self,
+        artist: &ExternalIdentity,
+        offset: u32,
+    ) -> Result<Page<AlbumCandidate>, CatalogError> {
+        Self::require(artist, "artist")?;
+        let page: Paging<Album> = self.get(
+            &format!("artists/{}/albums", artist.external_id),
+            &[
+                ("limit", "10".into()),
+                ("offset", offset.to_string()),
+                ("include_groups", "album,single".into()),
+            ],
+        )?;
+        let more = page.more();
+        Ok(Page {
+            items: page
+                .items
+                .into_iter()
+                .map(catalog_album_candidate)
+                .collect(),
+            next_offset: more.then_some(offset + 10),
+        })
+    }
+    fn catalog_songs(&mut self, query: &str) -> Result<Page<SongCandidate>, CatalogError> {
+        let page: SongSearch = self.get(
+            "search",
+            &[
+                ("q", query.into()),
+                ("type", "track".into()),
+                ("limit", "10".into()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        Ok(Page {
+            items: page
+                .tracks
+                .items
+                .into_iter()
+                .filter_map(|v| {
+                    let identity = v.song.id.filter(|id| !id.is_empty())?;
+                    if v.song.is_local {
+                        return None;
+                    }
+                    Some(SongCandidate {
+                        identity: id("track", &identity),
+                        title: v.song.name,
+                        artist: display(&v.song.artists),
+                        album: catalog_album_candidate(v.album),
+                        release: None,
+                        disc: Some(v.song.disc_number),
+                        position: Some(v.song.track_number),
+                    })
+                })
+                .collect(),
+            next_offset: None,
+        })
+    }
+    fn catalog_album(&mut self, album: &AlbumCandidate) -> Result<Release, CatalogError> {
+        let programs = self.album_programs(&album.identity)?;
+        let program = programs
+            .programs
+            .first()
+            .filter(|p| p.complete)
+            .ok_or_else(|| CatalogError::Other("Album track list is incomplete".into()))?;
+        let mut media: std::collections::BTreeMap<u32, Vec<Track>> = Default::default();
+        for t in &program.tracks {
+            media.entry(t.disc.unwrap_or(1)).or_default().push(Track {
+                position: t
+                    .number
+                    .ok_or_else(|| CatalogError::Other("Song position is missing".into()))?,
+                title: t.title.clone().unwrap_or_default(),
+                credits: t
+                    .artists
+                    .iter()
+                    .map(|a| Credit {
+                        identity: a.identities.first().cloned(),
+                        name: a.name.clone(),
+                        join_phrase: a.join_phrase.clone(),
+                    })
+                    .collect(),
+                identities: t.identities.clone(),
+            });
+        }
+        Ok(Release {
+            album: album.album(),
+            identity: album.identity.clone(),
+            identities: vec![],
+            title: album.title.clone(),
+            date: album.date.clone(),
+            credits: album.credits.clone(),
+            media: media
+                .into_iter()
+                .map(|(position, mut tracks)| {
+                    tracks.sort_by_key(|t| t.position);
+                    Medium { position, tracks }
+                })
+                .collect(),
+        })
+    }
     fn album_candidate_programs(&self) -> bool {
         true
     }
@@ -819,11 +947,15 @@ impl CatalogProvider for Spotify {
             "Spotify edition browsing is not part of Album matching".into(),
         ))
     }
-    fn release(&mut self, _: &ExternalIdentity) -> Result<Release, CatalogError> {
-        Err(CatalogError::Other(
-            "Spotify catalog Add Album is not implemented; local Album matching is supported"
-                .into(),
-        ))
+    fn release(&mut self, identity: &ExternalIdentity) -> Result<Release, CatalogError> {
+        Self::require(identity, "album")?;
+        let album: Album = self.get(&format!("albums/{}", identity.external_id), &[])?;
+        if album.id != identity.external_id {
+            return Err(CatalogError::Other(
+                "Album context changed; search again".into(),
+            ));
+        }
+        self.catalog_album(&catalog_album_candidate(album))
     }
 }
 

@@ -1,3 +1,4 @@
+mod add_music;
 mod browser;
 mod catalog;
 mod library_search;
@@ -651,6 +652,14 @@ struct Bridge {
             self.catalog_changed();
         }
     ),
+    music_snapshot: qt_property!(QVariantMap; READ music_value NOTIFY music_changed),
+    music_changed: qt_signal!(),
+    add_music_action: qt_method!(
+        fn add_music_action(&mut self, action: String, value: String) {
+            self.music_action(action, value);
+        }
+    ),
+    add_music: add_music::State,
     catalog: catalog::State,
     session: Session,
     real_audio: bool,
@@ -765,6 +774,10 @@ impl Bridge {
             command: Default::default(),
             toggle_failure: Default::default(),
             catalog_action: Default::default(),
+            music_snapshot: Default::default(),
+            music_changed: Default::default(),
+            add_music_action: Default::default(),
+            add_music: Default::default(),
             catalog: Default::default(),
             session,
             real_audio: false,

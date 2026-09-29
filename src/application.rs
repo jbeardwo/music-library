@@ -341,6 +341,14 @@ impl Library {
         self.store.add_catalog_release(release)
     }
 
+    pub fn add_catalog_selection(
+        &mut self,
+        release: &crate::catalog::Release,
+        positions: &[(u32, u32)],
+    ) -> Result<ImportedRelease> {
+        self.store.add_catalog_selection(release, Some(positions))
+    }
+
     pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {
         self.store.add_to_library(track_id)
     }

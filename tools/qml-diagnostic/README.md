@@ -11,9 +11,11 @@ cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features g
 ```
 
 Double-click to replace the queue and play; right-click to append. Use **Show all**
-or Escape to clear Artist/Album selection. **Add Music** opens the existing catalog
-workflow; global library Search is reserved for the next slice. Playback connection
-and diagnostic matching tools are under **⋯**. No rendering overrides are installed
+or Escape to clear Artist/Album selection. **Add Music** opens the
+[interactive catalog panel](../../docs/add-music.md), with Artist/Album/Song search,
+Artist browsing, Album previews and individual Song adds. **Search library** opens
+[local-library search](../../docs/local-library-search.md). Playback connection and
+diagnostic matching tools are under **⋯**. No rendering overrides are installed
 by the application. The older diagnostic recipes below remain available for development.
 
 
@@ -310,7 +312,11 @@ The direct linear gain mapping is intentional for this probe; a perceptual
 slider curve remains deferred (see the GStreamer guide).
 
 
-## Catalog diagnostic
+## Legacy catalog diagnostic
+
+The main Add Music button now uses the [interactive catalog panel](../../docs/add-music.md).
+The flow below describes the retained legacy catalog test harness; its methods
+are exercised by the catalog QML regression tests, not the main Add Music control.
 
 Launch the fake-mode sample library (no collection required):
 

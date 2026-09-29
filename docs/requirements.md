@@ -891,5 +891,5 @@ filters other panes. Clearing Artist also clears Album; clearing Album retains A
 Double-click replaces and starts the relevant saved Track program; Add to queue
 appends it. A persistent current-Track/player area opens a temporary Now Playing
 panel. Global library search is a future independent operation, with a visible hook
-in this slice; Add Music reuses the existing catalog Add flow. See
+in this slice. Add Music opens a separate interactive catalog search with Artist browsing, Album previews and Track-level saving; see [Add Music](add-music.md). See
 [the implemented interaction model](library-player-ui.md).

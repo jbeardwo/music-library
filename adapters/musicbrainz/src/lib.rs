@@ -505,6 +505,90 @@ impl CatalogProvider for MusicBrainz {
             .collect::<Result<Vec<_>, CatalogError>>()?;
         Ok(catalog::Page { items, next_offset })
     }
+    fn catalog_albums(
+        &mut self,
+        query: &str,
+    ) -> Result<catalog::Page<catalog::AlbumCandidate>, CatalogError> {
+        self.search_albums(
+            &format!("releasegroup:{} OR artist:{}", quoted(query), quoted(query)),
+            0,
+        )
+    }
+    fn browse_artist(
+        &mut self,
+        artist: &ExternalIdentity,
+        offset: u32,
+    ) -> Result<catalog::Page<catalog::AlbumCandidate>, CatalogError> {
+        require_identity(artist, "artist")?;
+        self.search_albums(&format!("arid:{}", artist.external_id), offset)
+    }
+    fn catalog_songs(
+        &mut self,
+        query: &str,
+    ) -> Result<catalog::Page<catalog::SongCandidate>, CatalogError> {
+        let page: SongResults = self.request(
+            "recording",
+            &[
+                (
+                    "query",
+                    format!(
+                        "recording:{} OR artist:{} OR release:{}",
+                        quoted(query),
+                        quoted(query),
+                        quoted(query)
+                    ),
+                ),
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        let mut items = Vec::new();
+        for song in page.recordings {
+            mbid(&song.recording.id)?;
+            let mut seen = std::collections::HashSet::new();
+            // At most two explicit Album contexts per recording, no detail lookups.
+            for release in song
+                .releases
+                .into_iter()
+                .filter(|r| r.group.is_some())
+                .take(10)
+            {
+                let group = release.group.unwrap();
+                if !seen.insert(group.id.clone()) {
+                    continue;
+                }
+                mbid(&release.id)?;
+                mbid(&group.id)?;
+                let artist = catalog::credit_display(&credits(song.recording.credits.clone()));
+                items.push(catalog::SongCandidate {
+                    identity: identity("recording", &song.recording.id),
+                    title: song.recording.title.clone(),
+                    artist: artist.clone(),
+                    album: catalog::AlbumCandidate {
+                        identity: identity("release_group", &group.id),
+                        title: group.title,
+                        artist,
+                        credits: credits(song.recording.credits.clone()),
+                        date: group.date.unwrap_or_default(),
+                        primary_type: String::new(),
+                        secondary_types: vec![],
+                        comment: String::new(),
+                        score: None,
+                    },
+                    release: Some(identity("release", &release.id)),
+                    disc: None,
+                    position: None,
+                });
+                if seen.len() == 2 {
+                    break;
+                }
+            }
+        }
+        Ok(catalog::Page {
+            items,
+            next_offset: None,
+        })
+    }
     fn search_artists(
         &mut self,
         name: &str,
@@ -931,6 +1015,23 @@ struct RecordingSearch {
     count: u32,
     recordings: Vec<Recording>,
 }
+#[derive(Deserialize)]
+struct SongResults {
+    recordings: Vec<SongResult>,
+}
+#[derive(Deserialize)]
+struct SongResult {
+    #[serde(flatten)]
+    recording: Recording,
+    #[serde(default)]
+    releases: Vec<SongRelease>,
+}
+#[derive(Deserialize)]
+struct SongRelease {
+    id: String,
+    #[serde(rename = "release-group")]
+    group: Option<GroupRef>,
+}
 fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError> {
     mbid(&r.id)?;
     mbid(&r.group.id)?;
@@ -1033,6 +1134,37 @@ mod tests {
             !super::transport_error(ureq::Error::BadUri("bad".into())).is_provider_unavailable()
         );
     }
+    #[test]
+    fn interactive_catalog_search_and_artist_browse_do_not_expand_tracks() {
+        let song = r#"{"recordings":[{"id":"11111111-1111-1111-1111-111111111111","title":"Song","artist-credit":[{"name":"Artist"}],"releases":[{"id":"22222222-2222-2222-2222-222222222222","release-group":{"id":"33333333-3333-3333-3333-333333333333","title":"Album"}}]}]}"#;
+        let (mut client, requests, worker) = mock(vec![(200, GROUPS), (200, GROUPS), (200, song)]);
+        let album = client.catalog_albums("Album \" OR artist:other").unwrap();
+        assert!(!album.items.is_empty());
+        client
+            .browse_artist(
+                &identity("artist", "11111111-1111-1111-1111-111111111111"),
+                10,
+            )
+            .unwrap();
+        let songs = client.catalog_songs("Song").unwrap();
+        assert_eq!(songs.items.len(), 1);
+        assert_eq!(songs.items[0].album.title, "Album");
+        assert_eq!(songs.items[0].release.as_ref().unwrap().kind, "release");
+        worker.join().unwrap();
+        let requests: Vec<_> = requests.try_iter().collect();
+        assert_eq!(
+            requests.len(),
+            3,
+            "one request per operation, no per-Song lookups"
+        );
+        assert_eq!(
+            request_params(&requests[1].1)["query"],
+            "arid:11111111-1111-1111-1111-111111111111"
+        );
+        assert_eq!(request_params(&requests[1].1)["offset"], "10");
+        assert_eq!(request_params(&requests[2].1)["limit"], "10");
+    }
+
     #[test]
     fn credits_retain_artist_identity_separately_from_printed_name() {
         let values: Vec<super::Credit> = serde_json::from_str(
