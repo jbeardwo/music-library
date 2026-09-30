@@ -1,7 +1,7 @@
 //! Presentation state for three independent, bounded library panes.
 use crate::{Bridge, row_value, string};
 use music_library::{
-    browse::{Cursor, Pane, Request, Row},
+    browse::{Cursor, Pane, Request, Row, Sort},
     domain::{AlbumId, ArtistId, TrackId},
 };
 use qmetaobject::{QPointer, QVariant, QVariantList, QVariantMap};
@@ -21,6 +21,10 @@ pub struct Browser {
     album: String,
     song: String,
     navigation: u32,
+    artist_sort: usize,
+    album_sort: usize,
+    artist_songs_sort: usize,
+    album_songs_sort: usize,
     pub error: String,
     pub pending: bool,
     worker: Option<std::thread::JoinHandle<()>>,
@@ -31,10 +35,31 @@ impl Bridge {
             return;
         }
         match action {
+            "sort" => {
+                match pane {
+                    0 => self.browser.artist_sort = (self.browser.artist_sort + 1) % 2,
+                    1 => {
+                        self.browser.album_sort = (self.browser.album_sort + 1)
+                            % if self.browser.artist.is_empty() { 3 } else { 2 }
+                    }
+                    _ if !self.browser.album.is_empty() => self.browser.album_songs_sort ^= 1,
+                    _ if !self.browser.artist.is_empty() => self.browser.artist_songs_sort ^= 1,
+                    _ => return,
+                }
+                self.load_pane(pane, true);
+                if pane == 1
+                    && !self.browser.artist.is_empty()
+                    && self.browser.album.is_empty()
+                    && self.browser.artist_songs_sort == 1
+                {
+                    self.load_pane(2, true);
+                }
+            }
             "select" => {
                 self.browser.song = if pane == 2 { id.clone() } else { String::new() };
                 if pane == 0 {
                     self.browser.artist = id;
+                    self.browser.normalize_sorts();
                     self.browser.album.clear();
                     self.load_pane(1, true);
                     self.load_pane(2, true);
@@ -97,6 +122,10 @@ impl Bridge {
                     }
                     _ => {}
                 }
+                request.album_sort = self.browser.album_program_sort();
+                request.sort = self
+                    .browser
+                    .song_sort(request.album.is_some(), request.artist.is_some());
                 let start = (pane == 2 && action == "play").then_some(TrackId(id));
                 if pane == 2 && action == "append" {
                     let result = self
@@ -168,6 +197,8 @@ impl Bridge {
     }
 
     fn load_pane(&mut self, pane: usize, reset: bool) {
+        let sort = self.browser.sort(pane);
+        let album_sort = self.browser.album_program_sort();
         let page = &mut self.browser.pages[pane];
         if reset {
             page.cursors = vec![None];
@@ -188,6 +219,8 @@ impl Bridge {
             } else {
                 None
             },
+            sort,
+            album_sort,
             after: page.cursors.last().cloned().flatten(),
             limit: 201,
             ..Default::default()
@@ -236,6 +269,14 @@ impl Bridge {
         } else {
             String::new()
         };
+        let previous_scope = (
+            self.browser.artist.clone(),
+            self.browser.album.clone(),
+            self.browser.album_sort,
+        );
+        self.browser.artist = artist.clone();
+        self.browser.album = album.clone();
+        self.browser.normalize_sorts();
         let targets = [artist.clone(), album.clone(), song.clone()];
         let mut pages = Vec::new();
         for (pane, target) in targets.iter().enumerate() {
@@ -251,6 +292,8 @@ impl Bridge {
                 } else {
                     None
                 },
+                sort: self.browser.sort(pane),
+                album_sort: self.browser.album_program_sort(),
                 limit: 201,
                 ..Default::default()
             };
@@ -259,7 +302,12 @@ impl Bridge {
             } else {
                 self.session.library.browse_around(&request, target)
             }
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| {
+                self.browser.artist = previous_scope.0.clone();
+                self.browser.album = previous_scope.1.clone();
+                self.browser.album_sort = previous_scope.2;
+                e.to_string()
+            })?;
             let more = rows.len() > PAGE;
             rows.truncate(PAGE);
             pages.push(Page {
@@ -275,6 +323,7 @@ impl Bridge {
         self.browser.artist = artist;
         self.browser.album = album;
         self.browser.song = song;
+
         self.browser.navigation = self.browser.navigation.wrapping_add(1);
         self.browser.error.clear();
         self.browse_changed();
@@ -286,7 +335,8 @@ impl Bridge {
             .browser
             .pages
             .iter()
-            .map(|p| {
+            .enumerate()
+            .map(|(pane, p)| {
                 let rows: QVariantList = p
                     .rows
                     .iter()
@@ -295,6 +345,12 @@ impl Bridge {
                             ("id", string(&r.id)),
                             ("title", string(&r.title)),
                             ("subtitle", string(&r.subtitle)),
+                            (
+                                "year",
+                                string(r.year.map(|y| y.to_string()).unwrap_or_default()),
+                            ),
+                            ("group", string(&r.group)),
+                            ("groupLabel", string(&r.group_label)),
                         ]
                         .into_iter()
                         .collect();
@@ -307,6 +363,7 @@ impl Bridge {
                 QVariant::from(
                     [
                         ("rows", QVariant::from(rows)),
+                        ("sort", string(self.browser.sort_label(pane))),
                         ("more", p.more.into()),
                         ("anchored", p.seek.is_some().into()),
                         ("page", (p.cursors.len() as i32).into()),
@@ -354,4 +411,61 @@ fn prepare_program(
         None => 0,
     };
     Ok((tracks, position))
+}
+
+impl Browser {
+    fn album_program_sort(&self) -> Sort {
+        if self.album_sort == 0 {
+            Sort::Title
+        } else {
+            Sort::Year
+        }
+    }
+    fn normalize_sorts(&mut self) {
+        if !self.artist.is_empty() && self.album_sort == 2 {
+            self.album_sort = 1;
+        }
+    }
+    fn song_sort(&self, album: bool, artist: bool) -> Sort {
+        if album {
+            if self.album_songs_sort == 0 {
+                Sort::Album
+            } else {
+                Sort::Title
+            }
+        } else if artist && self.artist_songs_sort == 1 {
+            Sort::Album
+        } else {
+            Sort::Title
+        }
+    }
+    fn sort(&self, pane: usize) -> Sort {
+        match pane {
+            0 => {
+                if self.artist_sort == 0 {
+                    Sort::Title
+                } else {
+                    Sort::Descending
+                }
+            }
+            1 => match self.album_sort {
+                1 => Sort::Year,
+                2 => Sort::Artist,
+                _ => Sort::Title,
+            },
+            _ => self.song_sort(!self.album.is_empty(), !self.artist.is_empty()),
+        }
+    }
+    fn sort_label(&self, pane: usize) -> &'static str {
+        if pane == 2 && self.artist.is_empty() && self.album.is_empty() {
+            return "";
+        }
+        match self.sort(pane) {
+            Sort::Descending => "Z-A",
+            Sort::Year => "Year",
+            Sort::Artist => "Artist",
+            Sort::Album => "Album",
+            _ => "A-Z",
+        }
+    }
 }

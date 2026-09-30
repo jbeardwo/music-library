@@ -33,7 +33,14 @@
             const albumCount = list(1).count;
             const songCount = list(2).count;
             check(artistCount > 0 && albumCount > 0 && songCount === 45, "initial panes");
+            function firstTile() { list(1).forceLayout(); return uiTest.findChild(list(1).itemAtIndex(0), "albumTile0"); }
+            let tile = firstTile();
+            check(uiTest.findChild(tile,"albumTitle").text === library.panes[1].rows[0].title, "tile uses human Album name");
+            check(uiTest.findChild(tile,"albumSecondary").text === library.panes[1].rows[0].subtitle, "global tile shows Artist");
+            check(uiTest.findChild(tile,"artPlaceholder").visible, "missing artwork shows shared placeholder");
             click(0, 0);
+            tile = firstTile();
+            check(uiTest.findChild(tile,"albumSecondary").text === "2015", "Artist tile shows year");
             check(library.artist.length > 0 && list(0).count === artistCount, "Artist selection keeps Artist list");
             const filteredAlbums = list(1).count;
             const filteredSongs = list(2).count;
@@ -113,6 +120,63 @@
             check(view.queueOffset === 200 && queue.count === 70, "last queue page");
             window.bridge.queue_window(0);
             check(queue.count === 200, "queue page back");
+            // Stable identity drives red text, independently of selection and title.
+            doubleClick(2, 4);
+            click(2, 4);
+            function titleColor(index) {
+                list(2).forceLayout();
+                return String(uiTest.findChild(list(2).itemAtIndex(index), "songTitle").color);
+            }
+            check(library.panes[2].rows[4].title === library.panes[2].rows[5].title, "duplicate title fixture");
+            check(titleColor(4) === "#c6283e" && titleColor(5) !== "#c6283e", "red uses Track identity");
+            check(String(list(2).itemAtIndex(4).color) === "#e8d9e0", "selection coexists with red");
+            window.bridge.command("next");
+            check(titleColor(4) !== "#c6283e" && titleColor(5) === "#c6283e", "Next updates red");
+            window.bridge.command("previous");
+            check(titleColor(4) === "#c6283e" && titleColor(5) !== "#c6283e", "Previous updates red");
+            const album = library.panes[1].rows[0].id;
+            window.bridge.browse_action("select", 1, album);
+            doubleClick(2, 4);
+            const original = JSON.stringify(view.queue);
+            const originalId = view.currentId;
+            window.bridge.browse_action("sort", 2, "");
+            check(library.panes[2].sort === "A-Z", "Album Songs sort cycles");
+            check(JSON.stringify(view.queue) === original && view.currentId === originalId, "sort preserves snapshot");
+            window.bridge.browse_action("select", 0, library.panes[0].rows[0].id);
+            check(JSON.stringify(view.queue) === original, "Artist browsing preserves snapshot");
+            window.bridge.browse_action("select", 1, album);
+            check(JSON.stringify(view.queue) === original, "Album browsing preserves snapshot");
+            const sorted = library.panes[2].rows.map(r => r.id);
+            doubleClick(2, 5);
+            check(view.position === 5 && view.currentId === sorted[5], "replay starts exact sorted Track");
+            check(JSON.stringify(view.queue.map(r => r.trackId)) === JSON.stringify(sorted), "replay snapshots new order");
+            window.bridge.browse_action("play", 1, album); queued();
+            check(view.position === 0 && JSON.stringify(view.queue.map(r => r.trackId)) === JSON.stringify(sorted), "Album Play uses Album Songs mode");
+            const artist = library.panes[0].rows[0].id;
+            window.bridge.browse_action("select", 0, artist);
+            window.bridge.browse_action("sort", 2, "");
+            check(library.panes[2].sort === "Album", "Artist Songs cycles to Album");
+            const artistSorted = library.panes[2].rows.map(r => r.id);
+            window.bridge.browse_action("play", 0, artist); queued();
+            check(JSON.stringify(view.queue.map(r => r.trackId)) === JSON.stringify(artistSorted), "Artist Play uses Artist Songs mode");
+            window.bridge.browse_action("append", 1, album); queued();
+            check(view.queueTotal === artistSorted.length + sorted.length && view.position === 0, "sorted append preserves current program");
+            check(JSON.stringify(view.queue.slice(artistSorted.length).map(r => r.trackId)) === JSON.stringify(sorted), "Album append uses applicable order");
+            window.bridge.browse_action("select", 0, "");
+            window.bridge.browse_action("sort", 1, "");
+            check(library.panes[1].sort === "Year", "Albums Year");
+            window.bridge.browse_action("sort", 1, "");
+            check(library.panes[1].sort === "Artist", "Albums Artist sections");
+            window.bridge.browse_action("select", 0, artist);
+            check(library.panes[1].sort === "Year", "grouped mode normalizes on Artist selection");
+            window.bridge.browse_action("sort", 1, "");
+            check(library.panes[1].sort === "A-Z", "Artist Albums title");
+            const snapshot = JSON.stringify(view.queue);
+            window.bridge.browse_action("sort", 0, "");
+            check(library.panes[0].sort === "Z-A", "Artists reverse");
+            window.bridge.browse_action("sort", 0, "");
+            check(library.panes[0].sort === "A-Z" && JSON.stringify(view.queue) === snapshot, "Artist sorting leaves queue intact");
+            window.bridge.browse_action("select", 0, "");
             return "ok";
         } catch (error) { return String(error); }
     }

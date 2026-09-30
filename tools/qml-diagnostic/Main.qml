@@ -880,6 +880,43 @@ ApplicationWindow {
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
     }
 
+    property var artworkKeys: []
+    function requestArtwork(key) {
+        if (!key || artworkKeys.indexOf(key) >= 0) return;
+        artworkKeys.push(key); artworkBatchTimer.restart();
+    }
+    Timer {
+        id: artworkBatchTimer
+        interval: 10
+        onTriggered: { const keys = window.artworkKeys; window.artworkKeys = []; window.bridge.artwork_batch(keys); }
+    }
+
+    component AlbumArt: Rectangle {
+        required property string artworkKey
+        onArtworkKeyChanged: window.requestArtwork(artworkKey)
+        Component.onCompleted: window.requestArtwork(artworkKey)
+        color: "#dedbd7"
+        readonly property string artworkUrl: window.bridge.artwork_snapshot[artworkKey] || ""
+        Image {
+            id: coverImage
+            objectName: "coverImage"
+            anchors.fill: parent
+            source: parent.artworkUrl
+            onStatusChanged: { if (status === Image.Error && parent.artworkKey) window.bridge.artwork_retry(parent.artworkKey); }
+            asynchronous: true
+            fillMode: Image.PreserveAspectFit
+            sourceSize: Qt.size(500, 500)
+        }
+        Label {
+            anchors.centerIn: parent
+            objectName: "artPlaceholder"
+            visible: coverImage.status !== Image.Ready
+            text: "♫"
+            font.pixelSize: Math.max(20, parent.width * 0.28)
+            color: "#aaa3aa"
+        }
+    }
+
     component LibraryPane: ColumnLayout {
         id: pane
         required property int paneIndex
@@ -888,14 +925,23 @@ ApplicationWindow {
         readonly property string selectedId: paneIndex === 0 ? window.library.artist : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
         property string rowsSignature: ""
+        property int logicalIndex: -1
+        function visualIndex(index) {
+            for (let i = 0; i < paneRows.count; ++i) {
+                const entry = paneRows.get(i).rowData;
+                if (paneIndex !== 1 ? i === index : entry.tiles.some(t => t.logicalIndex === index)) return i;
+            }
+            return -1;
+        }
         property int navigation: window.library.navigation
         onNavigationChanged: Qt.callLater(function() {
             const target = pane.paneIndex === 0 ? window.library.artist : pane.paneIndex === 1 ? window.library.album : window.library.song;
             if (pane.paneIndex === 2) pane.songId = target;
             for (let i = 0; i < pane.pageData.rows.length; ++i) {
                 if (pane.pageData.rows[i].id === target) {
-                    list.currentIndex = i;
-                    list.positionViewAtIndex(i, ListView.Contain);
+                    logicalIndex = i;
+                    list.currentIndex = visualIndex(i);
+                    list.positionViewAtIndex(list.currentIndex, ListView.Contain);
                     if ((pane.paneIndex === 2 && window.library.song.length > 0)
                         || (pane.paneIndex === 1 && window.library.song.length === 0 && window.library.album.length > 0)
                         || (pane.paneIndex === 0 && window.library.album.length === 0))
@@ -906,11 +952,29 @@ ApplicationWindow {
         })
         ListModel { id: paneRows; dynamicRoles: true }
         function syncRows() {
-            const signature = JSON.stringify(pageData.rows);
+            const signature = JSON.stringify([pageData.rows, pageData.sort, paneIndex === 1 ? !!window.library.artist : false]);
             if (signature === rowsSignature) return;
             rowsSignature = signature;
             paneRows.clear();
-            for (const row of pageData.rows) paneRows.append({rowData: row});
+            if (paneIndex === 1) {
+                let tiles = [];
+                let group = null;
+                let groupTitle = "";
+                for (let i = 0; i < pageData.rows.length; ++i) {
+                    const row = pageData.rows[i];
+                    const newGroup = pageData.sort === "Artist" && row.group !== group;
+                    if (tiles.length && (tiles.length === 2 || newGroup)) {
+                        paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
+                        tiles = []; groupTitle = "";
+                    }
+                    if (newGroup) { group = row.group; groupTitle = row.groupLabel || "Unknown Artist"; }
+                    tiles.push({data: row, logicalIndex: i});
+                }
+                if (tiles.length) paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
+            } else {
+                for (const row of pageData.rows) paneRows.append({rowData: row});
+            }
+            logicalIndex = -1;
             songId = "";
             list.currentIndex = -1;
             list.positionViewAtBeginning();
@@ -921,7 +985,8 @@ ApplicationWindow {
         spacing: 0
         function selectRow(index) {
             if (index < 0 || index >= pageData.rows.length) return;
-            list.currentIndex = index;
+            logicalIndex = index;
+            list.currentIndex = visualIndex(index);
             songId = pageData.rows[index].id;
             window.bridge.browse_action("select", paneIndex, songId);
         }
@@ -933,6 +998,16 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.preferredHeight: 44
             Label { text: pane.heading; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true }
+            ToolButton {
+                id: sortControl
+                text: pane.pageData.sort
+                background: Rectangle { color: sortControl.hovered ? "#eeece9" : "transparent" }
+                contentItem: Label { text: sortControl.text; color: "#827b80"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                visible: text.length > 0
+                font.pixelSize: 12
+                Accessible.name: pane.heading + " sort: " + text
+                onClicked: window.bridge.browse_action("sort", pane.paneIndex, "")
+            }
             ToolButton {
                 text: "Show all"
                 visible: pane.paneIndex < 2 && pane.selectedId.length > 0
@@ -953,10 +1028,12 @@ ApplicationWindow {
             keyNavigationEnabled: false
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            Keys.onDownPressed: { pane.selectRow(Math.min(count - 1, currentIndex + 1)); positionViewAtIndex(currentIndex, ListView.Contain); }
-            Keys.onUpPressed: { pane.selectRow(Math.max(0, currentIndex - 1)); positionViewAtIndex(currentIndex, ListView.Contain); }
-            Keys.onReturnPressed: pane.playRow(currentIndex)
-            Keys.onEnterPressed: pane.playRow(currentIndex)
+            Keys.onDownPressed: { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? 2 : 1))); positionViewAtIndex(currentIndex, ListView.Contain); }
+            Keys.onUpPressed: { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? 2 : 1))); positionViewAtIndex(currentIndex, ListView.Contain); }
+            Keys.onLeftPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.max(0, pane.logicalIndex - 1)); }
+            Keys.onRightPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + 1)); }
+            Keys.onReturnPressed: pane.playRow(pane.logicalIndex)
+            Keys.onEnterPressed: pane.playRow(pane.logicalIndex)
             Keys.onEscapePressed: {
                 if (pane.paneIndex < 2) window.bridge.browse_action("select", pane.paneIndex, "");
                 else pane.songId = "";
@@ -968,28 +1045,81 @@ ApplicationWindow {
                 readonly property var modelData: rowData
                 required property int index
                 width: list.width
-                height: pane.paneIndex === 0 ? 34 : 48
-                color: pane.selectedId === modelData.id ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
-                border.width: list.activeFocus && list.currentIndex === index ? 1 : 0
+                height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? (list.width - 12) / 2 + 60 + (modelData.groupTitle ? 30 : 0) : 48
+                color: pane.paneIndex === 1 ? "transparent" : pane.selectedId === modelData.id ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
+                border.width: pane.paneIndex !== 1 && list.activeFocus && list.currentIndex === index ? 1 : 0
                 border.color: "#96506d"
                 Accessible.role: Accessible.ListItem
-                Accessible.name: modelData.title + " " + modelData.subtitle
+                Accessible.name: pane.paneIndex === 1 ? (modelData.groupTitle || "Albums") : modelData.title + " " + modelData.subtitle
                 Accessible.selected: pane.selectedId === modelData.id
                 Column {
+                    visible: pane.paneIndex !== 1
                     anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 9; anchors.rightMargin: 16
                     spacing: 2
-                    Label { width: parent.width; text: row.modelData.title || "Untitled"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                    Label { objectName: "songTitle"; width: parent.width; text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && row.modelData.id === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
                     Label {
                         width: parent.width
                         visible: pane.paneIndex > 0
-                        text: pane.paneIndex === 2 ? row.modelData.subtitle + " · " + row.modelData.track.release : row.modelData.subtitle
+                        text: pane.paneIndex === 2 ? row.modelData.subtitle + " · " + row.modelData.track.release : (row.modelData.subtitle || "")
                         textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
+                    }
+                }
+                Column {
+                    visible: pane.paneIndex === 1
+                    width: parent.width
+                    Label {
+                        visible: text.length > 0
+                        height: visible ? 30 : 0
+                        text: pane.paneIndex === 1 ? (row.modelData.groupTitle || "") : ""
+                        font.pixelSize: 15
+                        color: "#68636a"
+                    }
+                    Row {
+                        spacing: 12
+                        Repeater {
+                            model: pane.paneIndex === 1 ? row.modelData.tiles : []
+                            delegate: Rectangle {
+                                id: tile
+                                objectName: "albumTile" + modelData.logicalIndex
+                                required property var modelData
+                                readonly property var album: modelData.data
+                                width: (list.width - 12) / 2
+                                height: width + 54
+                                color: pane.selectedId === album.id ? "#e8d9e0" : tileMouse.containsMouse ? "#eeece9" : "transparent"
+                                border.width: list.activeFocus && pane.logicalIndex === modelData.logicalIndex ? 1 : 0
+                                border.color: "#96506d"
+                                Accessible.role: Accessible.ListItem
+                                Accessible.name: album.title + " " + album.subtitle
+                                Accessible.selected: pane.selectedId === album.id
+                                Column {
+                                    width: parent.width
+                                    spacing: 4
+                                    AlbumArt { width: parent.width; height: width; artworkKey: tile.album.id }
+                                    Label { objectName: "albumTitle"; width: parent.width; text: tile.album.title || "Untitled"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 13 }
+                                    Label { objectName: "albumSecondary"; width: parent.width; text: window.library.artist ? (tile.album.year || "Unknown year") : tile.album.subtitle; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a" }
+                                }
+                                MouseArea {
+                                    id: tileMouse
+                                    anchors.fill: parent
+                                    acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                    hoverEnabled: true
+                                    onClicked: event => {
+                                        list.forceActiveFocus();
+                                        if (event.button === Qt.RightButton) {
+                                            window.contextPane = 1; window.contextId = tile.album.id; libraryMenu.popup();
+                                        } else pane.selectRow(tile.modelData.logicalIndex);
+                                    }
+                                    onDoubleClicked: event => { if (event.button === Qt.LeftButton) pane.playRow(tile.modelData.logicalIndex); }
+                                }
+                            }
+                        }
                     }
                 }
                 MouseArea {
                     id: mouse
                     anchors.fill: parent
+                    enabled: pane.paneIndex !== 1
                     acceptedButtons: Qt.LeftButton | Qt.RightButton
                     hoverEnabled: true
                     onClicked: event => {
@@ -1066,7 +1196,7 @@ ApplicationWindow {
         Rectangle {
             id: player
             Layout.fillWidth: true
-            implicitHeight: 104
+            implicitHeight: 120
             color: "#ebe8e5"
             Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: "#d4cfcc" }
             RowLayout {
@@ -1077,14 +1207,23 @@ ApplicationWindow {
                     Layout.maximumWidth: 650
                 Button {
                     id: currentTrack
+                    padding: 0
                     Layout.fillWidth: true
                     flat: true
                     Accessible.name: "Now Playing: " + window.view.currentTitle
                     onClicked: { if (queueDrawer.opened) queueDrawer.close(); else queueDrawer.open(); }
-                    contentItem: Column {
-                        spacing: 4
-                        Label { width: parent.width; text: window.view.position < 0 ? "Choose something to play" : window.view.currentTitle; font.pixelSize: 16; textFormat: Text.PlainText; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
-                        Label { width: parent.width; text: window.view.position < 0 ? "Now Playing ⌃" : window.view.currentArtist + " — " + window.view.currentAlbum + "  ⌃"; color: "#68636a"; textFormat: Text.PlainText; elide: Text.ElideRight; horizontalAlignment: Text.AlignHCenter }
+                    contentItem: RowLayout {
+                        spacing: 10
+                        AlbumArt {
+                            Layout.preferredWidth: 46; Layout.preferredHeight: 46
+                            artworkKey: window.view.currentId ? "track:" + window.view.currentId : ""
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 4
+                            Label { Layout.fillWidth: true; text: window.view.position < 0 ? "Choose something to play" : window.view.currentTitle; font.pixelSize: 16; textFormat: Text.PlainText; elide: Text.ElideRight }
+                            Label { Layout.fillWidth: true; text: window.view.position < 0 ? "Now Playing ⌃" : window.view.currentArtist + " — " + window.view.currentAlbum + "  ⌃"; color: "#68636a"; textFormat: Text.PlainText; elide: Text.ElideRight }
+                        }
                     }
                 }
                     RowLayout {

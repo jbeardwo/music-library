@@ -27,6 +27,9 @@
                     console.log("Local search audit", query, found.length, "results", JSON.stringify(found.slice(0,3)));
                 }
             }
+            // Direct search navigation must respect active alternate sorts.
+            window.bridge.browse_action("sort", 0, "");
+            window.bridge.browse_action("sort", 1, "");
             const before = JSON.stringify(view.queue);
             const position = view.position;
             const requests = window.spotifyPlayback.resolutionCounts;
@@ -87,9 +90,13 @@
         try {
             const before=JSON.stringify(view.queue);
             window.bridge.browse_action("select",0,"");
+            while (library.panes[0].sort !== "A-Z") window.bridge.browse_action("sort",0,"");
+            while (library.panes[1].sort !== "A-Z") window.bridge.browse_action("sort",1,"");
             window.bridge.browse_action("refresh",0,"");
             if(library.panes[0].rows.some(r=>r.title==="ZZZ Artist 210") || library.panes[1].rows.some(r=>r.title==="ZZZ Album 210"))
                 throw new Error("fixture target must be beyond initial page");
+            window.bridge.browse_action("sort",0,"");
+            window.bridge.browse_action("sort",1,"");
             const artist=find("ZZZ Artist 210",1);
             if(library.artist!==artist || library.album!=="" || library.song!=="") throw new Error("distant Artist state");
             const album=find("ZZZ Album 210",2);

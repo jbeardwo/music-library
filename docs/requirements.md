@@ -893,3 +893,20 @@ appends it. A persistent current-Track/player area opens a temporary Now Playing
 panel. Global library search is a future independent operation, with a visible hook
 in this slice. Add Music opens a separate interactive catalog search with Artist browsing, Album previews and Track-level saving; see [Add Music](add-music.md). See
 [the implemented interaction model](library-player-ui.md).
+
+### Desktop browse presentation and queue independence
+
+The three-pane prototype presents Albums as artwork tiles and marks the current
+queue Track in red by application Track identity, separately from selection.
+Artist and Album sorts and scoped Songs sorts operate on bounded SQL browse
+results. Explicit Play snapshots the complete displayed logical order, including
+results beyond the visible page; later browsing, sorting and search navigation
+must not mutate that queue. Add to queue remains additive.
+
+Artwork is provider-neutral, asynchronous and cached outside music folders and
+the primary database: saved embedded art, local sidecars, established MusicBrainz
+art, then established Spotify Album art. Cached display images have a maximum
+500px edge without unnecessary upscaling. Missing/offline/malformed art leaves a
+placeholder and must not hide Albums or block browsing. See
+[the presentation implementation](library-presentation.md) for active sort modes and
+validation.

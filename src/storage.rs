@@ -212,7 +212,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 16 {
+        } else if version > 17 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -315,6 +315,10 @@ impl Store {
         if version < 16 {
             connection.execute_batch(include_str!("../migrations/0016_library_search.sql"))?;
         }
+        if version < 17 {
+            connection.execute_batch(include_str!("../migrations/0017_artwork.sql"))?;
+        }
+
         Ok(Self {
             connection,
             provenance_validator: crate::filesystem::provenance::validate,

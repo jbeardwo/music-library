@@ -2002,10 +2002,13 @@ prototype, not a public skin format. See [interaction, performance and validatio
 
 ### Player programs and output calibration
 
-The Songs query also defines replacement queue order: alphabetical title/Track ID
-without an Album, existing Release/disc/Track order within an Album. Full programs
-are read off the UI thread; a chosen Track ID determines the starting occurrence.
-QML retains bounded pages. Add Song remains a one-Track append.
+The Songs query also defines explicit replacement queue order under the active
+browse sorts. Complete programs are read off the UI thread; a chosen Track ID
+determines the starting occurrence. Subsequent browsing and sorting do not mutate
+the active queue. QML retains bounded pages; Add Song remains a one-Track append.
+Migration 17 supplies indexed Album ordering keys and durable artwork provenance.
+See [artwork, sorting and snapshot behavior](library-presentation.md) for cache priority,
+year fallback, navigation, query design and validation.
 
 PlaybackState volume is the logical session master. Fixed engine output trim is
 applied only when sending gain to the engine. Migration 15 persists two source

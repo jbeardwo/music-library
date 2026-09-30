@@ -1866,3 +1866,88 @@ mod tests {
 #[cfg(test)]
 #[path = "request_shape_audit.rs"]
 mod request_shape_audit;
+
+/// CAA front thumbnail for an already-established Album/Release identity.
+/// Uses the same process gate as MusicBrainz requests, including Retry-After.
+pub fn artwork(identity: &ExternalIdentity) -> Result<Option<(String, Vec<u8>)>, CatalogError> {
+    let kind = match (identity.provider.as_str(), identity.kind.as_str()) {
+        ("musicbrainz", "release_group") => "release-group",
+        ("musicbrainz", "release") => "release",
+        _ => return Ok(None),
+    };
+    if identity.external_id.len() != 36
+        || !identity
+            .external_id
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
+        return Ok(None);
+    }
+    let url = format!(
+        "https://coverartarchive.org/{kind}/{}/front-500",
+        identity.external_id
+    );
+    let mut next = NEXT_REQUEST.lock().map_err(error)?;
+    if let Some(deadline) = *next {
+        thread::sleep(deadline.saturating_duration_since(Instant::now()));
+    }
+    *next = Some(Instant::now() + Duration::from_secs(1));
+    let result = download_artwork(&url);
+    if let Err(
+        CatalogError::RateLimited { retry_after, .. }
+        | CatalogError::ServiceUnavailable { retry_after, .. },
+    ) = &result
+    {
+        let delay = retry_after
+            .as_deref()
+            .and_then(|h| {
+                h.parse::<u64>().ok().map(Duration::from_secs).or_else(|| {
+                    httpdate::parse_http_date(h)
+                        .ok()?
+                        .duration_since(SystemTime::now())
+                        .ok()
+                })
+            })
+            .unwrap_or(Duration::from_secs(60));
+        *next = Some(Instant::now() + delay);
+    }
+    result.map(|bytes| bytes.map(|bytes| (url, bytes)))
+}
+
+/// Bounded image transfer, separate from JSON transport. Redirects are required
+/// by CAA. No credentials are attached to image/CDN requests.
+pub fn download_artwork(url: &str) -> Result<Option<Vec<u8>>, CatalogError> {
+    if !url.starts_with("https://") {
+        return Ok(None);
+    }
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(10)))
+        .max_redirects(5)
+        .http_status_as_error(false)
+        .user_agent(USER_AGENT)
+        .build()
+        .into();
+    let mut response = agent.get(url).call().map_err(transport_error)?;
+    let status = response.status().as_u16();
+    if status == 429 || status == 503 {
+        return Err(CatalogError::RateLimited {
+            status,
+            message: "Artwork service unavailable".into(),
+            retry_after: response
+                .headers()
+                .get("Retry-After")
+                .and_then(|s| s.to_str().ok())
+                .map(str::to_owned),
+        });
+    }
+    if status != 200 {
+        return Ok(None);
+    }
+    response
+        .body_mut()
+        .with_config()
+        .limit(20 * 1024 * 1024)
+        .read_to_vec()
+        .map(Some)
+        .map_err(transport_error)
+}

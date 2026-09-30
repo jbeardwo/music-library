@@ -1,4 +1,5 @@
 mod add_music;
+mod artwork;
 mod browser;
 mod catalog;
 mod library_search;
@@ -513,6 +514,23 @@ struct Bridge {
             self.local_search_go(index)
         }
     ),
+    artwork: artwork::Artwork,
+    artwork_snapshot: qt_property!(QVariantMap; READ artwork_value NOTIFY artwork_changed),
+    artwork_changed: qt_signal!(),
+    artwork_retry: qt_method!(
+        fn artwork_retry(&mut self, key: String) {
+            self.retry_artwork(key);
+        }
+    ),
+    artwork_batch: qt_method!(
+        fn artwork_batch(&mut self, keys: QVariantList) {
+            self.request_artwork(
+                keys.into_iter()
+                    .map(|v| v.to_qstring().to_string())
+                    .collect(),
+            );
+        }
+    ),
     browser: browser::Browser,
     browse_snapshot: qt_property!(QVariantMap; READ browse_value NOTIFY browse_changed),
     browse_changed: qt_signal!(),
@@ -755,6 +773,11 @@ impl Bridge {
             search_library: Default::default(),
             close_search: Default::default(),
             navigate_search_result: Default::default(),
+            artwork: Default::default(),
+            artwork_snapshot: Default::default(),
+            artwork_changed: Default::default(),
+            artwork_retry: Default::default(),
+            artwork_batch: Default::default(),
             browser: Default::default(),
             browse_snapshot: Default::default(),
             browse_changed: Default::default(),
@@ -3905,6 +3928,10 @@ mod library_ui_tests {
     #[test]
     fn mouse_keyboard_selection_queue_and_drawer() {
         let (_temp, mut library) = sample::create().unwrap();
+        rusqlite::Connection::open(_temp.path().join("diagnostic.sqlite"))
+            .unwrap()
+            .execute("UPDATE album_application_metadata SET year=2015", [])
+            .unwrap();
         // Explicit fixture identities: one 44-Track Artist and one separate Artist.
         let artists = library
             .browse(&music_library::browse::Request {

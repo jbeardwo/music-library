@@ -657,3 +657,30 @@ fn interactive_catalog_search_browse_detail_and_selective_import_are_bounded() {
     assert!(requests[2].contains("offset=10"));
     assert!(requests[3].contains("albums/album1/tracks"));
 }
+
+#[test]
+fn artwork_uses_established_album_and_nearest_sufficient_image() {
+    let mut mock = Mock::new(vec![
+        token(),
+        (
+            200,
+            json!({"images":[
+                {"url":"https://cdn/small","width":64},
+                {"url":"https://cdn/large","width":1000},
+                {"url":"https://cdn/display","width":640}
+            ]}),
+            None,
+        ),
+    ]);
+    assert_eq!(
+        mock.client.artwork_url(&id("album", "album1")).unwrap(),
+        Some("https://cdn/display".into())
+    );
+    let requests = mock.finish();
+    assert!(requests[1].starts_with("GET /albums/album1?"));
+    assert!(
+        !requests
+            .iter()
+            .any(|r| r.contains("/search") || r.contains("me/player"))
+    );
+}

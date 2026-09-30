@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+directories = "6"
 httpdate = "1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 lofty = "0.25"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

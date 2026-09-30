@@ -188,12 +188,13 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
             db.execute_batch("CREATE TRIGGER fail_backfill BEFORE UPDATE ON track_artist_credit BEGIN SELECT RAISE(ABORT,'induced'); END").unwrap();
         }
         drop(db);
-        assert_eq!(Library::open(tmp.path().join("library")).is_err(), fail);
+        let reopened = Library::open(tmp.path().join("library"));
+        assert_eq!(reopened.is_err(), fail, "{:?}", reopened.err());
         let db = Connection::open(tmp.path().join("library")).unwrap();
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 6 } else { 16 }
+            if fail { 6 } else { 17 }
         );
         for table in [
             "album_artist_credit",

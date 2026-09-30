@@ -961,3 +961,33 @@ impl CatalogProvider for Spotify {
 
 #[cfg(test)]
 mod tests;
+
+impl Spotify {
+    /// Artwork discovery never searches: callers supply a confident association.
+    pub fn artwork_url(
+        &mut self,
+        identity: &ExternalIdentity,
+    ) -> Result<Option<String>, CatalogError> {
+        Self::require(identity, "album")?;
+        let album: serde_json::Value =
+            self.get(&format!("albums/{}", identity.external_id), &[])?;
+        Ok(album
+            .get("images")
+            .and_then(|v| v.as_array())
+            .and_then(|images| {
+                images
+                    .iter()
+                    .filter(|i| i.get("url").and_then(|v| v.as_str()).is_some())
+                    .min_by_key(|i| {
+                        let width = i.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+                        if width >= 500 {
+                            width - 500
+                        } else {
+                            10000 - width.min(10000)
+                        }
+                    })
+                    .and_then(|i| i.get("url")?.as_str())
+                    .map(str::to_owned)
+            }))
+    }
+}

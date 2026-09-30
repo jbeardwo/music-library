@@ -253,12 +253,12 @@ fn queue_is_complete_beyond_a_page_and_track_display_falls_back_to_album_credit(
 fn complete_program_matches_paged_songs_in_every_scope_with_duplicate_titles() {
     let temp = tempfile::tempdir().unwrap();
     let mut library = Library::open(temp.path().join("program.sqlite")).unwrap();
-    let input: Vec<_> = (0..451)
+    let input: Vec<_> = (0..1005)
         .map(|i| {
             (
                 if i % 2 == 0 { "same" } else { "A song" },
                 i / 225 + 1,
-                451 - i,
+                1005 - i,
             )
         })
         .collect();
@@ -279,11 +279,28 @@ fn complete_program_matches_paged_songs_in_every_scope_with_duplicate_titles() {
         )
         .unwrap(),
     );
+    db.execute(
+        "UPDATE track_artist_credit SET artist_id=?1",
+        [artist.as_ref()],
+    )
+    .unwrap();
     drop(db);
     for request in [
         Request::default(),
         Request {
+            artist: Some(artist.clone()),
+            ..Default::default()
+        },
+        Request {
+            artist: Some(artist.clone()),
+            sort: music_library::browse::Sort::Album,
+            album_sort: music_library::browse::Sort::Title,
+            ..Default::default()
+        },
+        Request {
             artist: Some(artist),
+            sort: music_library::browse::Sort::Album,
+            album_sort: music_library::browse::Sort::Year,
             ..Default::default()
         },
         Request {
@@ -309,7 +326,7 @@ fn complete_program_matches_paged_songs_in_every_scope_with_duplicate_titles() {
             .unwrap()
             .read(&request)
             .unwrap();
-        assert_eq!(queue.len(), 451);
+        assert_eq!(queue.len(), 1005);
         assert_eq!(
             queue.iter().map(|r| r.track_id.clone()).collect::<Vec<_>>(),
             visible
@@ -321,4 +338,229 @@ fn complete_program_matches_paged_songs_in_every_scope_with_duplicate_titles() {
             Some(403)
         );
     }
+}
+
+#[test]
+fn alternate_sorts_page_seek_and_snapshot_agree() {
+    use music_library::browse::Sort;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("sort.sqlite");
+    let mut l = Library::open(&path).unwrap();
+    for (name, year, artist) in [
+        ("Zulu", Some(2001), "Same"),
+        ("Alpha", Some(2020), "Same"),
+        ("Unknown", None, "Other"),
+    ] {
+        let input: Vec<_> = (0..225)
+            .map(|i| {
+                (
+                    if i % 2 == 0 {
+                        "Duplicate"
+                    } else {
+                        "Alpha song"
+                    },
+                    i / 100 + 1,
+                    225 - i,
+                )
+            })
+            .collect();
+        let release = album(&mut l, name, artist, &input);
+        for id in &release.track_ids {
+            l.add_to_library(id).unwrap();
+        }
+        let a = l.album_for_release(&release.release_id).unwrap().album_id;
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE album_application_metadata SET year=?1 WHERE album_id=?2",
+                rusqlite::params![year, a.as_ref()],
+            )
+            .unwrap();
+    }
+    let albums = l
+        .browse(&Request {
+            pane: Pane::Albums,
+            sort: Sort::Year,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        albums.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+        ["Alpha", "Zulu", "Unknown"]
+    );
+    let artists = l
+        .browse(&Request {
+            pane: Pane::Artists,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    let reverse = l
+        .browse(&Request {
+            pane: Pane::Artists,
+            sort: Sort::Descending,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        reverse
+            .windows(2)
+            .all(|r| (r[0].title.to_lowercase(), &r[0].id) > (r[1].title.to_lowercase(), &r[1].id))
+    );
+    let grouped = l
+        .browse(&Request {
+            pane: Pane::Albums,
+            sort: Sort::Artist,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_ne!(
+        grouped[1].group, grouped[2].group,
+        "equal artist labels retain separate identities"
+    );
+    for pane in [Pane::Artists, Pane::Albums, Pane::Songs] {
+        for sort in [
+            Sort::Title,
+            Sort::Descending,
+            Sort::Year,
+            Sort::Artist,
+            Sort::Album,
+        ] {
+            let scopes = if pane == Pane::Songs {
+                vec![
+                    (None, None),
+                    (None, Some(AlbumId(albums[0].id.clone()))),
+                    (Some(ArtistId(artists[0].id.clone())), None),
+                ]
+            } else {
+                vec![(None, None)]
+            };
+            for (artist, album) in scopes {
+                let request = Request {
+                    pane,
+                    sort,
+                    artist,
+                    album,
+                    limit: 37,
+                    ..Default::default()
+                };
+                let mut page = request.clone();
+                let mut ids = Vec::new();
+                loop {
+                    let rows = l.browse(&page).unwrap();
+                    if rows.is_empty() {
+                        break;
+                    }
+                    page.after = rows.last().map(|r| r.cursor.clone());
+                    ids.extend(rows.into_iter().map(|r| r.id));
+                }
+                assert_eq!(
+                    ids.len(),
+                    ids.iter().collect::<std::collections::HashSet<_>>().len()
+                );
+                for id in ids.iter().step_by(97) {
+                    let from = l.browse_from(&request, id).unwrap();
+                    let position = ids.iter().position(|v| v == id).unwrap();
+                    assert_eq!(
+                        from.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
+                        ids[position..ids.len().min(position + 37)]
+                    );
+                    assert!(
+                        l.browse_around(&request, id)
+                            .unwrap()
+                            .iter()
+                            .any(|r| &r.id == id)
+                    );
+                }
+                if pane == Pane::Songs {
+                    let queue = l.library_queue_reader().unwrap().read(&request).unwrap();
+                    assert_eq!(
+                        ids,
+                        queue
+                            .iter()
+                            .map(|r| r.track_id.0.clone())
+                            .collect::<Vec<_>>()
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn album_year_fallback_and_song_groups_follow_album_sort() {
+    use music_library::browse::Sort;
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("years");
+    let mut l = Library::open(&path).unwrap();
+    let old = album(&mut l, "Alpha", "Artist", &[("Z", 1, 1), ("A", 1, 2)]);
+    let new = album(&mut l, "Zulu", "Artist", &[("B", 1, 1)]);
+    for id in old.track_ids.iter().chain(&new.track_ids) {
+        l.add_to_library(id).unwrap();
+    }
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute(
+        "UPDATE effective_track_metadata SET year=2000 WHERE track_id=?1",
+        [old.track_ids[0].as_ref()],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE effective_track_metadata SET year=2020 WHERE track_id=?1",
+        [new.track_ids[0].as_ref()],
+    )
+    .unwrap();
+    let request = Request {
+        pane: Pane::Albums,
+        sort: Sort::Year,
+        limit: 200,
+        ..Default::default()
+    };
+    let rows = l.browse(&request).unwrap();
+    assert_eq!(
+        rows.iter().map(|r| (&*r.title, r.year)).collect::<Vec<_>>(),
+        [("Zulu", Some(2020)), ("Alpha", Some(2000))]
+    );
+    let queue = l
+        .library_queue(&Request {
+            sort: Sort::Album,
+            album_sort: Sort::Year,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        queue.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+        ["B", "Z", "A"]
+    );
+    let queue = l
+        .library_queue(&Request {
+            sort: Sort::Album,
+            album_sort: Sort::Title,
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        queue.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+        ["Z", "A", "B"]
+    );
+    // Application metadata has precedence and updates the materialized index.
+    db.execute(
+        "UPDATE album_application_metadata SET year=2025 WHERE title='Alpha'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(l.browse(&request).unwrap()[0].title, "Alpha");
+    db.execute(
+        "UPDATE album_application_metadata SET year=NULL WHERE title='Alpha'",
+        [],
+    )
+    .unwrap();
+    db.execute(
+        "UPDATE effective_track_metadata SET year=2030 WHERE track_id=?1",
+        [old.track_ids[0].as_ref()],
+    )
+    .unwrap();
+    assert_eq!(l.browse(&request).unwrap()[0].year, Some(2030));
 }

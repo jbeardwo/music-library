@@ -12,6 +12,8 @@ music-library-musicbrainz = { path = "../../adapters/musicbrainz" }
 music-library-spotify = { path = "../../adapters/spotify" }
 music-library-gstreamer = { path = "../../adapters/gstreamer", optional = true }
 music-library = { path = "../.." }
+url = "2"
+httpdate = "1"
 qmetaobject = "0.2.10"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tempfile = "3"
