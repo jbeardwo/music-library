@@ -1044,7 +1044,7 @@ ApplicationWindow {
         required property int paneIndex
         required property string heading
         readonly property var pageData: window.library.panes[paneIndex]
-        readonly property string selectedId: paneIndex === 0 ? window.library.artist : paneIndex === 1 ? window.library.album : songId
+        readonly property string selectedId: paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
         property string rowsSignature: ""
         property int logicalIndex: -1
@@ -1088,7 +1088,7 @@ ApplicationWindow {
         }
         property int navigation: window.library.navigation
         onNavigationChanged: Qt.callLater(function() {
-            const target = pane.paneIndex === 0 ? window.library.artist : pane.paneIndex === 1 ? window.library.album : window.library.song;
+            const target = pane.paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : pane.paneIndex === 1 ? window.library.album : window.library.song;
             if (pane.paneIndex === 2) pane.songId = target;
             for (let i = 0; i < pane.pageData.rows.length; ++i) {
                 if (pane.pageData.rows[i].id === target) {
@@ -1114,12 +1114,13 @@ ApplicationWindow {
                 let groupTitle = "";
                 for (let i = 0; i < pageData.rows.length; ++i) {
                     const row = pageData.rows[i];
-                    const newGroup = pageData.sort === "Artist" && row.group !== group;
+                    const groupKey = pageData.sort === "Year" ? (row.year || "Unknown") : row.group;
+                    const newGroup = (pageData.sort === "Artist" || pageData.sort === "Year") && groupKey !== group;
                     if (tiles.length && newGroup) {
                         paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
                         tiles = []; groupTitle = "";
                     }
-                    if (newGroup) { group = row.group; groupTitle = row.groupLabel || "Unknown Artist"; }
+                    if (newGroup) { group = groupKey; groupTitle = pageData.sort === "Year" ? groupKey : (row.groupLabel || "Unknown Artist"); }
                     tiles.push({data: row, logicalIndex: i});
                 }
                 if (tiles.length) paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
@@ -1177,7 +1178,9 @@ ApplicationWindow {
             model: paneRows
             // Retain the bounded Album page so width reflow cannot recreate
             // section delegates or schedule new artwork requests.
-            cacheBuffer: pane.paneIndex === 1 ? Math.max(0, contentHeight) : 0
+            // Bound by the largest possible page height, including one header
+            // per Album. Transient Flow height estimates must not evict sections.
+            cacheBuffer: pane.paneIndex === 1 ? pane.pageData.rows.length * (pane.tileHeight + pane.tileGap + 30) : 0
             currentIndex: -1
             activeFocusOnTab: true
             keyNavigationEnabled: false
@@ -1212,7 +1215,12 @@ ApplicationWindow {
                     anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 9; anchors.rightMargin: 16
                     spacing: 2
-                    Label { objectName: "songTitle"; width: parent.width; text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && row.modelData.id === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                    Row {
+                        width: parent.width
+                        spacing: 8
+                        Label { id: trackNumber; objectName: "trackNumber"; visible: pane.paneIndex === 2 && !!row.modelData.number; text: row.modelData.number || ""; width: visible ? Math.max(22, implicitWidth) : 0; color: "#827b80"; font.pixelSize: 14 }
+                        Label { objectName: "songTitle"; width: parent.width - (trackNumber.visible ? trackNumber.width + 8 : 0); text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && row.modelData.id === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                    }
                     Label {
                         width: parent.width
                         visible: pane.paneIndex > 0
@@ -1291,6 +1299,7 @@ ApplicationWindow {
                     onClicked: event => {
                         list.forceActiveFocus();
                         if (event.button === Qt.RightButton) {
+                            if (pane.paneIndex === 0 && window.library.view !== "Artists") return;
                             window.contextPane = pane.paneIndex;
                             window.contextId = row.modelData.id;
                             libraryMenu.popup();
@@ -1305,7 +1314,7 @@ ApplicationWindow {
                 horizontalAlignment: Text.AlignHCenter
                 wrapMode: Text.Wrap
                 visible: list.count === 0
-                text: pane.paneIndex === 2 ? "No songs in this view" : "No " + pane.heading.toLowerCase() + " in this view"
+                text: window.library.view === "Playlists" ? (pane.paneIndex === 0 ? "No playlists yet" : "") : pane.paneIndex === 2 ? "No songs in this view" : "No " + pane.heading.toLowerCase() + " in this view"
                 color: "#777078"
             }
         }
@@ -1324,7 +1333,22 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Layout.margins: 16
-            Label { text: "music"; font.pixelSize: 26; font.weight: Font.Light; Layout.fillWidth: true }
+            RowLayout {
+                spacing: 16
+                Repeater {
+                    model: ["Artists", "Genres", "Albums", "Songs", "Playlists"]
+                    delegate: ToolButton {
+                        required property string modelData
+                        objectName: "libraryView" + modelData
+                        text: modelData
+                        Accessible.name: modelData + " library view"
+                        background: Rectangle { color: parent.hovered ? "#eeece9" : "transparent" }
+                        contentItem: Label { text: parent.text; font.pixelSize: 20; font.bold: window.library.view === text; color: window.library.view === text ? "#242126" : "#827b80" }
+                        onClicked: window.bridge.browse_action("view", 0, modelData)
+                    }
+                }
+            }
+            Item { Layout.fillWidth: true }
             Button {
                 id: query
                 Layout.preferredWidth: 260
@@ -1360,9 +1384,9 @@ ApplicationWindow {
             }
             // The center pane absorbs changes from either divider, keeping the
             // opposite outside pane (and thus the opposite divider) stationary.
-            LibraryPane { id: artistsPane; objectName: "artistsPane"; paneIndex: 0; heading: "ARTISTS"; SplitView.minimumWidth: 160; SplitView.preferredWidth: (librarySplit.width - 32) * 230 / 1020 }
-            LibraryPane { id: albumsPane; objectName: "albumsPane"; paneIndex: 1; heading: "ALBUMS"; SplitView.minimumWidth: tileWidth + 2 * tileInset + scrollAllowance; SplitView.fillWidth: true }
-            LibraryPane { id: songsPane; objectName: "songsPane"; paneIndex: 2; heading: "SONGS"; SplitView.minimumWidth: 260; SplitView.preferredWidth: (librarySplit.width - 32) * 470 / 1020 }
+            LibraryPane { id: artistsPane; objectName: "artistsPane"; paneIndex: 0; heading: window.library.view === "Genres" ? "GENRES" : window.library.view === "Playlists" ? "PLAYLISTS" : "ARTISTS"; visible: ["Artists", "Genres", "Playlists"].indexOf(window.library.view) >= 0; SplitView.minimumWidth: 160; SplitView.preferredWidth: (librarySplit.width - 32) * 230 / 1020 }
+            LibraryPane { id: albumsPane; objectName: "albumsPane"; paneIndex: 1; heading: "ALBUMS"; visible: ["Artists", "Genres", "Albums"].indexOf(window.library.view) >= 0; SplitView.minimumWidth: tileWidth + 2 * tileInset + scrollAllowance; SplitView.fillWidth: true }
+            LibraryPane { id: songsPane; objectName: "songsPane"; paneIndex: 2; heading: "SONGS"; SplitView.fillWidth: !albumsPane.visible; SplitView.minimumWidth: 260; SplitView.preferredWidth: (librarySplit.width - 32) * 470 / 1020 }
         }
         Label {
             visible: text.length > 0

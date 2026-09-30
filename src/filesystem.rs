@@ -56,6 +56,13 @@ impl MetadataExtractor for LoftyMetadataExtractor {
         let mut provenance = provenance::extract(tagged.tags());
         provenance.file_type = Some(format!("{:?}", tagged.file_type()));
         Ok(ObservedMetadata {
+            genres: tag
+                .map(|tag| {
+                    tag.get_strings(lofty::tag::ItemKey::Genre)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
             provenance,
             track_title: tag.and_then(|tag| tag.title().map(|value| value.into_owned())),
             release_title: tag.and_then(|tag| tag.album().map(|value| value.into_owned())),
@@ -153,8 +160,9 @@ pub(crate) fn observe(
     }
     let size_bytes = attributes.len();
     let modified_ns = modified_ns(path, &attributes)?;
-    let unchanged =
-        known.is_some_and(|k| k.size_bytes == size_bytes && k.modified_ns == modified_ns);
+    let unchanged = known.is_some_and(|k| {
+        k.size_bytes == size_bytes && k.modified_ns == modified_ns && k.genres_observed
+    });
     Ok(ScannedLocalSource {
         source_id: known.map(|k| k.source_id.clone()),
         path: path.to_path_buf(),

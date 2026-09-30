@@ -4108,7 +4108,7 @@ mod library_ui_tests {
             let release = library
                 .create_catalog_release(&CatalogReleaseInput {
                     title: format!("Tile Album {n:03}"),
-                    year: Some(2000 + n),
+                    year: Some(2000 + n / 10),
                     artists: vec![ArtistCreditInput {
                         name: format!("Tile Artist {n:03}"),
                         role: None,
@@ -4190,6 +4190,137 @@ mod library_ui_tests {
             .to_string();
         eprintln!("{result}");
         assert!(result.starts_with("ok:"), "{result}");
+    }
+
+    #[test]
+    #[ignore = "requires a disposable real library copy with readable local sources"]
+    fn real_library_views_local_genre_audit() {
+        let path = std::env::var("MUSIC_LIBRARY_VIEWS_AUDIT_COPY").expect("disposable copy");
+        let mut library = music_library::Library::open(path).unwrap();
+        for root in library.local_locations().unwrap() {
+            library
+                .scan_local_root(
+                    &root.id,
+                    &mut music_library::filesystem::LoftyMetadataExtractor,
+                )
+                .unwrap();
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LibraryViewsTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let result = engine
+            .invoke_method("exerciseRealLibraryViews".into(), &[])
+            .to_qstring()
+            .to_string();
+        eprintln!("{result}");
+        assert!(result.starts_with("ok:"), "{result}");
+    }
+
+    #[test]
+    fn library_views_genres_year_sections_numbers_and_queue_preservation() {
+        use music_library::domain::{CatalogReleaseInput, CatalogTrackInput};
+        let (temp, mut library) = sample::create().unwrap();
+        let extra = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Additional".into(),
+                year: Some(2024),
+                artists: vec![],
+                tracks: [("Alpha", 1, 2), ("Zulu", 2, 1), ("Unsaved", 2, 2)]
+                    .into_iter()
+                    .map(|(title, disc, track)| CatalogTrackInput {
+                        title: title.into(),
+                        disc_number: Some(disc),
+                        track_number: Some(track),
+                        artists: vec![],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        let unknown = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Unknown date".into(),
+                year: None,
+                artists: vec![],
+                tracks: vec![CatalogTrackInput {
+                    title: "Undated".into(),
+                    disc_number: None,
+                    track_number: None,
+                    artists: vec![],
+                }],
+            })
+            .unwrap();
+        for id in extra.track_ids.iter().take(2).chain(&unknown.track_ids) {
+            library.add_to_library(id).unwrap();
+        }
+        let db = rusqlite::Connection::open(temp.path().join("diagnostic.sqlite")).unwrap();
+        db.execute(
+            "UPDATE album_application_metadata SET year=2019 WHERE title='Diagnostic edition'",
+            [],
+        )
+        .unwrap();
+        db.execute_batch("INSERT INTO file_genre_observation SELECT id, 'Rock' FROM playable_source WHERE id LIKE 'diagnostic-source-01-%' OR id LIKE 'diagnostic-source-03-%'; INSERT INTO file_genre_observation SELECT id, 'Jazz' FROM playable_source WHERE id LIKE 'diagnostic-source-02-%';").unwrap();
+        for (i, track) in extra.track_ids.iter().enumerate() {
+            let source = format!("extra-{i}");
+            db.execute(
+                "INSERT INTO playable_source(id,kind) VALUES (?1,'local_file')",
+                [&source],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO track_source(track_id,source_id) VALUES (?1,?2)",
+                rusqlite::params![track.as_ref(), source],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO file_genre_observation(source_id,genre) VALUES (?1,?2)",
+                rusqlite::params![source, if i == 1 { "Jazz" } else { "Rock" }],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE '%playlist%'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(db);
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LibraryViewsTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseLibraryViews".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
     }
 
     #[test]

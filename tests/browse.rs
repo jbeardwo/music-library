@@ -564,3 +564,165 @@ fn album_year_fallback_and_song_groups_follow_album_sort() {
     .unwrap();
     assert_eq!(l.browse(&request).unwrap()[0].year, Some(2030));
 }
+
+#[test]
+fn genres_intersect_saved_membership_and_album_scope_with_bounded_reverse_pages() {
+    use music_library::browse::Sort;
+    for count in [230, 2230] {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("library.sqlite");
+        let mut l = Library::open(&path).unwrap();
+        let titles: Vec<_> = (0..count).map(|i| format!("Song {i:04}")).collect();
+        let tracks: Vec<_> = titles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.as_str(), 1 + (i / 115) as u32, 1 + (i % 115) as u32))
+            .collect();
+        let a = album(&mut l, "Mixed", "Artist", &tracks);
+        let b = album(&mut l, "Other", "Other Artist", &[("Zulu", 1, 1)]);
+        let hidden = album(&mut l, "Hidden", "Hidden", &[("Hidden", 1, 1)]);
+        for id in a.track_ids.iter().chain(&b.track_ids) {
+            l.add_to_library(id).unwrap();
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for (i, id) in a
+            .track_ids
+            .iter()
+            .chain(&b.track_ids)
+            .chain(&hidden.track_ids)
+            .enumerate()
+        {
+            let source = format!("source-{i}");
+            db.execute(
+                "INSERT INTO playable_source(id,kind) VALUES (?1,'local_file')",
+                [&source],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO track_source(track_id,source_id) VALUES (?1,?2)",
+                rusqlite::params![id.as_ref(), source],
+            )
+            .unwrap();
+            let genre = if i == count + 1 {
+                "Unsaved only"
+            } else if i % 2 == 0 {
+                "Rock"
+            } else {
+                "Jazz"
+            };
+            db.execute(
+                "INSERT INTO file_genre_observation(source_id,genre) VALUES (?1,?2)",
+                rusqlite::params![source, genre],
+            )
+            .unwrap();
+        }
+        let genres = l
+            .browse(&Request {
+                pane: Pane::Genres,
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            genres.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["Jazz", "Rock"]
+        );
+        let rock = Request {
+            genre: Some("Rock".into()),
+            limit: 201,
+            ..Default::default()
+        };
+        let albums = l
+            .browse(&Request {
+                pane: Pane::Albums,
+                ..rock.clone()
+            })
+            .unwrap();
+        assert_eq!(
+            albums.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+            ["Mixed", "Other"]
+        );
+        let mixed = AlbumId(albums[0].id.clone());
+        let songs = l
+            .browse(&Request {
+                album: Some(mixed.clone()),
+                sort: Sort::Album,
+                ..rock.clone()
+            })
+            .unwrap();
+        assert_eq!(songs.len(), (count / 2).min(201));
+        assert!(
+            songs
+                .iter()
+                .all(|r| r.multi_disc && r.track_number.is_some())
+        );
+        assert_eq!(songs[0].disc_number, Some(1));
+        assert!(songs.last().unwrap().disc_number.unwrap() > 1);
+        let program = l
+            .library_queue(&Request {
+                album: Some(mixed),
+                sort: Sort::Descending,
+                ..rock.clone()
+            })
+            .unwrap();
+        assert_eq!(program.len(), count / 2);
+        assert_eq!(program[0].title, format!("Song {:04}", count - 2));
+        let asc = l
+            .library_queue(&Request {
+                sort: Sort::Title,
+                ..Default::default()
+            })
+            .unwrap();
+        let descending = Request {
+            sort: Sort::Descending,
+            limit: 17,
+            ..Default::default()
+        };
+        let mut page = descending.clone();
+        let mut ids = vec![];
+        loop {
+            let rows = l.browse(&page).unwrap();
+            assert!(rows.len() <= 17);
+            if rows.is_empty() {
+                break;
+            }
+            page.after = rows.last().map(|r| r.cursor.clone());
+            ids.extend(rows.into_iter().map(|r| r.id));
+        }
+        assert_eq!(
+            ids,
+            asc.iter()
+                .rev()
+                .map(|r| r.track_id.as_ref().to_string())
+                .collect::<Vec<_>>()
+        );
+        for id in [ids.first().unwrap(), &ids[210], ids.last().unwrap()] {
+            assert_eq!(&l.browse_from(&descending, id).unwrap()[0].id, id);
+            assert!(
+                l.browse_around(&descending, id)
+                    .unwrap()
+                    .iter()
+                    .any(|r| &r.id == id)
+            );
+        }
+        l.remove_from_library(&b.track_ids[0]).unwrap();
+        assert_eq!(
+            l.browse(&Request {
+                pane: Pane::Albums,
+                ..rock
+            })
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name LIKE '%playlist%'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+}

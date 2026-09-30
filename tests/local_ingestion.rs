@@ -589,7 +589,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     drop(l);
     let db = Connection::open(&path).unwrap();
     db.execute_batch(
-        "DROP TABLE local_root_source; DROP INDEX local_file_path; PRAGMA user_version=18;",
+        "DROP TABLE local_root_source; DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; PRAGMA user_version=18;",
     )
     .unwrap();
     drop(db);
@@ -617,7 +617,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        19
+        20
     );
     assert_eq!(
         run(&mut l, Request::ConfiguredLocations, &mut Tags::default()).imported,
@@ -646,7 +646,7 @@ fn failed_location_migration_rolls_back_sources_and_exclusions() {
         .unwrap();
     drop(l);
     let db = Connection::open(&path).unwrap();
-    db.execute_batch("DROP TABLE local_root_source; CREATE TABLE local_root_source(sentinel TEXT); DROP INDEX local_file_path; PRAGMA user_version=18;").unwrap();
+    db.execute_batch("DROP TABLE local_root_source; CREATE TABLE local_root_source(sentinel TEXT); DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; PRAGMA user_version=18;").unwrap();
     assert!(Library::open(&path).is_err());
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
@@ -1113,4 +1113,127 @@ fn real_artist_folder_import_matches_configured_root() {
         );
     }
     assert_eq!(state(&selected), before);
+}
+
+#[test]
+fn local_genres_survive_migration_missing_sources_and_membership_removal() {
+    use lofty::{
+        config::WriteOptions,
+        prelude::{Accessor, TagExt},
+        tag::{ItemKey, Tag, TagType},
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let music = temp.path().join("music");
+    std::fs::create_dir(&music).unwrap();
+    let file = music.join("song.flac");
+    std::fs::copy("tests/fixtures/provenance/silence.flac", &file).unwrap();
+    let mut tag = Tag::new(TagType::VorbisComments);
+    tag.set_title("Tagged song".into());
+    tag.set_album("Tagged Album".into());
+    tag.set_artist("Tagged Artist".into());
+    tag.insert_text(ItemKey::AlbumArtist, "Tagged Artist".into());
+    tag.insert_text(ItemKey::Genre, "Rock".into());
+    tag.save_to_path(&file, WriteOptions::default()).unwrap();
+    let path = temp.path().join("db");
+    let mut l = Library::open(&path).unwrap();
+    let root = l.register_local_root(&music).unwrap();
+    l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    let candidates = l.list_discovery_candidates(None, 20).unwrap();
+    assert_eq!(candidates[0].metadata.genres, ["Rock"]);
+    assert!(
+        l.browse(&Browse {
+            pane: Pane::Genres,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap()
+        .is_empty(),
+        "discovery does not save membership"
+    );
+    run(
+        &mut l,
+        Request::Folder(music.clone()),
+        &mut LoftyMetadataExtractor,
+    );
+    let track = songs(&l)[0].track.as_ref().unwrap().track_id.clone();
+    l.set_track_title_override(&track, "My title").unwrap();
+    let source = l
+        .available_playback_source(&track)
+        .unwrap()
+        .unwrap()
+        .source_id;
+    drop(l);
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; PRAGMA user_version=19;").unwrap();
+    drop(db);
+    let mut l = Library::open(&path).unwrap();
+    let scan = l
+        .scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    assert_eq!(scan.parsed, 1, "older observations acquire genres once");
+    assert_eq!(
+        l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+            .unwrap()
+            .unchanged,
+        1
+    );
+    let genres = Browse {
+        pane: Pane::Genres,
+        limit: 200,
+        ..Default::default()
+    };
+    assert_eq!(l.browse(&genres).unwrap()[0].title, "Rock");
+    assert_eq!(songs(&l)[0].title, "My title");
+    assert_eq!(
+        l.available_playback_source(&track)
+            .unwrap()
+            .unwrap()
+            .source_id,
+        source
+    );
+    std::fs::rename(&file, music.join("temporarily-hidden.txt")).unwrap();
+    l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    assert_eq!(
+        l.browse(&genres).unwrap()[0].title,
+        "Rock",
+        "missing source preserves metadata and membership"
+    );
+    l.remove_from_library(&track).unwrap();
+    std::fs::rename(music.join("temporarily-hidden.txt"), &file).unwrap();
+    l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    assert!(
+        l.browse(&genres).unwrap().is_empty(),
+        "rescan must not restore removed membership"
+    );
+    l.add_to_library(&track).unwrap();
+    tag.insert_text(ItemKey::Genre, "Jazz".into());
+    tag.save_to_path(&file, WriteOptions::default()).unwrap();
+    l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    assert_eq!(
+        l.browse(&genres).unwrap()[0].title,
+        "Jazz",
+        "refresh changes only source observation"
+    );
+    assert_eq!(songs(&l)[0].title, "My title");
+}
+
+#[test]
+fn genre_migration_failure_rolls_back_marker_and_schema_version() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    drop(Library::open(&path).unwrap());
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; PRAGMA user_version=19; CREATE TABLE file_genre_observation(sentinel TEXT);").unwrap();
+    assert!(Library::open(&path).is_err());
+    assert_eq!(
+        db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
+            .unwrap(),
+        19
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('file_metadata_observation') WHERE name='genres_observed'",[],|r|r.get::<_,u32>(0)).unwrap(),0);
+    assert_eq!(db.query_row("SELECT count(*) FROM pragma_table_info('file_genre_observation') WHERE name='sentinel'",[],|r|r.get::<_,u32>(0)).unwrap(),1);
 }

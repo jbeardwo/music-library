@@ -44,6 +44,7 @@ pub(crate) struct KnownLocalSource {
     pub source_id: SourceId,
     pub size_bytes: u64,
     pub modified_ns: i64,
+    pub genres_observed: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -212,7 +213,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 19 {
+        } else if version > 20 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -334,6 +335,10 @@ impl Store {
             })();
             connection.pragma_update(None, "foreign_keys", true)?;
             migration?;
+        }
+
+        if version < 20 {
+            connection.execute_batch(include_str!("../migrations/0020_local_genres.sql"))?;
         }
 
         Ok(Self {
@@ -606,10 +611,10 @@ impl Store {
     ) -> Result<Option<KnownLocalSource>> {
         let path = path_to_bytes(path);
         let candidates = self.connection.prepare(
-            "SELECT source_id,size_bytes,modified_ns,COALESCE(root_id=?1,0) FROM local_file_observation
+            "SELECT source_id,size_bytes,modified_ns,COALESCE(root_id=?1,0), COALESCE((SELECT genres_observed FROM file_metadata_observation m WHERE m.source_id=local_file_observation.source_id),0) FROM local_file_observation
              WHERE path=?2 ORDER BY CASE WHEN root_id=?1 THEN 0 ELSE 1 END LIMIT 2"
         )?.query_map(params![root_id.as_ref(),path], |row|Ok((KnownLocalSource {
-            source_id:SourceId(row.get(0)?),size_bytes:row.get::<_,i64>(1)? as u64,modified_ns:row.get(2)?,
+            source_id:SourceId(row.get(0)?),size_bytes:row.get::<_,i64>(1)? as u64,modified_ns:row.get(2)?,genres_observed:row.get(4)?,
         },row.get::<_,bool>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
         if candidates.len() > 1 && !candidates[0].1 {
             return Err(Error::Invalid("ambiguous local source path".into()));
@@ -774,7 +779,7 @@ impl Store {
                             SELECT name FROM file_artist_observation
                             WHERE source_id = ps.id AND scope = 'release' ORDER BY position
                         )
-                    ), ''), m.provenance_json
+                    ), ''), m.provenance_json, COALESCE((SELECT json_group_array(genre) FROM file_genre_observation WHERE source_id=ps.id), '[]')
              {from}
              JOIN local_file_observation l ON l.source_id = ps.id
              LEFT JOIN file_metadata_observation m ON m.source_id = ps.id
@@ -790,6 +795,7 @@ impl Store {
                 bytes_to_path(row.get::<_, Vec<u8>>(1)?),
                 row.get::<_, bool>(2)?,
                 ObservedMetadata {
+                    genres: serde_json::from_str(&row.get::<_, String>(13)?).unwrap_or_default(),
                     provenance: Default::default(),
                     track_title: row.get(3)?,
                     release_title: row.get(4)?,
@@ -1724,8 +1730,8 @@ fn write_file_metadata(
     tx.execute(
         "INSERT INTO file_metadata_observation(
             source_id, track_title, release_title, disc_number, track_number,
-            year, duration_ms, format, provenance_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            year, duration_ms, format, provenance_json, genres_observed
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)
          ON CONFLICT(source_id) DO UPDATE SET
             track_title = excluded.track_title,
             release_title = excluded.release_title,
@@ -1735,6 +1741,7 @@ fn write_file_metadata(
             duration_ms = excluded.duration_ms,
             format = excluded.format,
             provenance_json = excluded.provenance_json,
+            genres_observed = 1,
             observed_at = unixepoch()",
         params![
             source_id.as_ref(),
@@ -1748,6 +1755,19 @@ fn write_file_metadata(
             provenance
         ],
     )?;
+    tx.execute(
+        "DELETE FROM file_genre_observation WHERE source_id=?1",
+        [source_id.as_ref()],
+    )?;
+    for genre in &metadata.genres {
+        let genre = genre.trim();
+        if !genre.is_empty() {
+            tx.execute(
+                "INSERT OR IGNORE INTO file_genre_observation(source_id,genre) VALUES (?1,?2)",
+                params![source_id.as_ref(), genre],
+            )?;
+        }
+    }
     tx.execute(
         "DELETE FROM file_artist_observation WHERE source_id = ?1",
         [source_id.as_ref()],

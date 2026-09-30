@@ -65,7 +65,18 @@
             artistsPane.SplitView.preferredWidth=230;waitLayout();albumWidth(280);waitLayout();
             check(JSON.stringify(view.queue)===queue && view.currentId===current && view.position===position,"resize leaves playback snapshot intact");
             check(layoutArtworkRequests===requests,"handles do not request artwork");
-            window.bridge.browse_action("sort",1,"");window.bridge.browse_action("sort",1,"");waitLayout();
+            window.bridge.browse_action("sort",1,"");waitLayout();
+            check(library.panes[1].sort==="Year" && albumList.count===3,"three database-ordered year sections");
+            check(albumList.itemAtIndex(0).rowData.groupTitle==="2002","newest year heading");
+            const yearTile=tile(0), yearRequests=layoutArtworkRequests;
+            for(const width of [544,148,280]) {
+                albumWidth(width);waitLayout();
+                const columns=albumsPane.albumColumns;
+                check(tile(0)===yearTile && yearTile.width===120 && yearTile.height===174,"fixed year tiles retained through reflow");
+                check(tile(columns).y-tile(0).y===186,"tiles wrap within year section");
+                check(layoutArtworkRequests===yearRequests,"year reflow requests no artwork");
+            }
+            window.bridge.browse_action("sort",1,"");waitLayout();
             check(library.panes[1].sort==="Artist","Artist sections remain available");
             const sectionTile=tile(10), sectionRequests=layoutArtworkRequests;
             for (const width of [544,148,280]) {
@@ -102,6 +113,25 @@
             const list=albumLayoutTest.findChild(window.contentItem,"libraryPane1");
             window.width=1400;albumLayoutTest.wait(80);list.forceLayout();
             if(library.panes[1].rows.length!==200) throw new Error("200-row Album page required");
+            const queueBefore=JSON.stringify(view.queue);
+            for(const name of ["Genres","Albums","Songs","Playlists"]) {
+                window.bridge.browse_action("view",0,name);albumLayoutTest.wait(20);
+                if(library.panes.some(p=>p.rows.length>200)) throw new Error("large view exceeded bounded page");
+                if(name==="Genres" && library.panes[0].rows.length) {
+                    artistsPane.selectRow(0);albumLayoutTest.wait(20);
+                    if(library.panes.some(p=>p.rows.length>200)) throw new Error("Genre filter exceeded bounded page");
+                }
+                if(name==="Songs") {
+                    if(library.panes[2].rows.length!==200 || songsPane.width<librarySplit.width-1) throw new Error("large Songs page must be bounded and full width");
+                    window.bridge.browse_action("next",2,"");albumLayoutTest.wait(20);
+                    if(library.panes[2].rows.length!==200 || library.panes[2].page!==2) throw new Error("large Songs cursor page");
+                    window.bridge.browse_action("sort",2,"");albumLayoutTest.wait(20);
+                    if(library.panes[2].sort!=="Z-A" || library.panes[2].rows.length!==200) throw new Error("large reverse Songs page");
+                }
+                if(name==="Playlists" && library.panes[2].rows.length) throw new Error("playlist Songs must stay blank in large library");
+            }
+            window.bridge.browse_action("view",0,"Artists");albumLayoutTest.wait(50);list.forceLayout();
+            if(JSON.stringify(view.queue)!==queueBefore) throw new Error("large view navigation mutated queue");
             const queue=JSON.stringify(view.queue), selected=library.album, sort=library.panes[1].sort;
             const requests=layoutArtworkRequests, reference=list.itemAtIndex(0).tileAt(100);
             const start=Date.now();

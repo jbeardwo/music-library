@@ -294,9 +294,9 @@ impl Library {
         )
         .expect("paths");
         let mut known = HashMap::<PathBuf, Vec<Known>>::new();
-        let mut stmt = self.store.connection.prepare("SELECT l.path,l.root_id,l.source_id,l.size_bytes,l.modified_ns,x.source_id IS NOT NULL
+        let mut stmt = self.store.connection.prepare("SELECT l.path,l.root_id,l.source_id,l.size_bytes,l.modified_ns,x.source_id IS NOT NULL,COALESCE(m.genres_observed,0)
             FROM json_each(?1) p CROSS JOIN local_file_observation l INDEXED BY local_file_path ON l.path=unhex(p.value)
-            LEFT JOIN local_source_suppression x ON x.source_id=l.source_id")?;
+            LEFT JOIN local_source_suppression x ON x.source_id=l.source_id LEFT JOIN file_metadata_observation m ON m.source_id=l.source_id")?;
         for row in stmt.query_map([paths], |r| {
             Ok((
                 bytes_to_path(r.get(0)?),
@@ -306,6 +306,7 @@ impl Library {
                         source_id: SourceId(r.get(2)?),
                         size_bytes: r.get::<_, i64>(3)? as u64,
                         modified_ns: r.get(4)?,
+                        genres_observed: r.get(6)?,
                     },
                     suppressed: r.get(5)?,
                 },

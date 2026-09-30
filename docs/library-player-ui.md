@@ -3,6 +3,10 @@
 The QML diagnostic shell now serves as a usable desktop library/player. It remains
 an implementation prototype, not the public skin format or a final frontend decision.
 
+Current top-level views, sorting and local Genre behavior are described in
+[library presentation](library-presentation.md#library-navigation). The interaction
+hierarchy below describes the default Artists view.
+
 ## Interaction
 
 - Artists and Albums are derived exclusively from saved Tracks. No source is required.

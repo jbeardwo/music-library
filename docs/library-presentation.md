@@ -1,8 +1,53 @@
 # Artwork tiles, browse sorts and queue snapshots
 
+## Library navigation
+
+Lightweight Artists / Genres / Albums / Songs / Playlists links replace the Music
+heading. Artists is the default; active navigation is bold and inactive navigation
+is grey. The existing player and queue shell remains instantiated across views.
+
+| View | Panes and scope |
+| --- | --- |
+| Artists | Artists / Albums / Songs; existing credit and selection hierarchy |
+| Genres | Genres / Albums / Songs; saved Tracks carrying the selected local genre |
+| Albums | Albums / Songs; all saved Albums, then optional Album filter |
+| Songs | One full-width, cursor-paged saved Songs pane |
+| Playlists | Empty Playlists placeholder / blank Songs pane |
+
+Selections, sort choices and page cursors are remembered independently per view
+for the session. Search navigation returns to Artists and retains its existing
+keyset seek behavior. Navigation, selection and sorts never replace or reorder a
+queue. Explicit Play captures the applicable complete Songs request, including
+both Genre and Album when selected. Single-Song append stays a single Track.
+No playlist tables, editing, membership or playback behavior are introduced.
+
+Migration 20 adds indexed `file_genre_observation`, owned by the local source.
+Repeated tag values remain separate strings; surrounding whitespace and empty
+values are discarded. Comma/slash text is not interpreted as a provider taxonomy.
+Genres query distinct indexed names and require at least one associated saved
+Track. Tracks without tags contribute no invented Unknown genre. Multiple sources
+contribute their observed genres, including preserved unavailable sources.
+Genre Albums require a saved matching Track; an Album with mixed genres appears
+once. Genre Songs retain the same Track predicate when narrowed to an Album.
+Small scopes gather indexed IDs; a probe bounded to 1,001 observations selects
+indexed streaming for large scopes. No delegate queries or network lookup occur.
+
+The old extractor did not retain genre tags. A `genres_observed` marker distinguishes
+an extracted empty genre from an older observation. Older files are parsed once on
+their next ordinary scan/admission, then unchanged scans skip them again. Opening
+the database performs no filesystem work. Genre updates replace only that source's
+genre observations; identity, user overrides and membership rules are unchanged.
+
+Year sorting inserts newest-first year headers and an Unknown section last. Each
+section has its own wrapping Flow of fixed 120×174 tiles with 120px artwork. Headers
+and sections are built only from the database-ordered bounded page; a continuation
+page repeats its first year header. The Album ListView retains a bounded maximum
+page-height cache so transient Flow estimates cannot evict/recreate sections while
+resizing. Album ordering, artwork scheduling and keyboard navigation stay intact.
+
 ## Presentation
 
-The three-pane QML prototype shows Albums as fixed 120×120 logical-pixel artwork
+The QML prototype shows Albums as fixed 120×120 logical-pixel artwork
 inside 120×174 tiles, with 12px horizontal and vertical gaps. Tiles wrap to the
 available width without stretching. Captions are one-line elided text.
 The second line is the Album artist credit globally and the release year within
@@ -12,7 +57,7 @@ names do not merge sections. Album IDs remain internal.
 
 Tiles retain selection, double-click, context-menu Play/append, Enter, arrow-key
 focus and direct local-search navigation. QML receives at most 200 logical rows
-per pane; a Flow per Artist section lays out that bounded page without changing
+per pane; a Flow per Artist or year section lays out that bounded page without changing
 its logical order. The page stays instantiated during reflow, preserving delegates
 and avoiding artwork requests caused by width changes.
 Partial Albums and Tracks without playable sources use the same queries.
@@ -112,15 +157,18 @@ Qt's image cache. Native DPR scales that memory accordingly.
 | Artists | A–Z, Z–A |
 | Albums, global | A–Z, Year, Artist |
 | Albums, Artist selected | A–Z, Year |
-| Songs, global | Fixed A–Z |
-| Songs, Artist selected | A–Z, Album |
-| Songs, Album selected | Album, A–Z |
+| Songs, global | A–Z, Z–A |
+| Songs, Artist or Genre selected | A–Z, Z–A, Album |
+| Songs, Album selected | Album, A–Z, Z–A |
 
 Year is newest first, with unknown values last. Artist sections are alphabetical,
 then newest Album first. Artist Songs in Album mode follow the applicable Album
 pane ordering (title or year); each Album contains Release/disc/Track order.
 Stable application IDs break ties. Album-scoped Songs in Album mode retain normal
-Release/disc/Track order. Songs A–Z uses title then Track ID.
+Release/disc/Track order. Songs A–Z uses title then Track ID; Z–A reverses both keys.
+Album order shows a separate number immediately before the title: Track number
+for single-disc Releases, disc.Track (for example 1.02 and 2.01) for multi-disc
+Releases. Missing positions remain blank. Alphabetical modes hide the number.
 
 The Artist- and Album-Songs choices are independent session state. Playback does
 not reset them. Entering an Artist from global Album grouping converts Artist to
@@ -241,3 +289,42 @@ Screenshots from the final audit are in `/tmp/music-library-presentation-scoped.
 `/tmp/music-library-presentation-grouped.png`, `/tmp/music-library-ui-library.png` and
 `/tmp/music-library-ui-queue.png`. No commits were made. Matching edge cases,
 catalog-search redesign, playlists, skins and unrelated bugs remain outside scope.
+
+## Library view validation (2026-09-30)
+
+Focused core tests cover small and large Genre query plans, saved membership,
+mixed tags, duplicate source contributions, Album intersections, both alphabetical
+orders, keyset pages/direct seeks and complete programs. A real tagged FLAC test
+covers discovery before admission, migration from 19, incremental rescans, missing
+sources, membership removal, retagging and user-title preservation. Migration
+fixtures now expect schema 20 and still check rollback behavior.
+
+QML interaction tests click every navigation link, including at the 800px minimum,
+check all layouts and blank playlist Songs, restore view state, navigate search
+from Songs, check number placement and visibility, compare exact reverse order,
+and preserve an active queue. Year sections are tested with multiple wrapped tiles,
+missing years, retained delegates and no artwork requests during reflow. Existing
+context-menu, selection, Play/append, search, player and resize tests also run.
+
+Offscreen software-rendered inspection used a disposable copy of the 499-Track
+real library. Its local tags yielded Acoustic and other genres; Acoustic Albums
+and Songs matched saved Shoes and Socks Off music. All five pages, year headings,
+120px covers, numbers, alphabetical number hiding, reverse Songs and blank playlist
+Songs were exercised and captured under `/tmp/library-views-real-*.png`. This was
+actual rendered inspection, not a native desktop/GPU or Windows audit.
+
+The core suite, all-feature QML suite, formatting, strict Clippy for both affected
+crates and `git diff --check` passed. The opt-in 200k QML audit checks all five
+views, Songs cursor paging and reverse sorting, bounded Genre filtering and blank
+playlist Songs. Its 60 resize/scroll iterations took about 80ms while retaining
+200 logical Albums and preserving artwork request counts and queue state.
+
+The `library_views_performance` example accepts a disposable deterministic 200k
+SQLite copy; optional `--seed-genres` adds 200k synthetic source observations spread
+across 50 genres. A release-build warm first-page + next-page + direct-seek run
+measured about 5ms for global Songs A–Z/Z–A, 11–12ms for Albums Year, 21ms for Genres,
+66–73ms for Genre Albums, 49–50ms for Genre Songs and 68ms for Genre Album order.
+Each browse result remains at most 201 rows, with at most 200 expanded in QML.
+These local measurements are not cross-machine budgets. Persistent navigation,
+playlist functionality, provider genre enrichment and a larger Song metadata table
+remain deferred.

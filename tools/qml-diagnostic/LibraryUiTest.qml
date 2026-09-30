@@ -155,6 +155,8 @@
             const artist = library.panes[0].rows[0].id;
             window.bridge.browse_action("select", 0, artist);
             window.bridge.browse_action("sort", 2, "");
+            check(library.panes[2].sort === "Z-A", "Artist Songs cycles to Z-A");
+            window.bridge.browse_action("sort", 2, "");
             check(library.panes[2].sort === "Album", "Artist Songs cycles to Album");
             const artistSorted = library.panes[2].rows.map(r => r.id);
             window.bridge.browse_action("play", 0, artist); queued();

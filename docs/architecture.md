@@ -1993,7 +1993,13 @@ toe/tricot evidence, the query discrepancy, safeguards and live request counts.
 ## Desktop library/player prototype
 
 The QML shell now uses provider-neutral bounded library browsing (`browse`) for
-Artists, Albums and Songs. Membership and credit filtering occur in SQL with stable
+Artists, Genres, Albums and Songs. Five session-local browsing views reuse the same
+bounded panes; Playlists is an empty presentation placeholder with no durable model.
+Migration 20 retains source-owned local genre observations with indexed membership
+queries and a marker for one-time extraction on the next ordinary scan. Genre and
+Album predicates intersect without changing identity or admission behavior. Year
+headers and Track numbers are bounded display projections, while alphabetical
+Songs support both directions. Membership and credit filtering occur in SQL with stable
 cursor ordering and dedicated browse indexes. Artist/Album queue preparation uses a
 read-only connection off the Qt thread; the existing playback boundary and resolver
 still own queue execution. QML receives at most 200 rows per pane/queue page, and

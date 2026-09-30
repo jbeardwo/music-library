@@ -884,19 +884,22 @@ or overwrite a manual association.
 
 ## Initial desktop library/player
 
-The initial interface uses Artists, Albums and Songs panes without permanent sidebar
-navigation. Artist selection filters Albums/Songs while preserving Artists; Album
+The initial interface uses lightweight top-level Artists / Genres / Albums / Songs /
+Playlists navigation, defaulting to Artists. Artists retains the three-pane hierarchy;
+Genres substitutes local genres for Artists, Albums uses Albums/Songs, and Songs is
+a full-width bounded list. Playlists currently has an empty placeholder and blank
+Songs, with playlist persistence and editing deferred. Genre filtering requires saved
+Track membership and intersects an optional Album selection. Artist selection filters Albums/Songs while preserving Artists; Album
 selection filters Songs and switches to disc/Track order. Song selection never
 filters other panes. Clearing Artist also clears Album; clearing Album retains Artist.
 Double-click replaces and starts the relevant saved Track program; Add to queue
 appends it. A persistent current-Track/player area opens a temporary Now Playing
-panel. Global library search is a future independent operation, with a visible hook
-in this slice. Add Music offers From catalog, opening the existing interactive catalog search, and From file for native file/folder import; see [Add Music](add-music.md). See
+panel. Global local-library search retains bounded navigation into the Artists view. Add Music offers From catalog, opening the existing interactive catalog search, and From file for native file/folder import; see [Add Music](add-music.md). See
 [the implemented interaction model](library-player-ui.md).
 
 ### Desktop browse presentation and queue independence
 
-The three-pane prototype presents Albums as artwork tiles and marks the current
+The library prototype presents Albums as artwork tiles and marks the current
 queue Track in red by application Track identity, separately from selection.
 Artist and Album sorts and scoped Songs sorts operate on bounded SQL browse
 results. Explicit Play snapshots the complete displayed logical order, including

@@ -43,6 +43,8 @@ pub struct ExternalIdentity {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ObservedMetadata {
+    /// Local tag observations; repeated values remain separate.
+    pub genres: Vec<String>,
     /// Source observations from the same read as friendly metadata, not accepted IDs.
     pub provenance: crate::provenance::FileProvenance,
     pub track_title: Option<String>,

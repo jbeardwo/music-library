@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS file_genre_observation;
+ALTER TABLE file_metadata_observation DROP COLUMN genres_observed;
 DROP TABLE IF EXISTS local_root_source;
 DROP TABLE IF EXISTS local_source_suppression;
 DROP TRIGGER IF EXISTS album_order_release_application_metadata_delete;

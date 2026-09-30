@@ -5,6 +5,7 @@ use rusqlite::params;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Pane {
     Artists,
+    Genres,
     Albums,
     #[default]
     Songs,
@@ -28,6 +29,7 @@ pub struct Request {
     /// Ordering of Album groups when Songs use Album mode. Default is newest first.
     pub album_sort: Sort,
     pub artist: Option<ArtistId>,
+    pub genre: Option<String>,
     pub album: Option<AlbumId>,
     pub track: Option<TrackId>,
     pub after: Option<Cursor>,
@@ -55,6 +57,9 @@ pub struct Row {
     pub group_label: String,
     pub cursor: Cursor,
     pub track: Option<TrackSearchResult>,
+    pub track_number: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub multi_disc: bool,
 }
 
 /// A read-only connection for preparing an explicit queue away from the UI thread.
@@ -204,18 +209,24 @@ fn query(
     } else {
         false
     };
+    // Gather small Genres; stream large Genres in indexed display order.
+    let large_genre = if let Some(genre) = &request.genre {
+        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM file_genre_observation WHERE genre=?1 LIMIT 1001)", [genre], |r| r.get::<_, bool>(0))?
+    } else {
+        false
+    };
     let stream_titles = request.pane == Pane::Songs
-        && large_artist
+        && (large_artist || large_genre)
         && request.album.is_none()
         && !matches!(request.sort, Sort::Album)
         && !queue;
-    let scope = match request.pane {
+    let mut scope = match request.pane {
         Pane::Artists => String::new(),
         _ if request.artist.is_none() => String::new(),
         _ if stream_titles || target.is_some() => " AND (EXISTS(SELECT 1 FROM track_artist_credit c WHERE c.track_id=t.id AND c.artist_id=?1) OR EXISTS(SELECT 1 FROM album_artist_credit c WHERE c.album_id=r.album_id AND c.artist_id=?1) OR EXISTS(SELECT 1 FROM release_artist_credit c WHERE c.release_id=r.id AND c.artist_id=?1))".into(),
         _ => format!(" AND t.id IN ({artist_tracks})"),
     };
-    let album_scope = if request.artist.is_some() && !large_artist && target.is_none() {
+    let mut album_scope = if request.artist.is_some() && !large_artist && target.is_none() {
         format!(
             " AND a.album_id IN (SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id JOIN library_membership lm ON lm.track_id=t.id WHERE t.id IN ({artist_tracks}))"
         )
@@ -226,6 +237,15 @@ fn query(
     } else {
         String::new()
     };
+    if request.genre.is_some() {
+        if large_genre {
+            scope.push_str(" AND EXISTS(SELECT 1 FROM track_source gs CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id AND g.genre=?14)");
+            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN track_source gs ON gs.track_id=gt.id CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gr.album_id=a.album_id AND g.genre=?14)");
+        } else {
+            scope.push_str(" AND t.id IN (SELECT gs.track_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id WHERE g.genre=?14)");
+            album_scope.push_str(" AND a.album_id IN (SELECT gr.album_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id JOIN library_membership gl ON gl.track_id=gs.track_id JOIN track gt ON gt.id=gs.track_id JOIN release gr ON gr.id=gt.release_id WHERE g.genre=?14)");
+        }
+    }
     // Display fallback only: some imported files have Album credits but no
     // Track credits. Preserve the effective Track value whenever present.
     let album_credit = "COALESCE((SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')";
@@ -235,6 +255,7 @@ fn query(
     let album_order =
         request.sort == Sort::Album || (request.sort == Sort::Default && request.album.is_some());
     let sql = match request.pane {
+            Pane::Genres => "SELECT g.genre, g.genre, '', lower(g.genre), '', 0, 0, '', '', '', NULL, '', '' FROM (SELECT DISTINCT genre FROM file_genre_observation) g WHERE EXISTS(SELECT 1 FROM file_genre_observation observation JOIN track_source ts ON ts.source_id=observation.source_id JOIN library_membership lm ON lm.track_id=ts.track_id WHERE observation.genre=g.genre)".into(),
             Pane::Artists => format!("SELECT a.id, a.name, '', lower(a.name), '', 0, 0, '', '', '', NULL, '', ''
                 FROM artist a WHERE (EXISTS(SELECT 1 FROM track_artist_credit c JOIN track t ON t.id=c.track_id {saved} WHERE c.artist_id=a.id)
                 OR EXISTS(SELECT 1 FROM album_artist_credit c JOIN release r ON r.album_id=c.album_id JOIN track t ON t.release_id=r.id {saved} WHERE c.artist_id=a.id)
@@ -245,8 +266,15 @@ fn query(
                     Sort::Artist => "b.artist_key, b.artist_id, 0, 0",
                     _ => "b.title_key, '', 0, 0",
                 };
-                format!("SELECT a.album_id, a.title, {album_credit}, {keys}, '', '', '', b.year, b.year_key || char(31) || b.title_key, ''
-                FROM album_browse_order b CROSS JOIN album_application_metadata a ON a.album_id=b.album_id WHERE EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id {saved} WHERE r.album_id=a.album_id) {album_scope}")
+                let from = if large_genre && target.is_none() {
+                    match request.sort {
+                        Sort::Year => "album_browse_order b INDEXED BY album_order_year",
+                        Sort::Artist => "album_browse_order b INDEXED BY album_order_artist",
+                        _ => "album_browse_order b INDEXED BY album_order_title",
+                    }
+                } else { "album_browse_order b" };
+                format!("SELECT b.album_id, a.title, {album_credit}, {keys}, '', '', '', b.year, b.year_key || char(31) || b.title_key, ''
+                FROM {from} CROSS JOIN album_application_metadata a ON a.album_id=b.album_id WHERE EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id {saved} WHERE r.album_id=a.album_id) {album_scope}")
             },
             Pane::Songs => {
                 let (title, release, disc, position) = if album_order && request.album_sort == Sort::Title {
@@ -262,11 +290,11 @@ fn query(
                     "album_browse_order b INDEXED BY album_order_title CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
                 } else if album_order {
                     "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
-                } else if stream_titles && target.is_none() {
+                } else if (stream_titles || (request.artist.is_none() && request.genre.is_none() && request.album.is_none() && request.track.is_none())) && target.is_none() {
                     "effective_track_metadata e INDEXED BY track_browse_title CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
                 } else if request.album.is_some() {
                     "release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN effective_track_metadata e ON e.track_id=t.id"
-                } else if request.artist.is_some() || request.track.is_some() {
+                } else if request.artist.is_some() || request.genre.is_some() || request.track.is_some() {
                     "track t CROSS JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id"
                 } else {
                     "effective_track_metadata e JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
@@ -275,7 +303,8 @@ fn query(
                 let (album_title, album_key, edition, metadata_join) = if album_order {
                     ("''", "b.album_id", "r.id", "")
                 } else { ("a.title", "''", "''", "JOIN album_application_metadata a ON a.album_id=r.album_id") };
-                format!("SELECT t.id, {display_title}, '', {title}, {release}, {disc}, {position}, t.release_id, {album_title}, '', {display_year}, {album_key}, {edition}
+                let track_id = if album_order { "t.id" } else { "e.track_id" };
+                format!("SELECT {track_id}, {display_title}, '', {title}, {release}, {disc}, {position}, t.release_id, {album_title}, '', {display_year}, {album_key}, {edition}
                     FROM {from} {metadata_join} {saved}
                     WHERE 1=1 {album_filter} {track_filter} {scope}")
             }
@@ -314,7 +343,7 @@ fn query(
     } else {
         cursor.to_string()
     };
-    let descending = request.pane == Pane::Artists && request.sort == Sort::Descending;
+    let descending = request.sort == Sort::Descending;
     let cursor = if reverse != descending {
         cursor.replace(" >= ", " <= ").replace(" > ", " < ")
     } else {
@@ -358,8 +387,10 @@ fn query(
     } else {
         "chosen.*, 0, ''".into()
     };
-    let joins = if request.pane == Pane::Songs {
+    let joins = if request.pane == Pane::Songs && queue {
         "JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
+    } else if request.pane == Pane::Songs {
+        "JOIN track display_track ON display_track.id=chosen.id JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
     } else if grouped {
         "LEFT JOIN artist group_artist ON group_artist.id=chosen.release_key"
     } else {
@@ -371,7 +402,12 @@ fn query(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} ORDER BY {order} LIMIT ?13) SELECT {projection} FROM chosen {joins} ORDER BY {final_order}"
+        "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) ORDER BY {final_order}",
+        if request.pane == Pane::Songs && !queue {
+            "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1)"
+        } else {
+            "NULL, NULL, 0"
+        }
     );
     let mut statement = connection.prepare(&sql)?;
     let rows = statement.query_map(
@@ -392,7 +428,8 @@ fn query(
                 -1_i64
             } else {
                 i64::from(request.limit.clamp(1, 201))
-            }
+            },
+            request.genre
         ],
         |r| {
             let id: String = r.get(0)?;
@@ -404,6 +441,9 @@ fn query(
                 year: r.get(10)?,
                 group: r.get(4)?,
                 group_label: r.get(14)?,
+                track_number: r.get(15)?,
+                disc_number: r.get(16)?,
+                multi_disc: r.get(17)?,
                 cursor: Cursor {
                     title: r.get(3)?,
                     release: r.get(4)?,
