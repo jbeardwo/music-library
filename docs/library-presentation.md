@@ -2,7 +2,9 @@
 
 ## Presentation
 
-The three-pane QML prototype shows Albums in two columns of square artwork tiles.
+The three-pane QML prototype shows Albums as fixed 120×120 logical-pixel artwork
+inside 120×174 tiles, with 12px horizontal and vertical gaps. Tiles wrap to the
+available width without stretching. Captions are one-line elided text.
 The second line is the Album artist credit globally and the release year within
 an Artist. Unknown years have an explicit label. Artist grouping inserts visible
 section headings keyed by the primary credited Artist's application ID; equal
@@ -10,7 +12,9 @@ names do not merge sections. Album IDs remain internal.
 
 Tiles retain selection, double-click, context-menu Play/append, Enter, arrow-key
 focus and direct local-search navigation. QML receives at most 200 logical rows
-per pane; arranging the bounded Album page into pairs does not change its order.
+per pane; a Flow per Artist section lays out that bounded page without changing
+its logical order. The page stays instantiated during reflow, preserving delegates
+and avoiding artwork requests caused by width changes.
 Partial Albums and Tracks without playable sources use the same queries.
 
 The current Track's primary Songs text is red (`#c6283e`). The comparison uses
@@ -20,6 +24,86 @@ already publish this identity. The bottom current-track button includes a 46px
 cover and still toggles the Now Playing drawer. Its shared placeholder also works
 for missing or malformed artwork. The player bar has room for all transport,
 seek and volume controls.
+
+## Pane widths
+
+Qt Quick Controls SplitView supplies two standard draggable handles, each 16px
+wide with a centered separator. The center Album pane is the fill pane: moving
+either divider resizes its two neighbors while leaving the other divider fixed.
+Default proportions follow 230:320:470 for
+Artists:Albums:Songs. Minimum widths are 160, 148 and 260 logical pixels. The Album
+minimum is derived from 120px artwork + two 6px insets + 16px scrollbar allowance.
+The window's existing 800px minimum accommodates all three minima and separators.
+Arrow Up/Down advances by the current Album column count; Left/Right advances one
+logical Album. Navigation scrolls the actual tile within its Artist section, even
+when that section exceeds the viewport. Resizing does not change library state,
+sorts, selection, queue or playback. Artist/year caption rules are unchanged.
+
+Widths remain session-local. There is no existing general UI-preference mechanism;
+persistent layout settings are deferred rather than adding a settings subsystem.
+
+## Image-quality inspection and shared renderer
+
+The backend decodes original bytes once and caches a lossless PNG, reducing only
+images exceeding 500px. Smaller original images are retained. No encoding, quality,
+size cap or source-priority changes were made. Sampled real cache files were
+300–500px; no unexpectedly tiny thumbnails explained the tested covers.
+
+Previously QML requested 500×500 for both tiles and the 46px player, then shrank
+that texture while painting. A fine-line stress image showed strong aliasing in
+that render path. Detailed real covers retained existing printed grain/halftone,
+lettering and deliberate collage effects already visible in the PNG originals;
+these were not new lossy cache artifacts.
+
+The shared AlbumArt renderer requests only its physical display size
+(logical area × device pixel ratio), asynchronously, with smooth and mipmap
+filtering. Its sourceSize is tied to the fixed artwork area, not pane width.
+Inspection also reproduced Qt PreserveAspectFit's loading behavior overriding
+the requested bounding size: a 500×300 source loaded as 200×120, and a 24×16 source
+was enlarged. This behavior is described in the
+[Qt Image sourceSize documentation](https://doc.qt.io/qt-6/qml-qtquick-image.html#sourceSize-prop).
+The renderer now uses bounded loading and centers the Image with geometry derived
+from its decoded aspect ratio. Stretch mode operates only within that same ratio,
+so there is no distortion. This uses one Image/decode, retains small originals,
+and fits non-square images within the square area. The same 500×300 source now
+loads as 120×72; the small source stays 24×16 and is not enlarged to fill the tile.
+
+The player keeps its compact 46px cover and behavior, receiving only the shared
+loading fix. Missing/error placeholders and artwork retry behavior are unchanged.
+Rendering reads caches; it does not resize/recompress/rewrite them on disk.
+
+## Layout and render validation
+
+`fixed_album_tiles_wrap_and_split_handles_preserve_interactions` exercises actual
+SplitView dragging, all minima, fixed dimensions, one/two/four-column wrapping,
+retained delegates across normal and Artist-section reflow, keyboard movement,
+selection, context menus, double-click Play, wrapped search navigation and queue
+preservation. A test intercepts artwork scheduling and verifies that no requests
+are made by reflow. Existing UI tests cover queue append/removal, caption rules,
+filtering, sorting and distant search navigation.
+
+`tools/qml-diagnostic/tests/album_rendering.py OUT.png [CACHED.png ...]` compiles a
+Qt harness using the shipped AlbumArt component. It renders the old and new paths
+side by side, verifies loaded/decoded dimensions including small and non-square
+sources, checks cache bytes and modification times, and checks no requests on
+resize. Run with `QT_QPA_PLATFORM=offscreen` if needed. Visual inspection used
+five existing covers containing fine text, photography, bright/dark artwork and
+detailed illustration, plus a high-contrast fine-line stress image. The new path
+removed the stress image's aliasing without changing encoded artwork. The compact
+player was inspected alongside tiles. Decode bounds and small-image preservation
+also passed at device pixel ratios 1 and 2. This was inspection of actual offscreen
+renders, not a human desktop/GPU/Windows audit.
+
+The opt-in `album_layout_200k_bounded_resize_and_scroll` takes
+`MUSIC_LIBRARY_ALBUM_LAYOUT_STRESS_COPY` pointing to a disposable SQLite backup of
+the deterministic 200k fixture. It keeps only 200 logical Albums, checks that
+repeated resize/scroll preserves delegates and does not schedule artwork or change
+state, and reports timing. A debug run measured 60 iterations in about 75ms
+(including 1ms event-loop waits per iteration), with 200 retained Albums.
+This is a measured layout test, not a GPU frame-rate guarantee. At DPR 1, square
+tile pixels require roughly 15MiB for a full 200-Album page including mipmaps,
+instead of 500px decoded textures for each tile; identical URLs/sizes can share
+Qt's image cache. Native DPR scales that memory accordingly.
 
 ## Sorts and explicit programs
 

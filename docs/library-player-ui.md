@@ -208,3 +208,9 @@ and additive actions. Controlled mixed-source tests cover 80% → 70% handoffs w
 zero and −6 dB trims, pending acknowledgements and stale polls. A real-library desktop
 audit exercised Album Track 3, Artist Track, global Track Play, and Local trim with
 actual GStreamer audio. Live Spotify device handoff remains unverified in this slice.
+
+Library membership removal and durable local-source exclusions are described in
+[Library removal](library-removal.md).
+
+The shared local admission pipeline, native From file workflow and durable multiple
+library locations are described in [Local ingestion](local-ingestion.md).

@@ -2028,3 +2028,9 @@ from search requests. The QML adapter coalesces background reads and retains at 
 120 result rows. Direct keyset navigation loads bounded windows around stable IDs,
 including targets outside the current browse page. See
 [local-library search](local-library-search.md) for ranking, limits and measurements.
+
+Library membership removal and durable local-source exclusions are described in
+[Library removal](library-removal.md).
+
+The shared local admission pipeline, native From file workflow and durable multiple
+library locations are described in [Local ingestion](local-ingestion.md).

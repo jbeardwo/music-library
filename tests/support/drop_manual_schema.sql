@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS local_root_source;
+DROP TABLE IF EXISTS local_source_suppression;
 DROP TRIGGER IF EXISTS album_order_release_application_metadata_delete;
 DROP TRIGGER IF EXISTS album_order_release_application_metadata_update;
 DROP TRIGGER IF EXISTS album_order_release_application_metadata_insert;

@@ -9,6 +9,7 @@ pub struct Search {
     generation: u64,
     busy: bool,
     latest: Option<(String, Kind)>,
+    current: Option<(String, Kind)>,
     worker: Option<std::thread::JoinHandle<()>>,
     error: String,
 }
@@ -24,6 +25,7 @@ impl Bridge {
             4 => Kind::Playlist,
             _ => Kind::All,
         };
+        self.library_search.current = Some((text.clone(), kind));
         self.library_search.latest = Some((text, kind));
         if !self.library_search.busy {
             self.local_search_next();
@@ -33,7 +35,20 @@ impl Bridge {
     pub fn local_search_cancel(&mut self) {
         self.library_search.generation += 1;
         self.library_search.latest = None;
+        self.library_search.current = None;
         self.library_search.hits.clear();
+        self.local_search_changed();
+    }
+    pub fn refresh_local_search(&mut self) {
+        if self.library_search.current.is_none() {
+            return;
+        }
+        self.library_search.generation += 1;
+        self.library_search.hits.clear();
+        self.library_search.latest = self.library_search.current.clone();
+        if !self.library_search.busy {
+            self.local_search_next();
+        }
         self.local_search_changed();
     }
     fn local_search_next(&mut self) {

@@ -59,41 +59,33 @@ pub(crate) fn backfill(tx: &Transaction<'_>) -> Result<()> {
     }
     let albums=tx.prepare("SELECT DISTINCT r.album_id FROM track_source ts JOIN track t ON t.id=ts.track_id JOIN release r ON r.id=t.release_id")?
         .query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    // Register all evidence before merging so a conflicting identity blocks the
-    // complete directory group, independent of traversal order.
+    reconcile_albums(tx, &albums)
+}
+
+/// Shared finalization for migration backfill and scoped local admission.
+pub(crate) fn reconcile_albums(tx: &Transaction<'_>, albums: &[String]) -> Result<()> {
+    // Register all evidence before merging; never load unrelated library Albums.
+    let mut contexts = BTreeSet::new();
     for album in albums {
-        register_album(tx, &album)?;
+        if let Some((_, directory, name)) = register_album(tx, album)? {
+            contexts.insert((directory, name));
+        }
     }
-    let contexts = tx
-        .prepare("SELECT DISTINCT root_id,directory,name_key FROM local_artist_context")?
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Vec<u8>>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
-    for (root, directory, name) in contexts {
-        consolidate_context(tx, &root, &directory, &name)?;
+    for (directory, name) in contexts {
+        consolidate_context(tx, &directory, &name)?;
     }
     Ok(())
 }
 
-fn consolidate_context(
-    tx: &Transaction<'_>,
-    root: &str,
-    directory: &[u8],
-    name: &str,
-) -> Result<()> {
-    let ids=tx.prepare("SELECT artist_id FROM local_artist_context WHERE root_id=?1 AND directory=?2 AND name_key=?3")?
-        .query_map(params![root,directory,name],|r|r.get::<_,String>(0).map(ArtistId))?.collect::<rusqlite::Result<Vec<_>>>()?;
+fn consolidate_context(tx: &Transaction<'_>, directory: &[u8], name: &str) -> Result<()> {
+    let ids=tx.prepare("SELECT DISTINCT artist_id FROM local_artist_context WHERE root_id IN (SELECT id FROM discovery_root WHERE kind='local_filesystem') AND directory=?1 AND name_key=?2")?
+        .query_map(params![directory,name],|r|r.get::<_,String>(0).map(ArtistId))?.collect::<rusqlite::Result<Vec<_>>>()?;
     merge_group(tx, &ids)
 }
 
 pub(crate) fn reconcile_album(tx: &Transaction<'_>, album: &str) -> Result<()> {
-    if let Some((root, directory, name)) = register_album(tx, album)? {
-        consolidate_context(tx, &root, &directory, &name)?;
+    if let Some((_, directory, name)) = register_album(tx, album)? {
+        consolidate_context(tx, &directory, &name)?;
     }
     Ok(())
 }
@@ -119,23 +111,43 @@ fn register_album(tx: &Transaction<'_>, album: &str) -> Result<Option<Context>> 
             return Ok(None);
         };
         let parts = relative.components().collect::<Vec<_>>();
-        // Exactly an Artist directory followed by an Album directory (possibly
-        // nested discs) and a file. A flat folder or the root name is not evidence.
-        if parts.len() < 3 {
-            return Ok(None);
-        }
-        let std::path::Component::Normal(directory) = parts[0] else {
-            return Ok(None);
+        // Artist/Album/file evidence is the same whether the location is its
+        // parent or the Artist directory itself. Require an Album component;
+        // a flat folder of equal-name files is still insufficient evidence.
+        let directory = if parts.len() >= 2
+            && base
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(|s| s.trim().to_lowercase())
+                .as_ref()
+                == Some(&name)
+        {
+            base.clone()
+        } else {
+            if parts.len() < 3 {
+                return Ok(None);
+            }
+            let std::path::Component::Normal(directory) = parts[0] else {
+                return Ok(None);
+            };
+            if directory.to_str().map(|s| s.trim().to_lowercase()).as_ref() != Some(&name) {
+                return Ok(None);
+            }
+            base.join(directory)
         };
-        if directory.to_str().map(|s| s.trim().to_lowercase()).as_ref() != Some(&name) {
-            return Ok(None);
-        }
-        contexts.insert((root, path_to_bytes(&base.join(directory))));
+        contexts.insert((root, path_to_bytes(&directory)));
     }
-    if contexts.len() != 1 {
+    let Some((root, directory)) = contexts.iter().next().cloned() else {
+        return Ok(None);
+    };
+    // Overlapping locations can observe files in the same Artist directory.
+    // Root IDs differ, but the canonical directory evidence must agree.
+    if contexts
+        .iter()
+        .any(|(_, candidate)| candidate != &directory)
+    {
         return Ok(None);
     }
-    let (root, directory) = contexts.into_iter().next().unwrap();
     let mut ids = vec![artist.clone()];
     // Within this same single-Artist Album, equivalent singleton Release/Track
     // credits describe the same Artist. Guest/multi-Artist credits stay untouched.

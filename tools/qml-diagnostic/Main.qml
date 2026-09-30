@@ -1,7 +1,9 @@
 pragma ComponentBehavior: Bound
 import QtQuick
+import QtQuick.Window
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import Qt.labs.platform as PlatformDialogs
 
 ApplicationWindow {
     id: window
@@ -458,6 +460,74 @@ ApplicationWindow {
         return "Local: " + local + "\n" + label + provider + (row.provider ? " [" + row.provider + "]" : "");
     }
 
+    Menu {
+        id: addMusicChooser
+        objectName: "addMusicChooser"
+        MenuItem { text: "From catalog"; onTriggered: addMusicPanel.open() }
+        MenuItem { text: "From file"; onTriggered: localImportPanel.open() }
+    }
+    Dialog {
+        id: localImportPanel
+        objectName: "localImportPanel"
+        title: "From file"
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(460, window.width - 40)
+        standardButtons: Dialog.Close
+        readonly property var state: window.bridge.local_import_snapshot
+        contentItem: ColumnLayout {
+            RowLayout {
+                Button { objectName: "chooseLocalFiles"; text: "Choose files"; enabled: !localImportPanel.state.busy && !window.library.pending; onClicked: localFilesPicker.openFresh() }
+                Button { objectName: "chooseLocalFolder"; text: "Choose folder"; enabled: !localImportPanel.state.busy && !window.library.pending; onClicked: localFolderPicker.openFresh() }
+            }
+            BusyIndicator { running: localImportPanel.state.busy; visible: running; Layout.alignment: Qt.AlignHCenter }
+            Label { objectName: "localImportStatus"; text: localImportPanel.state.status || ""; visible: text.length > 0; textFormat: Text.PlainText; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+        }
+    }
+    // Platform dialogs use the standard Qt Widgets fallback (including extended
+    // selection) when the OS has no native dialog, rather than the Quick fallback.
+    PlatformDialogs.FileDialog {
+        id: localFilesPicker
+        objectName: "localFilesPicker"
+        title: "Choose music files"
+        parentWindow: window
+        modality: Qt.WindowModal
+        function openFresh() {
+            files = [];
+            currentFiles = [];
+            open();
+        }
+        fileMode: PlatformDialogs.FileDialog.OpenFiles
+        nameFilters: ["Audio files (*.aac *.aiff *.ape *.flac *.m4a *.mp3 *.mp4 *.ogg *.opus *.wav *.wv)", "All files (*)"]
+        onAccepted: {
+            const urls = [];
+            for (let i = 0; i < files.length; ++i) urls.push(files[i].toString());
+            close();
+            window.bridge.local_import("files", urls);
+        }
+        onRejected: { close(); files = []; currentFiles = []; }
+    }
+    PlatformDialogs.FolderDialog {
+        id: localFolderPicker
+        objectName: "localFolderPicker"
+        title: "Choose a library folder"
+        parentWindow: window
+        modality: Qt.WindowModal
+        function openFresh() { folder = ""; currentFolder = ""; open(); }
+        onAccepted: {
+            const url = folder.toString();
+            close();
+            window.bridge.local_import("folder", [url]);
+        }
+        onRejected: { close(); folder = ""; currentFolder = ""; }
+    }
+    Timer {
+        interval: 1
+        repeat: true
+        running: window.bridge.local_import_snapshot.scheduling
+        onTriggered: window.bridge.local_import_schedule()
+    }
+
     Dialog {
         id: addMusicPanel
         objectName: "addMusicPanel"
@@ -878,7 +948,51 @@ ApplicationWindow {
         id: libraryMenu
         MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("play", window.contextPane, window.contextId) }
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
+        MenuSeparator {}
+        MenuItem { text: "Remove from library"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }
+
     }
+
+    Dialog {
+        id: removalDialog
+        objectName: "removalDialog"
+        focus: true
+        title: "Remove from library"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(480, window.width - 40)
+        visible: !!window.library.removal.message
+        closePolicy: Popup.CloseOnEscape
+        onRejected: window.bridge.browse_action("remove-cancel", 0, "")
+        onOpened: { suppressRescan.checked = true; removalFocus.start(); }
+        contentItem: Column {
+            spacing: 14
+            Label { width: parent.width; text: window.library.removal.message || ""; textFormat: Text.PlainText; wrapMode: Text.WordWrap }
+            CheckBox { id: suppressRescan; objectName: "suppressRescan"; visible: !!window.library.removal.local; checked: true; text: "Do not automatically rescan" }
+            Label { visible: !!window.library.removal.local; text: "Your music files will not be deleted."; textFormat: Text.PlainText }
+        }
+        footer: Item {
+            implicitHeight: removalButtons.implicitHeight + 20
+            Row {
+                id: removalButtons
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 12
+                Button {
+                    id: cancelRemoval
+                    focus: true
+                    text: "Cancel"
+                    onClicked: window.bridge.browse_action("remove-cancel", 0, "")
+                    Keys.onReturnPressed: clicked()
+                    Keys.onEnterPressed: clicked()
+                }
+                Button { id: confirmRemoval; text: "Remove"; onClicked: window.bridge.browse_action("remove-confirm", 0, suppressRescan.checked ? "suppress" : "") }
+            }
+        }
+    }
+
+    Timer { id: removalFocus; interval: 1; onTriggered: cancelRemoval.forceActiveFocus() }
 
     property var artworkKeys: []
     function requestArtwork(key) {
@@ -900,12 +1014,20 @@ ApplicationWindow {
         Image {
             id: coverImage
             objectName: "coverImage"
-            anchors.fill: parent
+            anchors.centerIn: parent
+            // Preserve aspect through the item's geometry. Qt's PreserveAspectFit
+            // loader can override sourceSize and upscale small/non-square sources.
+            width: implicitWidth > 0 && implicitHeight > 0 ? Math.min(parent.width, implicitWidth / Screen.devicePixelRatio, parent.height * implicitWidth / implicitHeight) : parent.width
+            height: implicitWidth > 0 && implicitHeight > 0 ? width * implicitHeight / implicitWidth : parent.height
             source: parent.artworkUrl
             onStatusChanged: { if (status === Image.Error && parent.artworkKey) window.bridge.artwork_retry(parent.artworkKey); }
             asynchronous: true
-            fillMode: Image.PreserveAspectFit
-            sourceSize: Qt.size(500, 500)
+            fillMode: Image.Stretch
+            // Decode for the physical display size, rather than a 500px texture
+            // for every 120px tile (or the compact 46px player cover).
+            sourceSize: Qt.size(Math.ceil(parent.width * Screen.devicePixelRatio), Math.ceil(parent.height * Screen.devicePixelRatio))
+            smooth: true
+            mipmap: true
         }
         Label {
             anchors.centerIn: parent
@@ -926,6 +1048,37 @@ ApplicationWindow {
         property string songId: ""
         property string rowsSignature: ""
         property int logicalIndex: -1
+        readonly property int tileWidth: 120
+        readonly property int tileHeight: 174
+        readonly property int tileGap: 12
+        readonly property int tileInset: 6
+        readonly property int scrollAllowance: 16
+        readonly property int albumColumns: Math.max(1, Math.floor((list.width - 2 * tileInset - scrollAllowance + tileGap) / (tileWidth + tileGap)))
+        function revealLogical(index) {
+            const group = visualIndex(index);
+            if (group < 0) return;
+            list.currentIndex = group;
+            if (paneIndex !== 1) {
+                list.positionViewAtIndex(group, ListView.Contain);
+                return;
+            }
+            // A section's Flow can exceed the viewport. Scroll to the actual
+            // logical tile rather than treating the whole section as one item.
+            list.positionViewAtIndex(group, ListView.Contain);
+            list.forceLayout();
+            const section = list.itemAtIndex(group);
+            const tile = section ? section.tileAt(index) : null;
+            if (!tile) return;
+            const top = tile.mapToItem(list.contentItem, 0, 0).y;
+            const bottom = top + tile.height;
+            if (top < list.contentY) list.contentY = top;
+            else if (bottom > list.contentY + list.height) list.contentY = bottom - list.height;
+            list.contentY = Math.max(list.originY, Math.min(list.contentY, list.originY + Math.max(0, list.contentHeight - list.height)));
+        }
+        function preserveReflowPosition() {
+            if (paneIndex === 1 && logicalIndex >= 0) Qt.callLater(function() { pane.revealLogical(pane.logicalIndex); });
+        }
+        onAlbumColumnsChanged: preserveReflowPosition()
         function visualIndex(index) {
             for (let i = 0; i < paneRows.count; ++i) {
                 const entry = paneRows.get(i).rowData;
@@ -940,8 +1093,7 @@ ApplicationWindow {
             for (let i = 0; i < pane.pageData.rows.length; ++i) {
                 if (pane.pageData.rows[i].id === target) {
                     logicalIndex = i;
-                    list.currentIndex = visualIndex(i);
-                    list.positionViewAtIndex(list.currentIndex, ListView.Contain);
+                    pane.revealLogical(i);
                     if ((pane.paneIndex === 2 && window.library.song.length > 0)
                         || (pane.paneIndex === 1 && window.library.song.length === 0 && window.library.album.length > 0)
                         || (pane.paneIndex === 0 && window.library.album.length === 0))
@@ -963,7 +1115,7 @@ ApplicationWindow {
                 for (let i = 0; i < pageData.rows.length; ++i) {
                     const row = pageData.rows[i];
                     const newGroup = pageData.sort === "Artist" && row.group !== group;
-                    if (tiles.length && (tiles.length === 2 || newGroup)) {
+                    if (tiles.length && newGroup) {
                         paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
                         tiles = []; groupTitle = "";
                     }
@@ -986,7 +1138,7 @@ ApplicationWindow {
         function selectRow(index) {
             if (index < 0 || index >= pageData.rows.length) return;
             logicalIndex = index;
-            list.currentIndex = visualIndex(index);
+            pane.revealLogical(index);
             songId = pageData.rows[index].id;
             window.bridge.browse_action("select", paneIndex, songId);
         }
@@ -997,7 +1149,7 @@ ApplicationWindow {
         RowLayout {
             Layout.fillWidth: true
             Layout.preferredHeight: 44
-            Label { text: pane.heading; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true }
+            Label { text: pane.heading; elide: Text.ElideRight; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true; Layout.minimumWidth: 0 }
             ToolButton {
                 id: sortControl
                 text: pane.pageData.sort
@@ -1023,13 +1175,16 @@ ApplicationWindow {
             Layout.fillHeight: true
             clip: true
             model: paneRows
+            // Retain the bounded Album page so width reflow cannot recreate
+            // section delegates or schedule new artwork requests.
+            cacheBuffer: pane.paneIndex === 1 ? Math.max(0, contentHeight) : 0
             currentIndex: -1
             activeFocusOnTab: true
             keyNavigationEnabled: false
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            Keys.onDownPressed: { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? 2 : 1))); positionViewAtIndex(currentIndex, ListView.Contain); }
-            Keys.onUpPressed: { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? 2 : 1))); positionViewAtIndex(currentIndex, ListView.Contain); }
+            Keys.onDownPressed: { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? pane.albumColumns : 1))); }
+            Keys.onUpPressed: { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? pane.albumColumns : 1))); }
             Keys.onLeftPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.max(0, pane.logicalIndex - 1)); }
             Keys.onRightPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + 1)); }
             Keys.onReturnPressed: pane.playRow(pane.logicalIndex)
@@ -1045,7 +1200,7 @@ ApplicationWindow {
                 readonly property var modelData: rowData
                 required property int index
                 width: list.width
-                height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? (list.width - 12) / 2 + 60 + (modelData.groupTitle ? 30 : 0) : 48
+                height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? albumLayout.implicitHeight + pane.tileGap : 48
                 color: pane.paneIndex === 1 ? "transparent" : pane.selectedId === modelData.id ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
                 border.width: pane.paneIndex !== 1 && list.activeFocus && list.currentIndex === index ? 1 : 0
                 border.color: "#96506d"
@@ -1065,7 +1220,15 @@ ApplicationWindow {
                         textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
                     }
                 }
+                function tileAt(logical) {
+                    for (let i = 0; i < tileRepeater.count; ++i) {
+                        const tile = tileRepeater.itemAt(i);
+                        if (tile && tile.modelData.logicalIndex === logical) return tile;
+                    }
+                    return null;
+                }
                 Column {
+                    id: albumLayout
                     visible: pane.paneIndex === 1
                     width: parent.width
                     Label {
@@ -1075,17 +1238,20 @@ ApplicationWindow {
                         font.pixelSize: 15
                         color: "#68636a"
                     }
-                    Row {
-                        spacing: 12
+                    Flow {
+                        x: pane.tileInset
+                        width: Math.max(pane.tileWidth, list.width - 2 * pane.tileInset - pane.scrollAllowance)
+                        spacing: pane.tileGap
                         Repeater {
+                            id: tileRepeater
                             model: pane.paneIndex === 1 ? row.modelData.tiles : []
                             delegate: Rectangle {
                                 id: tile
                                 objectName: "albumTile" + modelData.logicalIndex
                                 required property var modelData
                                 readonly property var album: modelData.data
-                                width: (list.width - 12) / 2
-                                height: width + 54
+                                width: pane.tileWidth
+                                height: pane.tileHeight
                                 color: pane.selectedId === album.id ? "#e8d9e0" : tileMouse.containsMouse ? "#eeece9" : "transparent"
                                 border.width: list.activeFocus && pane.logicalIndex === modelData.logicalIndex ? 1 : 0
                                 border.color: "#96506d"
@@ -1095,7 +1261,7 @@ ApplicationWindow {
                                 Column {
                                     width: parent.width
                                     spacing: 4
-                                    AlbumArt { width: parent.width; height: width; artworkKey: tile.album.id }
+                                    AlbumArt { objectName: "albumArtwork"; width: pane.tileWidth; height: pane.tileWidth; artworkKey: tile.album.id }
                                     Label { objectName: "albumTitle"; width: parent.width; text: tile.album.title || "Untitled"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 13 }
                                     Label { objectName: "albumSecondary"; width: parent.width; text: window.library.artist ? (tile.album.year || "Unknown year") : tile.album.subtitle; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a" }
                                 }
@@ -1167,23 +1333,36 @@ ApplicationWindow {
                 onClicked: searchPanel.open()
             }
             Button {
+                id: addMusicButton
+                objectName: "addMusicButton"
                 text: "Add Music"
-                onClicked: {
-                    addMusicPanel.open();
-                }
+                onClicked: addMusicChooser.popup()
             }
             ToolButton { text: "⋯"; Accessible.name: "Settings and diagnostics"; onClicked: settingsMenu.popup() }
         }
-        RowLayout {
+        SplitView {
+            id: librarySplit
+            objectName: "librarySplit"
             Layout.fillWidth: true
             Layout.fillHeight: true
             Layout.leftMargin: 16; Layout.rightMargin: 16
-            spacing: 16
-            LibraryPane { paneIndex: 0; heading: "ARTISTS"; Layout.fillWidth: true; Layout.preferredWidth: 230 }
-            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#dedbd8" }
-            LibraryPane { paneIndex: 1; heading: "ALBUMS"; Layout.fillWidth: true; Layout.preferredWidth: 320 }
-            Rectangle { Layout.fillHeight: true; implicitWidth: 1; color: "#dedbd8" }
-            LibraryPane { paneIndex: 2; heading: "SONGS"; Layout.fillWidth: true; Layout.preferredWidth: 470 }
+            orientation: Qt.Horizontal
+            handle: Rectangle {
+                objectName: "librarySplitHandle"
+                implicitWidth: 16
+                color: "transparent"
+                Rectangle {
+                    anchors.centerIn: parent
+                    width: SplitHandle.hovered || SplitHandle.pressed ? 3 : 1
+                    height: parent.height
+                    color: SplitHandle.pressed ? "#96506d" : "#dedbd8"
+                }
+            }
+            // The center pane absorbs changes from either divider, keeping the
+            // opposite outside pane (and thus the opposite divider) stationary.
+            LibraryPane { id: artistsPane; objectName: "artistsPane"; paneIndex: 0; heading: "ARTISTS"; SplitView.minimumWidth: 160; SplitView.preferredWidth: (librarySplit.width - 32) * 230 / 1020 }
+            LibraryPane { id: albumsPane; objectName: "albumsPane"; paneIndex: 1; heading: "ALBUMS"; SplitView.minimumWidth: tileWidth + 2 * tileInset + scrollAllowance; SplitView.fillWidth: true }
+            LibraryPane { id: songsPane; objectName: "songsPane"; paneIndex: 2; heading: "SONGS"; SplitView.minimumWidth: 260; SplitView.preferredWidth: (librarySplit.width - 32) * 470 / 1020 }
         }
         Label {
             visible: text.length > 0

@@ -39,7 +39,7 @@ pub fn create() -> Result<(TempDir, Library), Box<dyn std::error::Error>> {
     drop(library);
     // One live SQLite connection at a time, including during fixture creation.
     let db = Connection::open(&path)?;
-    db.execute_batch("PRAGMA foreign_keys=ON; INSERT INTO discovery_root(id,kind,location) VALUES ('sample','local_filesystem',X'2F');")?;
+    db.execute_batch("PRAGMA foreign_keys=ON;")?;
     for (i, track) in release.track_ids.iter().enumerate().skip(1) {
         for n in 0..if i == 3 { 2 } else { 1 } {
             let source = format!("diagnostic-source-{i:02}-{n}");
@@ -66,7 +66,7 @@ pub fn create() -> Result<(TempDir, Library), Box<dyn std::error::Error>> {
                 "INSERT INTO track_source(track_id,source_id) VALUES (?1,?2)",
                 params![track.as_ref(), source],
             )?;
-            db.execute("INSERT INTO local_file_observation(source_id,root_id,path,size_bytes,modified_ns,available) VALUES (?1,'sample',?2,1,1,?3)", params![source,bytes,i != 1])?;
+            db.execute("INSERT INTO local_file_observation(source_id,root_id,path,size_bytes,modified_ns,available) VALUES (?1,NULL,?2,1,1,?3)", params![source,bytes,i != 1])?;
         }
     }
     drop(db);

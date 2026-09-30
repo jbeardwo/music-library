@@ -212,7 +212,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 17 {
+        } else if version > 19 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -317,6 +317,23 @@ impl Store {
         }
         if version < 17 {
             connection.execute_batch(include_str!("../migrations/0017_artwork.sql"))?;
+        }
+        if version < 18 {
+            connection.execute_batch(include_str!("../migrations/0018_local_suppression.sql"))?;
+        }
+        if version < 19 {
+            connection.pragma_update(None, "foreign_keys", false)?;
+            let migration = (|| -> Result<()> {
+                let tx = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+                tx.execute_batch(include_str!(
+                    "../migrations/0019_detached_local_sources.sql"
+                ))?;
+                tx.commit()?;
+                Ok(())
+            })();
+            connection.pragma_update(None, "foreign_keys", true)?;
+            migration?;
         }
 
         Ok(Self {
@@ -525,7 +542,17 @@ impl Store {
     }
 
     pub fn register_local_root(&mut self, path: impl AsRef<Path>) -> Result<RootId> {
-        let location = path_to_bytes(path.as_ref());
+        let path = path
+            .as_ref()
+            .canonicalize()
+            .map_err(|source| Error::Filesystem {
+                path: path.as_ref().to_path_buf(),
+                source,
+            })?;
+        if !path.is_dir() {
+            return Err(Error::Invalid("a library location must be a folder".into()));
+        }
+        let location = path_to_bytes(&path);
         if let Some(id) = self
             .connection
             .query_row(
@@ -578,21 +605,16 @@ impl Store {
         path: &Path,
     ) -> Result<Option<KnownLocalSource>> {
         let path = path_to_bytes(path);
-        self.connection
-            .query_row(
-                "SELECT source_id, size_bytes, modified_ns
-                 FROM local_file_observation WHERE root_id = ?1 AND path = ?2",
-                params![root_id.as_ref(), path],
-                |row| {
-                    Ok(KnownLocalSource {
-                        source_id: SourceId(row.get(0)?),
-                        size_bytes: row.get::<_, i64>(1)? as u64,
-                        modified_ns: row.get(2)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(Into::into)
+        let candidates = self.connection.prepare(
+            "SELECT source_id,size_bytes,modified_ns,COALESCE(root_id=?1,0) FROM local_file_observation
+             WHERE path=?2 ORDER BY CASE WHEN root_id=?1 THEN 0 ELSE 1 END LIMIT 2"
+        )?.query_map(params![root_id.as_ref(),path], |row|Ok((KnownLocalSource {
+            source_id:SourceId(row.get(0)?),size_bytes:row.get::<_,i64>(1)? as u64,modified_ns:row.get(2)?,
+        },row.get::<_,bool>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        if candidates.len() > 1 && !candidates[0].1 {
+            return Err(Error::Invalid("ambiguous local source path".into()));
+        }
+        Ok(candidates.into_iter().next().map(|(source, _)| source))
     }
 
     pub(crate) fn apply_scan_batch(
@@ -601,6 +623,16 @@ impl Store {
         scan_id: i64,
         items: &[ScannedLocalSource],
     ) -> Result<()> {
+        self.apply_local_batch(Some(root_id), Some(scan_id), items)
+            .map(|_| ())
+    }
+
+    pub(crate) fn apply_local_batch(
+        &mut self,
+        root_id: Option<&RootId>,
+        scan_id: Option<i64>,
+        items: &[ScannedLocalSource],
+    ) -> Result<Vec<SourceId>> {
         let observations = items
             .iter()
             .map(|item| {
@@ -618,8 +650,15 @@ impl Store {
             .collect();
         let unchanged_json =
             serde_json::to_string(&unchanged_ids).map_err(|e| Error::Invalid(e.to_string()))?;
+        let adopted_albums = if root_id.is_some() {
+            tx.prepare("SELECT DISTINCT r.album_id FROM local_file_observation l JOIN track_source ts ON ts.source_id=l.source_id JOIN track t ON t.id=ts.track_id JOIN release r ON r.id=t.release_id WHERE l.root_id IS NULL AND l.source_id IN (SELECT value FROM json_each(?1))")?
+                .query_map([serde_json::to_string(&items.iter().filter_map(|i|i.source_id.as_ref().map(AsRef::as_ref)).collect::<Vec<_>>()).expect("source IDs")], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
         let mut affected_sources = tx.prepare("SELECT source_id FROM local_file_observation WHERE source_id IN (SELECT value FROM json_each(?1)) AND available=0")?
             .query_map([unchanged_json], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut source_ids = Vec::with_capacity(items.len());
         for (item, provenance) in items.iter().zip(&observations) {
             let source_id = item.source_id.clone().unwrap_or_else(SourceId::new);
             if item.metadata.is_some() {
@@ -633,21 +672,27 @@ impl Store {
                 "INSERT INTO local_file_observation(
                     source_id, root_id, path, size_bytes, modified_ns, available, last_seen_scan_id
                  ) VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
-                 ON CONFLICT(root_id, path) DO UPDATE SET
+                 ON CONFLICT(source_id) DO UPDATE SET
+                    root_id = COALESCE(local_file_observation.root_id, excluded.root_id),
                     size_bytes = excluded.size_bytes,
                     modified_ns = excluded.modified_ns,
                     available = 1,
-                    last_seen_scan_id = excluded.last_seen_scan_id,
+                    last_seen_scan_id = COALESCE(excluded.last_seen_scan_id, local_file_observation.last_seen_scan_id),
                     last_observed_at = unixepoch()",
                 params![
                     source_id.as_ref(),
-                    root_id.as_ref(),
+                    root_id.map(AsRef::as_ref),
                     path_to_bytes(&item.path),
                     item.size_bytes as i64,
                     item.modified_ns,
                     scan_id
                 ],
             )?;
+            if let Some(root) = root_id {
+                tx.execute("INSERT INTO local_root_source(root_id,source_id,last_seen_scan_id) VALUES (?1,?2,?3)
+                    ON CONFLICT(root_id,source_id) DO UPDATE SET last_seen_scan_id=COALESCE(excluded.last_seen_scan_id,local_root_source.last_seen_scan_id)", params![root.as_ref(),source_id.as_ref(),scan_id])?;
+            }
+            source_ids.push(source_id.clone());
             if let Some(metadata) = &item.metadata {
                 write_file_metadata(&tx, &source_id, metadata, provenance.as_deref())?;
                 refresh_associated_effective_track(&tx, &source_id)?;
@@ -655,20 +700,23 @@ impl Store {
         }
         let albums = crate::provenance_acceptance::albums_for_sources(&tx, &affected_sources)?;
         crate::provenance_acceptance::reconcile(&tx, &albums, self.provenance_validator, true)?;
+        for album in adopted_albums {
+            crate::artist_identity::reconcile_album(&tx, &album)?;
+        }
         tx.commit()?;
-        Ok(())
+        Ok(source_ids)
     }
 
     pub(crate) fn complete_scan(&mut self, root_id: &RootId, scan_id: i64) -> Result<u64> {
         let tx = self.connection.transaction()?;
-        let sources = tx.prepare("SELECT source_id FROM local_file_observation WHERE root_id=?1 AND available=1 AND (last_seen_scan_id IS NULL OR last_seen_scan_id<>?2)")?
+        let sources = tx.prepare("SELECT l.source_id FROM local_root_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.root_id=?1 AND l.available=1 AND (s.last_seen_scan_id IS NULL OR s.last_seen_scan_id<>?2)")?
             .query_map(params![root_id.as_ref(),scan_id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
         let albums = crate::provenance_acceptance::albums_for_sources(&tx, &sources)?;
         let changed = tx.execute(
             "UPDATE local_file_observation
              SET available = 0, last_observed_at = unixepoch()
-             WHERE root_id = ?1 AND available = 1
-               AND (last_seen_scan_id IS NULL OR last_seen_scan_id <> ?2)",
+             WHERE available=1 AND source_id IN (SELECT source_id FROM local_root_source
+               WHERE root_id=?1 AND (last_seen_scan_id IS NULL OR last_seen_scan_id<>?2))",
             params![root_id.as_ref(), scan_id],
         )?;
         tx.execute(
@@ -686,9 +734,32 @@ impl Store {
         after_source_id: Option<&SourceId>,
         limit: u32,
     ) -> Result<Vec<DiscoveryCandidate>> {
-        let limit = bounded_limit(limit);
+        self.local_candidates(after_source_id, bounded_limit(limit), None, false)
+    }
+
+    pub(crate) fn local_candidates(
+        &self,
+        after_source_id: Option<&SourceId>,
+        limit: u32,
+        sources: Option<&[SourceId]>,
+        explicit: bool,
+    ) -> Result<Vec<DiscoveryCandidate>> {
+        let requested = sources.map(|ids| {
+            serde_json::to_string(&ids.iter().map(AsRef::as_ref).collect::<Vec<_>>())
+                .expect("source IDs")
+        });
+        let from = if sources.is_some() {
+            "FROM json_each(?3) requested CROSS JOIN playable_source ps ON ps.id=requested.value"
+        } else {
+            "FROM playable_source ps"
+        };
+        let suppression = if explicit {
+            ""
+        } else {
+            "AND NOT EXISTS (SELECT 1 FROM local_source_suppression x WHERE x.source_id=ps.id)"
+        };
         let after = after_source_id.map(AsRef::as_ref).unwrap_or("");
-        let mut statement = self.connection.prepare(
+        let sql = format!(
             "SELECT ps.id, l.path, l.available,
                     m.track_title, m.release_title, m.disc_number, m.track_number,
                     m.year, m.duration_ms, m.format,
@@ -704,14 +775,16 @@ impl Store {
                             WHERE source_id = ps.id AND scope = 'release' ORDER BY position
                         )
                     ), ''), m.provenance_json
-             FROM playable_source ps
+             {from}
              JOIN local_file_observation l ON l.source_id = ps.id
              LEFT JOIN file_metadata_observation m ON m.source_id = ps.id
              LEFT JOIN track_source ts ON ts.source_id = ps.id
              WHERE ts.source_id IS NULL AND ps.id > ?1
-             ORDER BY ps.id LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![after, limit], |row| {
+               {suppression} AND (?3 IS NULL OR 1)
+             ORDER BY ps.id LIMIT ?2"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        let rows = statement.query_map(params![after, limit, requested], |row| {
             Ok((
                 SourceId(row.get(0)?),
                 bytes_to_path(row.get::<_, Vec<u8>>(1)?),
@@ -757,6 +830,13 @@ impl Store {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         // Validate and read each source once, before deciding which entities to create.
         let observations = import_observations(&tx, request)?;
+        // Explicit import overrides prior exclusion for unassociated candidates.
+        for input in &request.tracks {
+            tx.execute(
+                "DELETE FROM local_source_suppression WHERE source_id=?1",
+                [input.source_id.as_ref()],
+            )?;
+        }
         let credits = local_album_credit(request, &observations);
         let album_id = if let Some(ref credits) = credits {
             let artist_key = crate::matching::credit(
@@ -1137,10 +1217,14 @@ impl Store {
     }
 
     pub fn add_to_library(&mut self, track_id: &TrackId) -> Result<bool> {
-        Ok(self.connection.execute(
+        let tx = self.connection.transaction()?;
+        tx.execute("DELETE FROM local_source_suppression WHERE source_id IN (SELECT source_id FROM track_source WHERE track_id=?1)", [track_id.as_ref()])?;
+        let added = tx.execute(
             "INSERT OR IGNORE INTO library_membership(track_id) VALUES (?1)",
             [track_id.as_ref()],
-        )? > 0)
+        )? > 0;
+        tx.commit()?;
+        Ok(added)
     }
 
     pub fn remove_from_library(&mut self, track_id: &TrackId) -> Result<bool> {

@@ -133,11 +133,11 @@ Discovering a source does not inherently mean:
 
 A discovered source may remain unassociated until import or another explicit operation resolves it.
 
-If a user removes a Track from the library, later discovery or scanning must not automatically restore membership merely because a source still exists.
+Discovery alone must not restore removed Track membership. In the implemented local admission workflow, removal defaults to durable source suppression; explicitly opting out permits a later automatic import to restore membership. Explicit file/folder import overrides suppression only for successfully admitted selected sources.
 
 The application may continue to know about a source associated with a Track that is not currently a library member.
 
-The exact initial import workflow may be chosen later.
+Add Music offers From catalog and From file. Direct file selection does not configure a root; folder selection persists a library location and runs the same local ingestion pipeline used by automatic admission. See [Local ingestion](local-ingestion.md).
 
 ## Catalog-backed library additions and matching
 
@@ -891,7 +891,7 @@ filters other panes. Clearing Artist also clears Album; clearing Album retains A
 Double-click replaces and starts the relevant saved Track program; Add to queue
 appends it. A persistent current-Track/player area opens a temporary Now Playing
 panel. Global library search is a future independent operation, with a visible hook
-in this slice. Add Music opens a separate interactive catalog search with Artist browsing, Album previews and Track-level saving; see [Add Music](add-music.md). See
+in this slice. Add Music offers From catalog, opening the existing interactive catalog search, and From file for native file/folder import; see [Add Music](add-music.md). See
 [the implemented interaction model](library-player-ui.md).
 
 ### Desktop browse presentation and queue independence

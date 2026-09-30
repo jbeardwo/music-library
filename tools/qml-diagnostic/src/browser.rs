@@ -28,6 +28,10 @@ pub struct Browser {
     pub error: String,
     pub pending: bool,
     worker: Option<std::thread::JoinHandle<()>>,
+    removal: Option<(
+        music_library::library_removal::Target,
+        music_library::library_removal::Preview,
+    )>,
 }
 impl Bridge {
     pub fn browse_action_impl(&mut self, action: &str, pane: usize, id: String) {
@@ -35,6 +39,106 @@ impl Bridge {
             return;
         }
         match action {
+            "remove-preview" => {
+                if self.local_import_state.busy {
+                    return;
+                }
+                use music_library::library_removal::Target;
+                let target = match pane {
+                    0 => Target::Artist(ArtistId(id)),
+                    1 => Target::Album(AlbumId(id)),
+                    _ => Target::Track(TrackId(id)),
+                };
+                if self.browser.pending {
+                    return;
+                }
+                let worker = match self.session.library.removal_worker() {
+                    Ok(w) => w,
+                    Err(e) => {
+                        self.browser.error = e.to_string();
+                        self.browse_changed();
+                        return;
+                    }
+                };
+                let preview_target = target.clone();
+                let pointer = QPointer::from(&*self);
+                let deliver = qmetaobject::queued_callback(move |result: Result<_, String>| {
+                    if let Some(object) = pointer.as_pinned() {
+                        let mut b = object.borrow_mut();
+                        b.browser.pending = false;
+                        if let Some(w) = b.browser.worker.take() {
+                            let _ = w.join();
+                        }
+                        match result {
+                            Ok(preview) => b.browser.removal = Some((target.clone(), preview)),
+                            Err(e) => b.browser.error = e,
+                        }
+                        b.browse_changed();
+                    }
+                });
+                self.browser.pending = true;
+                self.browser.error.clear();
+                self.browser.worker = Some(std::thread::spawn(move || {
+                    deliver(worker.preview(&preview_target).map_err(|e| e.to_string()));
+                }));
+            }
+            "remove-cancel" => self.browser.removal = None,
+            "remove-confirm" => {
+                if self.local_import_state.busy {
+                    return;
+                }
+                if self.browser.pending {
+                    return;
+                }
+                let Some((target, _)) = self.browser.removal.take() else {
+                    return;
+                };
+                let worker = match self.session.library.removal_worker() {
+                    Ok(w) => w,
+                    Err(e) => {
+                        self.browser.error = e.to_string();
+                        self.browse_changed();
+                        return;
+                    }
+                };
+                let pointer = QPointer::from(&*self);
+                let deliver = qmetaobject::queued_callback(move |result: Result<u64, String>| {
+                    if let Some(object) = pointer.as_pinned() {
+                        let mut b = object.borrow_mut();
+                        b.browser.pending = false;
+                        if let Some(w) = b.browser.worker.take() {
+                            let _ = w.join();
+                        }
+                        match result {
+                            Ok(_) => {
+                                b.browser.artist.clear();
+                                b.browser.album.clear();
+                                b.browser.song.clear();
+                                b.browser.navigation = b.browser.navigation.wrapping_add(1);
+                                b.local_search_cancel();
+                                if let Err(e) = b.music_context() {
+                                    b.browser.error = e;
+                                }
+                                b.music_changed();
+                                for i in 0..3 {
+                                    b.load_pane(i, true);
+                                }
+                            }
+                            Err(e) => b.browser.error = e,
+                        }
+                        b.browse_changed();
+                    }
+                });
+                self.browser.pending = true;
+                self.browser.worker = Some(std::thread::spawn(move || {
+                    deliver(
+                        worker
+                            .remove(&target, id == "suppress")
+                            .map_err(|e| e.to_string()),
+                    );
+                }));
+            }
+
             "sort" => {
                 match pane {
                     0 => self.browser.artist_sort = (self.browser.artist_sort + 1) % 2,
@@ -374,6 +478,33 @@ impl Bridge {
             })
             .collect();
         [
+            (
+                "removal",
+                QVariant::from(
+                    self.browser
+                        .removal
+                        .as_ref()
+                        .map(|(target, p)| {
+                            use music_library::library_removal::Target;
+                            let message = match target {
+                                Target::Track(_) => {
+                                    format!("Remove \"{}\" from your library?", p.title)
+                                }
+                                _ => format!(
+                                    "Remove \"{}\" and its {} saved Tracks from your library?",
+                                    p.title, p.saved_tracks
+                                ),
+                            };
+                            [
+                                ("message", string(message)),
+                                ("local", p.has_local_sources.into()),
+                            ]
+                            .into_iter()
+                            .collect::<QVariantMap>()
+                        })
+                        .unwrap_or_default(),
+                ),
+            ),
             ("panes", panes.into()),
             ("artist", string(&self.browser.artist)),
             ("album", string(&self.browser.album)),

@@ -5,6 +5,7 @@ mod catalog;
 mod library_search;
 #[cfg(feature = "gstreamer")]
 mod local;
+mod local_import;
 mod playback_route;
 mod player_controls;
 mod sample;
@@ -539,6 +540,19 @@ struct Bridge {
             self.browse_action_impl(&action, pane as usize, id);
         }
     ),
+    local_import_state: local_import::State,
+    local_import_snapshot: qt_property!(QVariantMap; READ local_import_value NOTIFY local_import_changed),
+    local_import_changed: qt_signal!(),
+    local_import: qt_method!(
+        fn local_import(&mut self, kind: String, urls: QVariantList) {
+            self.local_import_urls(&kind, urls);
+        }
+    ),
+    local_import_schedule: qt_method!(
+        fn local_import_schedule(&mut self) {
+            self.local_import_schedule_next();
+        }
+    ),
     controls: player_controls::Controls,
     output_trims: qt_method!(
         fn output_trims(&mut self, local: f64, spotify: f64) {
@@ -797,6 +811,11 @@ impl Bridge {
             command: Default::default(),
             toggle_failure: Default::default(),
             catalog_action: Default::default(),
+            local_import_state: Default::default(),
+            local_import_snapshot: Default::default(),
+            local_import_changed: Default::default(),
+            local_import: Default::default(),
+            local_import_schedule: Default::default(),
             music_snapshot: Default::default(),
             music_changed: Default::default(),
             add_music_action: Default::default(),
@@ -2191,6 +2210,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .pinned()
                 .borrow_mut()
                 .post_import(&imports, auto_match)?;
+            if (persistent || folder.is_some())
+                && !bridge
+                    .pinned()
+                    .borrow()
+                    .session
+                    .library
+                    .local_locations()?
+                    .is_empty()
+            {
+                bridge.pinned().borrow_mut().start_local_import(
+                    music_library::local_ingestion::Request::ConfiguredLocations,
+                    0,
+                );
+            }
             engine.exec();
         }
         Ok(())
@@ -3923,6 +3956,240 @@ mod library_ui_tests {
                 "ok"
             );
         }
+    }
+
+    #[test]
+    fn local_file_chooser_native_dialogs_suppression_and_folder_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let downloads = temp.path().join("Downloads");
+        let music = temp.path().join("Second Music");
+        std::fs::create_dir(&downloads).unwrap();
+        std::fs::create_dir(&music).unwrap();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/provenance/silence.flac");
+        let file = downloads.join("song ü space.flac");
+        let one = music.join("one.flac");
+        let two = music.join("two.flac");
+        for path in [&file, &one, &two] {
+            std::fs::copy(&fixture, path).unwrap();
+            use lofty::{
+                config::WriteOptions,
+                prelude::{Accessor, TagExt},
+                tag::{ItemKey, Tag, TagType},
+            };
+            let mut tag = Tag::new(TagType::VorbisComments);
+            tag.set_title(path.file_stem().unwrap().to_string_lossy().into());
+            tag.set_album("Test Album".into());
+            tag.set_artist("Test Artist".into());
+            tag.insert_text(ItemKey::AlbumArtist, "Test Artist".into());
+            tag.save_to_path(path, WriteOptions::default()).unwrap();
+        }
+        let bad = music.join("bad.flac");
+        let unsupported = music.join("notes.txt");
+        std::fs::write(&bad, b"malformed").unwrap();
+        std::fs::write(&unsupported, b"notes").unwrap();
+        let snapshots: Vec<_> = [&file, &one, &two, &bad, &unsupported]
+            .into_iter()
+            .map(|p| (p.clone(), std::fs::read(p).unwrap()))
+            .collect();
+        let path = temp.path().join("library.sqlite");
+        let library = music_library::Library::open(&path).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        bridge.pinned().borrow_mut().auto_match = false;
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LocalImportTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let urls: Vec<_> = [&file, &music, &bad, &unsupported, &one]
+            .into_iter()
+            .map(|p| string(url::Url::from_file_path(p).unwrap()))
+            .collect();
+        assert_eq!(
+            engine
+                .invoke_method("exerciseLocalImport".into(), &urls)
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        {
+            let pinned = bridge.pinned();
+            let b = pinned.borrow();
+            let roots = b.session.library.local_locations().unwrap();
+            assert_eq!(roots.len(), 1);
+            assert_eq!(roots[0].path, music.canonicalize().unwrap());
+            assert!(!roots.iter().any(|r| r.path == downloads));
+            assert!(
+                !b.matching_rows.is_empty(),
+                "same post_import scheduling hook ran"
+            );
+            assert_eq!(
+                b.session
+                    .library
+                    .local_search("song", music_library::library_search::Kind::Song)
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert!(b.session.playback.state().queue.is_empty());
+        }
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "exerciseSecondLocation".into(),
+                    &[string(url::Url::from_file_path(&downloads).unwrap())]
+                )
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let mut reopened = music_library::Library::open(&path).unwrap();
+        let report = reopened
+            .ingest_local(
+                &music_library::local_ingestion::Request::ConfiguredLocations,
+                &mut music_library::filesystem::LoftyMetadataExtractor,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(report.imported, 0);
+        assert_eq!(reopened.local_locations().unwrap().len(), 2);
+        for (path, bytes) in snapshots {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn library_removal_confirmation_and_queue_snapshot() {
+        let (_temp, library) = sample::create().unwrap();
+        let library = if let Some(path) = std::env::var_os("MUSIC_LIBRARY_REMOVAL_AUDIT_COPY") {
+            music_library::Library::open(path).unwrap()
+        } else {
+            library
+        };
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../LibraryRemovalTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseRemovalUi".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn fixed_album_tiles_wrap_and_split_handles_preserve_interactions() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let mut library = music_library::Library::open(temp.path().join("tiles.db")).unwrap();
+        for n in 0..30 {
+            let release = library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: format!("Tile Album {n:03}"),
+                    year: Some(2000 + n),
+                    artists: vec![ArtistCreditInput {
+                        name: format!("Tile Artist {n:03}"),
+                        role: None,
+                    }],
+                    tracks: vec![CatalogTrackInput {
+                        title: format!("Song {n}"),
+                        artists: vec![],
+                        disc_number: Some(1),
+                        track_number: Some(1),
+                    }],
+                })
+                .unwrap();
+            library.add_to_library(&release.track_ids[0]).unwrap();
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "function requestArtwork(key) {",
+                "function requestArtwork(key) { layoutArtworkRequests++; return;",
+                1,
+            )
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../AlbumLayoutTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseAlbumLayout".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert!(bridge.pinned().borrow().matcher.is_none());
+    }
+
+    #[test]
+    #[ignore = "requires disposable copy of deterministic 200k library"]
+    fn album_layout_200k_bounded_resize_and_scroll() {
+        let path = std::env::var_os("MUSIC_LIBRARY_ALBUM_LAYOUT_STRESS_COPY")
+            .expect("disposable 200k database copy");
+        let library = music_library::Library::open(&path).unwrap();
+        let count: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM library_membership", [], |r| r.get(0))
+            .unwrap();
+        assert!(count >= 200_000);
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "function requestArtwork(key) {",
+                "function requestArtwork(key) { layoutArtworkRequests++; return;",
+                1,
+            )
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../AlbumLayoutTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let result = engine
+            .invoke_method("exerciseAlbumLayoutStress".into(), &[])
+            .to_qstring()
+            .to_string();
+        eprintln!("{result}");
+        assert!(result.starts_with("ok:"), "{result}");
     }
 
     #[test]

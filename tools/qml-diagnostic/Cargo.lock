@@ -1093,6 +1093,7 @@ name = "qml-diagnostic"
 version = "0.1.0"
 dependencies = [
  "httpdate",
+ "lofty",
  "music-library",
  "music-library-gstreamer",
  "music-library-musicbrainz",

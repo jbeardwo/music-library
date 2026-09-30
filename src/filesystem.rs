@@ -117,30 +117,14 @@ fn scan_started(
         if !entry.file_type().is_file() || !extractor.supports(entry.path()) {
             continue;
         }
-        let attributes = entry.metadata().map_err(|error| Error::Filesystem {
-            path: entry.path().to_path_buf(),
-            source: std::io::Error::other(error.to_string()),
-        })?;
-        let size_bytes = attributes.len();
-        let modified_ns = modified_ns(entry.path(), &attributes)?;
         let known = store.known_local_source(root_id, entry.path())?;
-        let unchanged = known.as_ref().is_some_and(|known| {
-            known.size_bytes == size_bytes && known.modified_ns == modified_ns
-        });
-        let metadata = if unchanged {
-            report.unchanged += 1;
-            None
-        } else {
+        let item = observe(entry.path(), known.as_ref(), extractor)?;
+        if item.metadata.is_some() {
             report.parsed += 1;
-            Some(extractor.read(entry.path())?)
-        };
-        batch.push(ScannedLocalSource {
-            source_id: known.map(|known| known.source_id),
-            path: entry.path().to_path_buf(),
-            size_bytes,
-            modified_ns,
-            metadata,
-        });
+        } else {
+            report.unchanged += 1;
+        }
+        batch.push(item);
         report.discovered += 1;
         if batch.len() == SCAN_BATCH_SIZE {
             store.apply_scan_batch(root_id, scan_id, &batch)?;
@@ -152,6 +136,36 @@ fn scan_started(
     }
     report.unavailable = store.complete_scan(root_id, scan_id)?;
     Ok(report)
+}
+
+/// Shared metadata observation for traversed and explicitly selected local files.
+pub(crate) fn observe(
+    path: &Path,
+    known: Option<&crate::storage::KnownLocalSource>,
+    extractor: &mut dyn MetadataExtractor,
+) -> Result<ScannedLocalSource> {
+    let attributes = std::fs::metadata(path).map_err(|source| Error::Filesystem {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !attributes.is_file() {
+        return Err(Error::Invalid("expected an audio file".into()));
+    }
+    let size_bytes = attributes.len();
+    let modified_ns = modified_ns(path, &attributes)?;
+    let unchanged =
+        known.is_some_and(|k| k.size_bytes == size_bytes && k.modified_ns == modified_ns);
+    Ok(ScannedLocalSource {
+        source_id: known.map(|k| k.source_id.clone()),
+        path: path.to_path_buf(),
+        size_bytes,
+        modified_ns,
+        metadata: if unchanged {
+            None
+        } else {
+            Some(extractor.read(path)?)
+        },
+    })
 }
 
 fn modified_ns(path: &Path, metadata: &Metadata) -> Result<i64> {

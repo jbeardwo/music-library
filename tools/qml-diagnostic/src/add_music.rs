@@ -391,7 +391,7 @@ impl Bridge {
         }
         Ok(())
     }
-    fn music_context(&mut self) -> Result<(), String> {
+    pub(crate) fn music_context(&mut self) -> Result<(), String> {
         let contexts = self
             .session
             .library

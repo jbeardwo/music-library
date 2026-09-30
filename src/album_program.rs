@@ -834,7 +834,7 @@ impl Store {
     }
     pub fn local_releases_for_root(&self, root: &RootId) -> Result<Vec<ImportedRelease>> {
         let mut releases = std::collections::BTreeMap::<String, Vec<TrackId>>::new();
-        for row in self.connection.prepare("SELECT DISTINCT t.release_id,t.id,t.disc_number,t.track_number FROM local_file_observation l JOIN track_source ts ON ts.source_id=l.source_id JOIN track t ON t.id=ts.track_id WHERE l.root_id=?1 ORDER BY t.release_id,t.disc_number,t.track_number,t.id")?.query_map([root.as_ref()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
+        for row in self.connection.prepare("SELECT DISTINCT t.release_id,t.id,t.disc_number,t.track_number FROM local_root_source s JOIN local_file_observation l ON l.source_id=s.source_id JOIN track_source ts ON ts.source_id=l.source_id JOIN track t ON t.id=ts.track_id WHERE s.root_id=?1 ORDER BY t.release_id,t.disc_number,t.track_number,t.id")?.query_map([root.as_ref()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {
             let (release,track)=row?;releases.entry(release).or_default().push(TrackId(track));
         }
         Ok(releases
