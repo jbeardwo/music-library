@@ -79,7 +79,7 @@
             }
             doubleClick(1, 0);
             doubleClick(2, 2);
-            check(view.queueTotal === 45 && view.position === 2 && view.currentId === library.panes[2].rows[2].id, "Album Track 3 preserves full program");
+            check(view.queueTotal === library.panes[2].rows.length && view.position === 2 && view.currentId === library.panes[2].rows[2].id, "Album Track 3 preserves the intersected displayed program");
             click(1, 0, Qt.RightButton);
             libraryMenu.itemAt(0).triggered(); libraryMenu.close(); queued();
             check(view.queueTotal === 45 && view.position === 0, "Album double-click queues full library program");
@@ -144,6 +144,7 @@
             check(JSON.stringify(view.queue) === original && view.currentId === originalId, "sort preserves snapshot");
             window.bridge.browse_action("select", 0, library.panes[0].rows[0].id);
             check(JSON.stringify(view.queue) === original, "Artist browsing preserves snapshot");
+            window.bridge.browse_action("select", 0, "");
             window.bridge.browse_action("select", 1, album);
             check(JSON.stringify(view.queue) === original, "Album browsing preserves snapshot");
             const sorted = library.panes[2].rows.map(r => r.id);
@@ -154,6 +155,7 @@
             check(view.position === 0 && JSON.stringify(view.queue.map(r => r.trackId)) === JSON.stringify(sorted), "Album Play uses Album Songs mode");
             const artist = library.panes[0].rows[0].id;
             window.bridge.browse_action("select", 0, artist);
+            window.bridge.browse_action("select", 1, "");
             window.bridge.browse_action("sort", 2, "");
             check(library.panes[2].sort === "Z-A", "Artist Songs cycles to Z-A");
             window.bridge.browse_action("sort", 2, "");

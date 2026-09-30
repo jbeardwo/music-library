@@ -915,3 +915,16 @@ art, then established Spotify Album art. Cached display images have a maximum
 placeholder and must not hide Albums or block browsing. See
 [the presentation implementation](library-presentation.md) for active sort modes and
 validation.
+
+
+The desktop prototype supports per-pane/per-view stable-ID multi-selection with
+Ctrl toggle and Shift range in displayed order. Artists and Genres union within
+one pane; Albums intersect that scope in Songs. Lower-level selection preserves
+higher-level selection; upstream changes prune invalid downstream selections.
+Right-click preserves a selected pane's full selection or selects the clicked
+unselected item alone. Queue and playlist actions expand only that pane's Artists,
+Genres, Albums, Songs or playlist occurrences. Add to Playlist checks canonical
+identity once per batch and asks Yes (all copies) or No (skip identities already
+in the destination). Selection and context actions preserve the 200-row QML bound,
+saved-membership independence and transient queue snapshots. See
+[selection/action semantics](selection-actions.md).

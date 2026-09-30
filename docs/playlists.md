@@ -47,3 +47,10 @@ prior measured range (about 5ms global Songs, 43–44ms Genre Songs, 56–60ms G
 Album order for combined page/page/seek). Qt checks used the offscreen software
 renderer, not a native desktop or Windows runtime audit. Provider live-service
 checks remain opt-in.
+
+
+Multi-selection and shared container actions now extend this slice. All library
+container menus expose Add to Playlist, with one canonical-ID duplicate dialog for
+the whole batch. Multiple selected source playlists preserve persisted occurrences.
+See [selection and context actions](selection-actions.md) for Yes/No, ordering,
+selection and paging semantics. The persisted playlist schema is unchanged.

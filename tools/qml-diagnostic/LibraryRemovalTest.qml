@@ -49,8 +49,11 @@
             bridge.browse_action("remove-cancel",0,""); removalTest.wait(250);
             openMenu(0,0);
             check(library.removal.message.indexOf("saved Tracks")>=0,"Artist explains bulk removal");
+            const selectedAlbum=library.album;
             removalTest.mouseClick(confirmRemoval, 20, 15); waitDone();
-            check(library.artist==="" && library.album==="" && library.song==="","stale selections cleared");
+            check(library.artist==="" && library.song==="","removed selections pruned");
+            const albumStillVisible=library.panes[1].rows.some(r=>r.id===selectedAlbum);
+            check(library.album===(albumStillVisible?selectedAlbum:""),"valid Album selection retained after Artist removal");
             if(library.panes[1].rows.length>0) {
                 openMenu(1,0); suppressRescan.checked=false; removalTest.mouseClick(confirmRemoval,20,15); waitDone();
             }

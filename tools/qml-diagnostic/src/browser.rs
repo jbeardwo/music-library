@@ -17,7 +17,11 @@ pub struct Page {
 #[derive(Default)]
 pub struct Browser {
     picker: Page,
-    picker_track: String,
+    picker_target: Option<music_library::track_container::Target>,
+    picker_order: Request,
+    duplicate_plan: Option<music_library::playlist::AppendPlan>,
+    selections: [music_library::selection::Selection; 3],
+    selection_revision: u64,
     view: usize,
     views: [ViewState; 5],
     genre: String,
@@ -41,6 +45,7 @@ pub struct Browser {
 }
 #[derive(Default)]
 struct ViewState {
+    selections: [music_library::selection::Selection; 3],
     pages: [Page; 3],
     artist: String,
     genre: String,
@@ -54,6 +59,7 @@ impl Browser {
             return;
         }
         self.views[self.view] = ViewState {
+            selections: std::mem::take(&mut self.selections),
             pages: std::mem::take(&mut self.pages),
             artist: std::mem::take(&mut self.artist),
             genre: std::mem::take(&mut self.genre),
@@ -68,7 +74,9 @@ impl Browser {
             ],
         };
         let state = std::mem::take(&mut self.views[view]);
+        self.selections = state.selections;
         self.pages = state.pages;
+        self.selection_revision = self.selection_revision.wrapping_add(1);
         self.artist = state.artist;
         self.genre = state.genre;
         self.album = state.album;
@@ -91,13 +99,8 @@ impl Bridge {
         }
         if action.starts_with("picker-") {
             if action == "picker-open" {
-                self.browser.picker_track = self.browser.pages[2]
-                    .rows
-                    .iter()
-                    .find(|r| r.id == id)
-                    .and_then(|r| r.track.as_ref())
-                    .map(|t| t.track_id.as_ref().to_string())
-                    .unwrap_or(id);
+                self.browser.picker_target = Some(self.browser.action_target(pane, &id));
+                self.browser.picker_order = self.browser.action_order(pane);
                 self.browser.picker.cursors = vec![None];
             } else if action == "picker-next" && self.browser.picker.more {
                 self.browser
@@ -107,16 +110,15 @@ impl Bridge {
             } else if action == "picker-previous" && self.browser.picker.cursors.len() > 1 {
                 self.browser.picker.cursors.pop();
             } else if action == "picker-add" {
-                if let Err(e) = self
-                    .session
-                    .library
-                    .append_playlist_track(&id, &TrackId(self.browser.picker_track.clone()))
-                {
-                    self.browser.error = e.to_string();
+                self.prepare_selection_append(id);
+                return;
+            } else if action == "picker-yes" || action == "picker-no" {
+                if let Some(plan) = self.browser.duplicate_plan.take() {
+                    self.commit_selection_append(plan, action == "picker-yes");
+                    return;
                 }
-                if self.browser.view == 4 {
-                    self.load_pane(2, true);
-                }
+            } else if action == "picker-cancel" {
+                self.browser.duplicate_plan = None;
             }
             match self.session.library.playlists(
                 self.browser.picker.cursors.last().and_then(|c| c.as_ref()),
@@ -133,12 +135,27 @@ impl Bridge {
             return;
         }
         if action.starts_with("playlist-") {
-            let playlist = self.browser.artist.clone();
+            let playlist = if matches!(action, "playlist-up" | "playlist-down") {
+                self.browser.pages[2]
+                    .rows
+                    .iter()
+                    .find(|r| r.id == id)
+                    .map(|r| r.group.clone())
+                    .unwrap_or_else(|| self.browser.artist.clone())
+            } else {
+                self.browser.artist.clone()
+            };
             let result = match action {
                 "playlist-create" => self.session.library.create_playlist(&id).map(|_| ()),
                 "playlist-rename" => self.session.library.rename_playlist(&playlist, &id),
-                "playlist-delete" => self.session.library.delete_playlist(&id),
-                "playlist-remove" => self.session.library.remove_playlist_entry(&playlist, &id),
+                "playlist-delete" => self
+                    .session
+                    .library
+                    .delete_playlists(&self.browser.action_ids(0, &id)),
+                "playlist-remove" => self
+                    .session
+                    .library
+                    .remove_playlist_entries(&self.browser.action_ids(2, &id)),
                 "playlist-up" | "playlist-down" => self.session.library.move_playlist_entry(
                     &playlist,
                     &id,
@@ -148,11 +165,16 @@ impl Bridge {
             };
             match result {
                 Ok(()) => {
-                    if action == "playlist-delete" && playlist == id {
-                        self.browser.artist.clear();
+                    if action == "playlist-delete" {
+                        self.browser.selections[0].single("");
+                        self.selection_changed(0);
                     }
                     for i in 0..3 {
                         self.load_pane(i, true);
+                    }
+                    if action == "playlist-remove" {
+                        self.browser.selections[2].single("");
+                        self.browser.sync_selection_focus();
                     }
                     if action == "playlist-create" {
                         self.browser.picker.cursors = vec![None];
@@ -178,7 +200,7 @@ impl Bridge {
                 }
             }
             "remove-preview" => {
-                if pane == 0 && self.browser.view != 0 {
+                if pane == 0 && self.browser.view != 0 && self.browser.view != 1 {
                     return;
                 }
                 if self.local_import_state.busy {
@@ -186,9 +208,9 @@ impl Bridge {
                 }
                 use music_library::library_removal::Target;
                 let target = match pane {
-                    0 => Target::Artist(ArtistId(id)),
-                    1 => Target::Album(AlbumId(id)),
-                    _ => Target::Track(TrackId(id)),
+                    0 => Target::Artist(ArtistId(id.clone())),
+                    1 => Target::Album(AlbumId(id.clone())),
+                    _ => Target::Track(TrackId(id.clone())),
                 };
                 if self.browser.pending {
                     return;
@@ -202,6 +224,21 @@ impl Bridge {
                     }
                 };
                 let preview_target = target.clone();
+                let expansion = (self.browser.selections[pane].ids.len() > 1
+                    || (pane == 0 && self.browser.view == 1))
+                    .then(|| {
+                        (
+                            self.browser.action_target(pane, &id),
+                            self.browser.action_order(pane),
+                        )
+                    });
+                let reader = match self.session.library.library_queue_reader() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        self.browser.error = e.to_string();
+                        return;
+                    }
+                };
                 let pointer = QPointer::from(&*self);
                 let deliver = qmetaobject::queued_callback(move |result: Result<_, String>| {
                     if let Some(object) = pointer.as_pinned() {
@@ -211,7 +248,7 @@ impl Bridge {
                             let _ = w.join();
                         }
                         match result {
-                            Ok(preview) => b.browser.removal = Some((target.clone(), preview)),
+                            Ok((target, preview)) => b.browser.removal = Some((target, preview)),
                             Err(e) => b.browser.error = e,
                         }
                         b.browse_changed();
@@ -220,7 +257,22 @@ impl Bridge {
                 self.browser.pending = true;
                 self.browser.error.clear();
                 self.browser.worker = Some(std::thread::spawn(move || {
-                    deliver(worker.preview(&preview_target).map_err(|e| e.to_string()));
+                    let result = (|| {
+                        let target = if let Some((target, order)) = expansion {
+                            Target::Tracks(
+                                reader
+                                    .resolve(&target, &order)?
+                                    .into_iter()
+                                    .map(|r| r.track_id.0)
+                                    .collect(),
+                            )
+                        } else {
+                            preview_target
+                        };
+                        let preview = worker.preview(&target)?;
+                        Ok::<_, music_library::Error>((target, preview))
+                    })();
+                    deliver(result.map_err(|e| e.to_string()));
                 }));
             }
             "remove-cancel" => self.browser.removal = None,
@@ -252,18 +304,13 @@ impl Bridge {
                         }
                         match result {
                             Ok(_) => {
-                                b.browser.artist.clear();
-                                b.browser.album.clear();
-                                b.browser.song.clear();
                                 b.browser.navigation = b.browser.navigation.wrapping_add(1);
                                 b.local_search_cancel();
                                 if let Err(e) = b.music_context() {
                                     b.browser.error = e;
                                 }
                                 b.music_changed();
-                                for i in 0..3 {
-                                    b.load_pane(i, true);
-                                }
+                                b.refresh_selection();
                             }
                             Err(e) => b.browser.error = e,
                         }
@@ -281,6 +328,7 @@ impl Bridge {
             }
 
             "sort" => {
+                self.browser.selection_revision = self.browser.selection_revision.wrapping_add(1);
                 if self.browser.view == 4 {
                     return;
                 }
@@ -311,22 +359,8 @@ impl Bridge {
                     self.load_pane(2, true);
                 }
             }
-            "select" => {
-                self.browser.song = if pane == 2 { id.clone() } else { String::new() };
-                if pane == 0 {
-                    if self.browser.view == 1 {
-                        self.browser.genre = id;
-                    } else {
-                        self.browser.artist = id;
-                    }
-                    self.browser.normalize_sorts();
-                    self.browser.album.clear();
-                    self.load_pane(1, true);
-                    self.load_pane(2, true);
-                } else if pane == 1 {
-                    self.browser.album = id;
-                    self.load_pane(2, true);
-                }
+            "select" | "select-toggle" | "select-range" | "context" => {
+                self.select_items(action, pane, id);
             }
             "next" => {
                 if self.browser.pages[pane].more {
@@ -346,12 +380,23 @@ impl Bridge {
                     self.load_pane(pane, true);
                 }
             }
-            "refresh" => {
-                for i in 0..3 {
-                    self.load_pane(i, true);
+            "refresh" => self.refresh_selection(),
+            "append" | "context-play" => {
+                if action == "context-play"
+                    && pane == 2
+                    && self.browser.action_ids(pane, &id).len() == 1
+                {
+                    self.browse_action_impl("play", pane, id);
+                    return;
                 }
+                let target = self.browser.action_target(pane, &id);
+                self.start_container_queue(
+                    target,
+                    self.browser.action_order(pane),
+                    action == "append",
+                );
             }
-            "play" | "append" => {
+            "play" => {
                 if self.browser.view == 4 {
                     if self.browser.pending
                         || self.route_pending.is_some()
@@ -363,6 +408,15 @@ impl Bridge {
                         id.clone()
                     } else {
                         self.browser.artist.clone()
+                    };
+                    let playlists = if pane == 0 {
+                        vec![playlist]
+                    } else {
+                        self.browser.selections[0]
+                            .ids
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>()
                     };
                     let start = (pane == 2).then_some(id);
                     let reader = match self.session.library.library_queue_reader() {
@@ -383,7 +437,7 @@ impl Bridge {
                     self.browser.pending = true;
                     self.browser.worker = Some(std::thread::spawn(move || {
                         let result = reader
-                            .read_playlist(&playlist, start.as_deref())
+                            .read_playlists(&playlists, start.as_deref())
                             .map_err(|e| e.to_string())
                             .map(|(tracks, position)| {
                                 if append && start.is_some() {
@@ -435,10 +489,16 @@ impl Bridge {
                 {
                     request.genre = Some(self.browser.genre.clone());
                 }
+                if pane == 2 && action == "play" {
+                    request = self.browser.pane_request(2);
+                }
                 request.album_sort = self.browser.album_program_sort();
                 request.sort = self.browser.song_sort(
-                    request.album.is_some(),
-                    request.artist.is_some() || request.genre.is_some(),
+                    request.album.is_some() || !request.albums.is_empty(),
+                    request.artist.is_some()
+                        || request.genre.is_some()
+                        || !request.artists.is_empty()
+                        || !request.genres.is_empty(),
                 );
                 let start = (pane == 2 && action == "play").then_some(TrackId(id));
                 if pane == 2 && action == "append" {
@@ -518,46 +578,26 @@ impl Bridge {
             self.browser.pages[pane] = Page::default();
             return;
         }
-        let sort = self.browser.sort(pane);
-        let album_sort = self.browser.album_program_sort();
         let page = &mut self.browser.pages[pane];
         if reset || page.cursors.is_empty() {
             page.cursors = vec![None];
             page.seek = None;
         }
-        let request = Request {
-            pane: if pane == 0 && self.browser.view == 1 {
-                Pane::Genres
-            } else {
-                [Pane::Artists, Pane::Albums, Pane::Songs][pane]
-            },
-            genre: (pane > 0 && !self.browser.genre.is_empty()).then(|| self.browser.genre.clone()),
-            artist: if pane > 0
-                && !self.browser.artist.is_empty()
-                && (pane == 1 || self.browser.album.is_empty())
-            {
-                Some(ArtistId(self.browser.artist.clone()))
-            } else {
-                None
-            },
-            album: if pane == 2 && !self.browser.album.is_empty() {
-                Some(AlbumId(self.browser.album.clone()))
-            } else {
-                None
-            },
-            sort,
-            album_sort,
-            after: page.cursors.last().cloned().flatten(),
-            limit: 201,
-            ..Default::default()
-        };
+        let mut request = self.browser.pane_request(pane);
+        request.after = self.browser.pages[pane].cursors.last().cloned().flatten();
+        request.limit = 201;
+        let page = &mut self.browser.pages[pane];
         let result = if self.browser.view == 4 {
             if pane == 0 {
                 self.session.library.playlists(request.after.as_ref(), 201)
             } else {
-                self.session.library.playlist_entries(
-                    &self.browser.artist,
-                    request.after.as_ref().map(|c| c.position),
+                self.session.library.selected_playlist_entries(
+                    &self.browser.selections[0]
+                        .ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    request.after.as_ref(),
                     201,
                 )
             }
@@ -660,6 +700,9 @@ impl Bridge {
         self.browser.artist = artist;
         self.browser.album = album;
         self.browser.song = song;
+        self.browser.selections[0].single(&self.browser.artist);
+        self.browser.selections[1].single(&self.browser.album);
+        self.browser.selections[2].single(&self.browser.song);
 
         self.browser.navigation = self.browser.navigation.wrapping_add(1);
         self.browser.error.clear();
@@ -688,6 +731,11 @@ impl Bridge {
                             ),
                             ("group", string(&r.group)),
                             ("groupLabel", string(&r.group_label)),
+                            // Songs in Album mode already carry canonical grouping in their cursor.
+                            (
+                                "albumId",
+                                string(if pane == 2 { &r.cursor.album_key } else { "" }),
+                            ),
                             (
                                 "number",
                                 string(if pane == 2 && self.browser.sort(2) == Sort::Album {
@@ -717,6 +765,20 @@ impl Bridge {
                     [
                         ("rows", QVariant::from(rows)),
                         (
+                            "selectedIds",
+                            QVariant::from(
+                                p.rows
+                                    .iter()
+                                    .filter(|r| self.browser.selections[pane].ids.contains(&r.id))
+                                    .map(|r| string(&r.id))
+                                    .collect::<QVariantList>(),
+                            ),
+                        ),
+                        (
+                            "selectionCount",
+                            (self.browser.selections[pane].ids.len() as u32).into(),
+                        ),
+                        (
                             "sort",
                             string(if self.browser.view == 4 {
                                 ""
@@ -734,6 +796,27 @@ impl Bridge {
             })
             .collect();
         [
+            (
+                "duplicateMessage",
+                string(
+                    self.browser
+                        .duplicate_plan
+                        .as_ref()
+                        .map(|p| {
+                            if p.tracks.len() == 1 {
+                                format!("This song is already in {}. Add another copy?", p.name)
+                            } else {
+                                format!(
+                                    "{} of {} tracks are already in {}. Add duplicate copies?",
+                                    p.duplicate_entries,
+                                    p.tracks.len(),
+                                    p.name
+                                )
+                            }
+                        })
+                        .unwrap_or_default(),
+                ),
+            ),
             (
                 "playlistChoices",
                 QVariant::from(
@@ -880,5 +963,473 @@ impl Browser {
             Sort::Album => "Album",
             _ => "A-Z",
         }
+    }
+}
+
+impl Browser {
+    fn sync_selection_focus(&mut self) {
+        let primary = |pane: usize| self.selections[pane].focus.clone().unwrap_or_default();
+        if self.view == 1 {
+            self.genre = primary(0);
+            self.artist.clear();
+        } else {
+            self.artist = primary(0);
+            self.genre.clear();
+        }
+        self.album = primary(1);
+        self.song = primary(2);
+        self.normalize_sorts();
+    }
+    fn pane_request(&self, pane: usize) -> Request {
+        let ids = |p: usize| self.selections[p].ids.iter().cloned().collect::<Vec<_>>();
+        Request {
+            pane: if pane == 0 && self.view == 1 {
+                Pane::Genres
+            } else {
+                [Pane::Artists, Pane::Albums, Pane::Songs][pane]
+            },
+            artists: if pane > 0 && self.view == 0 {
+                ids(0)
+            } else {
+                vec![]
+            },
+            genres: if pane > 0 && self.view == 1 {
+                ids(0)
+            } else {
+                vec![]
+            },
+            albums: if pane == 2 { ids(1) } else { vec![] },
+            sort: self.sort(pane),
+            album_sort: self.album_program_sort(),
+            limit: 201,
+            ..Default::default()
+        }
+    }
+    fn action_ids(&self, pane: usize, fallback: &str) -> Vec<String> {
+        let selected = &self.selections[pane].ids;
+        if selected.contains(fallback) || fallback.is_empty() {
+            selected.iter().cloned().collect()
+        } else {
+            vec![fallback.to_string()]
+        }
+    }
+    fn action_target(&self, pane: usize, fallback: &str) -> music_library::track_container::Target {
+        use music_library::track_container::Target;
+        let ids = self.action_ids(pane, fallback);
+        match (self.view, pane) {
+            (4, 0) => Target::Playlists(ids),
+            (4, 2) => Target::PlaylistEntries {
+                playlists: self.selections[0].ids.iter().cloned().collect(),
+                entries: ids,
+            },
+            (1, 0) => Target::Genres(ids),
+            (_, 0) => Target::Artists(ids),
+            (_, 1) => Target::Albums(ids),
+            _ => Target::Songs(ids),
+        }
+    }
+    fn action_order(&self, pane: usize) -> Request {
+        Request {
+            sort: if pane == 2 {
+                self.sort(2)
+            } else {
+                self.song_sort(pane == 1, pane == 0)
+            },
+            album_sort: self.album_program_sort(),
+            ..Default::default()
+        }
+    }
+}
+impl Bridge {
+    fn refresh_selection(&mut self) {
+        if self.browser.view < 2 {
+            match self
+                .session
+                .library
+                .library_queue_reader()
+                .and_then(|reader| {
+                    reader.browse_ids(
+                        &self.browser.pane_request(0),
+                        &self.browser.selections[0]
+                            .ids
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>(),
+                    )
+                }) {
+                Ok(ids) => self.browser.selections[0].retain(&ids.into_iter().collect()),
+                Err(e) => self.browser.error = e.to_string(),
+            }
+        }
+        self.browser.sync_selection_focus();
+        self.load_pane(0, true);
+        self.selection_changed(0);
+    }
+    fn select_items(&mut self, action: &str, pane: usize, id: String) {
+        self.browser.selection_revision = self.browser.selection_revision.wrapping_add(1);
+        if action == "select-range" && !id.is_empty() {
+            let Some(anchor) = self.browser.selections[pane].anchor.clone() else {
+                self.select_items("select", pane, id);
+                return;
+            };
+            if self.browser.pending {
+                return;
+            }
+            let reader = match self.session.library.library_queue_reader() {
+                Ok(r) => r,
+                Err(e) => {
+                    self.browser.error = e.to_string();
+                    return;
+                }
+            };
+            let request = self.browser.pane_request(pane);
+            let playlists = self.browser.selections[0]
+                .ids
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>();
+            let view = self.browser.view;
+            let revision = self.browser.selection_revision;
+            let target = id.clone();
+            let pointer = QPointer::from(&*self);
+            let deliver =
+                qmetaobject::queued_callback(move |result: Result<Vec<String>, String>| {
+                    if let Some(object) = pointer.as_pinned() {
+                        let mut b = object.borrow_mut();
+                        b.browser.pending = false;
+                        if let Some(w) = b.browser.worker.take() {
+                            let _ = w.join();
+                        }
+                        if b.browser.selection_revision == revision {
+                            match result {
+                                Ok(ids) => {
+                                    b.browser.selections[pane].range(ids, &target);
+                                    b.selection_changed(pane);
+                                }
+                                Err(e) => b.browser.error = e,
+                            }
+                        }
+                        b.browse_changed();
+                    }
+                });
+            self.browser.pending = true;
+            self.browser.worker = Some(std::thread::spawn(move || {
+                let result = if view == 4 && pane == 0 {
+                    reader.playlists_range(&anchor, &id)
+                } else if view == 4 {
+                    reader.playlist_range(&playlists, &anchor, &id)
+                } else {
+                    reader.range(&request, &anchor, &id)
+                };
+                deliver(result.map_err(|e| e.to_string()));
+            }));
+            return;
+        }
+        if action == "context" && !self.browser.selections[pane].context(&id) {
+            return;
+        } else if action == "select-toggle" {
+            self.browser.selections[pane].toggle(&id);
+        } else if action != "context" {
+            self.browser.selections[pane].single(&id);
+        }
+        self.selection_changed(pane);
+    }
+    fn selection_changed(&mut self, pane: usize) {
+        self.browser.sync_selection_focus();
+        if pane < 2 {
+            if self.prune_large_selection(pane) {
+                return;
+            }
+            // One indexed query per downstream pane, limited to previously selected IDs.
+            // Off-page valid selections survive paging and filter changes.
+            if let Ok(reader) = self.session.library.library_queue_reader() {
+                for downstream in pane + 1..3 {
+                    let mut selected = self.browser.selections[downstream]
+                        .ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if let Some(anchor) = &self.browser.selections[downstream].anchor {
+                        selected.push(anchor.clone());
+                    }
+                    let valid = if self.browser.view == 4 {
+                        if downstream == 1 {
+                            Ok(vec![])
+                        } else {
+                            reader.visible_playlist_entry_ids(
+                                &self.browser.selections[0]
+                                    .ids
+                                    .iter()
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                                &selected,
+                            )
+                        }
+                    } else {
+                        reader.browse_ids(&self.browser.pane_request(downstream), &selected)
+                    };
+                    match valid {
+                        Ok(ids) => {
+                            self.browser.selections[downstream].retain(&ids.into_iter().collect())
+                        }
+                        Err(e) => self.browser.error = e.to_string(),
+                    }
+                    self.browser.sync_selection_focus();
+                    self.load_pane(downstream, true);
+                }
+            }
+        }
+    }
+    fn prune_large_selection(&mut self, pane: usize) -> bool {
+        if self.browser.pending
+            || self.browser.selections[pane + 1..]
+                .iter()
+                .map(|s| s.ids.len())
+                .sum::<usize>()
+                <= 1000
+        {
+            return false;
+        }
+        let reader = match self.session.library.library_queue_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                return false;
+            }
+        };
+        let mut selections = self.browser.selections.clone();
+        let album_request = self.browser.pane_request(1);
+        let mut song_request = self.browser.pane_request(2);
+        let view = self.browser.view;
+        let revision = self.browser.selection_revision;
+        let pointer = QPointer::from(&*self);
+        let deliver = qmetaobject::queued_callback(
+            move |result: Result<[music_library::selection::Selection; 3], String>| {
+                if let Some(object) = pointer.as_pinned() {
+                    let mut b = object.borrow_mut();
+                    b.browser.pending = false;
+                    if let Some(w) = b.browser.worker.take() {
+                        let _ = w.join();
+                    }
+                    if b.browser.selection_revision == revision {
+                        match result {
+                            Ok(selections) => {
+                                b.browser.selections = selections;
+                                b.browser.sync_selection_focus();
+                                for d in pane + 1..3 {
+                                    b.load_pane(d, true);
+                                }
+                            }
+                            Err(e) => b.browser.error = e,
+                        }
+                    } else if b.browser.view == view {
+                        b.selection_changed(pane);
+                    }
+
+                    b.browse_changed();
+                }
+            },
+        );
+        self.browser.pending = true;
+        self.browser.worker = Some(std::thread::spawn(move || {
+            let result = (|| {
+                for downstream in pane + 1..3 {
+                    let mut selected = selections[downstream]
+                        .ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if let Some(anchor) = &selections[downstream].anchor {
+                        selected.push(anchor.clone());
+                    }
+                    let valid = if view == 4 {
+                        if downstream == 1 {
+                            vec![]
+                        } else {
+                            reader.visible_playlist_entry_ids(
+                                &selections[0].ids.iter().cloned().collect::<Vec<_>>(),
+                                &selected,
+                            )?
+                        }
+                    } else {
+                        reader.browse_ids(
+                            if downstream == 1 {
+                                &album_request
+                            } else {
+                                &song_request
+                            },
+                            &selected,
+                        )?
+                    };
+                    selections[downstream].retain(&valid.into_iter().collect());
+                    if downstream == 1 {
+                        song_request.albums = selections[1].ids.iter().cloned().collect();
+                    }
+                }
+                Ok::<_, music_library::Error>(selections)
+            })();
+            deliver(result.map_err(|e| e.to_string()));
+        }));
+        for downstream in pane + 1..3 {
+            self.load_pane(downstream, true);
+        }
+        true
+    }
+    fn start_container_queue(
+        &mut self,
+        target: music_library::track_container::Target,
+        order: Request,
+        append: bool,
+    ) {
+        if self.browser.pending
+            || (!append && (self.route_pending.is_some() || self.automatic_song_search))
+        {
+            return;
+        }
+        let reader = match self.session.library.library_queue_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                return;
+            }
+        };
+        if append
+            && matches!(&target,music_library::track_container::Target::Songs(ids) if ids.len()==1)
+        {
+            let result = reader
+                .resolve(&target, &order)
+                .map(|rows| (rows, 0))
+                .map_err(|e| e.to_string());
+            self.finish_library_queue(true, result);
+            return;
+        }
+        let pointer = QPointer::from(&*self);
+        let deliver = qmetaobject::queued_callback(move |result| {
+            if let Some(object) = pointer.as_pinned() {
+                object.borrow_mut().finish_library_queue(append, result);
+            }
+        });
+        self.browser.pending = true;
+        self.browser.error.clear();
+        self.browser.worker = Some(std::thread::spawn(move || {
+            deliver(
+                reader
+                    .resolve(&target, &order)
+                    .map(|tracks| (tracks, 0))
+                    .map_err(|e| e.to_string()),
+            );
+        }));
+    }
+    fn prepare_selection_append(&mut self, destination: String) {
+        if self.browser.pending || self.browser.duplicate_plan.is_some() {
+            return;
+        }
+        let Some(target) = self.browser.picker_target.clone() else {
+            return;
+        };
+        let reader = match self.session.library.library_queue_reader() {
+            Ok(r) => r,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                self.browse_changed();
+                return;
+            }
+        };
+        let mut worker = match self.session.library.playlist_append_worker() {
+            Ok(w) => w,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                self.browse_changed();
+                return;
+            }
+        };
+        let order = self.browser.picker_order.clone();
+        let pointer = QPointer::from(&*self);
+        let deliver = qmetaobject::queued_callback(
+            move |result: Result<Option<music_library::playlist::AppendPlan>, String>| {
+                if let Some(object) = pointer.as_pinned() {
+                    let mut b = object.borrow_mut();
+                    b.browser.pending = false;
+                    if let Some(w) = b.browser.worker.take() {
+                        let _ = w.join();
+                    }
+                    match result {
+                        Ok(Some(plan)) => b.browser.duplicate_plan = Some(plan),
+                        Ok(None) => {
+                            if b.browser.view == 4 {
+                                b.load_pane(2, true);
+                            }
+                        }
+                        Err(e) => b.browser.error = e,
+                    }
+                    b.browse_changed();
+                }
+            },
+        );
+        self.browser.pending = true;
+        self.browser.error.clear();
+        self.browser.worker = Some(std::thread::spawn(move || {
+            let result = (|| {
+                let tracks = reader
+                    .resolve(&target, &order)?
+                    .into_iter()
+                    .map(|r| r.track_id)
+                    .collect();
+                let plan = worker.prepare(&destination, tracks)?;
+                if plan.duplicate_entries > 0 {
+                    Ok(Some(plan))
+                } else {
+                    worker.apply(&plan, true)?;
+                    Ok(None)
+                }
+            })();
+            deliver(result.map_err(|e: music_library::Error| e.to_string()));
+        }));
+        self.browse_changed();
+    }
+    fn commit_selection_append(
+        &mut self,
+        plan: music_library::playlist::AppendPlan,
+        include_duplicates: bool,
+    ) {
+        if self.browser.pending {
+            return;
+        }
+        let mut worker = match self.session.library.playlist_append_worker() {
+            Ok(w) => w,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                self.browse_changed();
+                return;
+            }
+        };
+        let pointer = QPointer::from(&*self);
+        let deliver = qmetaobject::queued_callback(move |result: Result<usize, String>| {
+            if let Some(object) = pointer.as_pinned() {
+                let mut b = object.borrow_mut();
+                b.browser.pending = false;
+                if let Some(w) = b.browser.worker.take() {
+                    let _ = w.join();
+                }
+                match result {
+                    Ok(_) => {
+                        if b.browser.view == 4 {
+                            b.load_pane(2, true);
+                        }
+                    }
+                    Err(e) => b.browser.error = e,
+                }
+                b.browse_changed();
+            }
+        });
+        self.browser.pending = true;
+        self.browser.worker = Some(std::thread::spawn(move || {
+            deliver(
+                worker
+                    .apply(&plan, include_duplicates)
+                    .map_err(|e| e.to_string()),
+            )
+        }));
+        self.browse_changed();
     }
 }

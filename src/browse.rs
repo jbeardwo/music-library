@@ -32,6 +32,13 @@ pub struct Request {
     pub genre: Option<String>,
     pub album: Option<AlbumId>,
     pub track: Option<TrackId>,
+    /// OR within a filter; different filter kinds intersect. Empty means unrestricted.
+    pub artists: Vec<String>,
+    pub genres: Vec<String>,
+    pub albums: Vec<String>,
+    pub tracks: Vec<String>,
+    /// Restrict returned row identities (used to prune selection without walking pages).
+    pub ids: Vec<String>,
     pub after: Option<Cursor>,
     pub limit: u32,
 }
@@ -67,6 +74,9 @@ pub struct Row {
 pub struct QueueReader(pub(crate) rusqlite::Connection);
 impl QueueReader {
     pub fn read(self, request: &Request) -> Result<Vec<TrackSearchResult>> {
+        self.read_request(request)
+    }
+    pub(crate) fn read_request(&self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         let request = Request {
             pane: Pane::Songs,
             after: None,
@@ -196,6 +206,35 @@ fn query(
     reverse: bool,
     target: Option<&str>,
 ) -> Result<Vec<Row>> {
+    query_projection(
+        connection, request, queue, inclusive, reverse, target, false,
+    )
+}
+fn query_projection(
+    connection: &rusqlite::Connection,
+    request: &Request,
+    queue: bool,
+    inclusive: bool,
+    reverse: bool,
+    target: Option<&str>,
+    ids_only: bool,
+) -> Result<Vec<Row>> {
+    let mut normalized = request.clone();
+    for (values, single) in [(&mut normalized.artists, &mut normalized.artist)] {
+        if values.len() == 1 {
+            *single = Some(ArtistId(values.remove(0)));
+        }
+    }
+    if normalized.genres.len() == 1 {
+        normalized.genre = normalized.genres.pop();
+    }
+    if normalized.albums.len() == 1 {
+        normalized.album = normalized.albums.pop().map(AlbumId);
+    }
+    if normalized.tracks.len() == 1 {
+        normalized.track = normalized.tracks.pop().map(TrackId);
+    }
+    let request = &normalized;
     // Credit relationships are indexed. UNION prevents duplicate Tracks when
     // an Artist is credited at several levels. No filesystem reads or HTTP here.
     let artist_tracks = "SELECT track_id FROM track_artist_credit WHERE artist_id=?1
@@ -206,18 +245,23 @@ fn query(
     // to stream in indexed display order. The probe stops after 1,001 credits.
     let large_artist = if let Some(artist) = &request.artist {
         connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM track_artist_credit WHERE artist_id=?1 UNION ALL SELECT 1 FROM album_artist_credit WHERE artist_id=?1 UNION ALL SELECT 1 FROM release_artist_credit WHERE artist_id=?1 LIMIT 1001)", [artist.as_ref()], |r|r.get::<_,bool>(0))?
+    } else if !request.artists.is_empty() {
+        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM track_artist_credit WHERE artist_id IN (SELECT value FROM json_each(?1)) UNION ALL SELECT 1 FROM album_artist_credit WHERE artist_id IN (SELECT value FROM json_each(?1)) UNION ALL SELECT 1 FROM release_artist_credit WHERE artist_id IN (SELECT value FROM json_each(?1)) LIMIT 1001)",[json_ids(&request.artists)],|r|r.get::<_,bool>(0))?
     } else {
         false
     };
     // Gather small Genres; stream large Genres in indexed display order.
     let large_genre = if let Some(genre) = &request.genre {
         connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM file_genre_observation WHERE genre=?1 LIMIT 1001)", [genre], |r| r.get::<_, bool>(0))?
+    } else if !request.genres.is_empty() {
+        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM file_genre_observation WHERE genre IN (SELECT value FROM json_each(?1)) LIMIT 1001)",[json_ids(&request.genres)],|r|r.get::<_,bool>(0))?
     } else {
         false
     };
     let stream_titles = request.pane == Pane::Songs
         && (large_artist || large_genre)
         && request.album.is_none()
+        && request.albums.is_empty()
         && !matches!(request.sort, Sort::Album)
         && !queue;
     let mut scope = match request.pane {
@@ -246,6 +290,35 @@ fn query(
             album_scope.push_str(" AND a.album_id IN (SELECT gr.album_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id JOIN library_membership gl ON gl.track_id=gs.track_id JOIN track gt ON gt.id=gs.track_id JOIN release gr ON gr.id=gt.release_id WHERE g.genre=?14)");
         }
     }
+    if !request.artists.is_empty() {
+        let selected = "SELECT value FROM json_each(?15)";
+        let tracks = format!(
+            "SELECT track_id FROM track_artist_credit WHERE artist_id IN ({selected}) UNION SELECT t.id FROM album_artist_credit c JOIN release r ON r.album_id=c.album_id JOIN track t ON t.release_id=r.id WHERE c.artist_id IN ({selected}) UNION SELECT t.id FROM release_artist_credit c JOIN track t ON t.release_id=c.release_id WHERE c.artist_id IN ({selected})"
+        );
+        if large_artist && !queue {
+            scope.push_str(" AND (EXISTS(SELECT 1 FROM track_artist_credit c WHERE c.track_id=t.id AND c.artist_id IN (SELECT value FROM json_each(?15))) OR EXISTS(SELECT 1 FROM album_artist_credit c WHERE c.album_id=r.album_id AND c.artist_id IN (SELECT value FROM json_each(?15))) OR EXISTS(SELECT 1 FROM release_artist_credit c WHERE c.release_id=r.id AND c.artist_id IN (SELECT value FROM json_each(?15))))");
+            album_scope.push_str(" AND (EXISTS(SELECT 1 FROM album_artist_credit c WHERE c.album_id=a.album_id AND c.artist_id IN (SELECT value FROM json_each(?15))) OR EXISTS(SELECT 1 FROM release r CROSS JOIN release_artist_credit c ON c.release_id=r.id CROSS JOIN track t ON t.release_id=r.id JOIN library_membership lm ON lm.track_id=t.id WHERE r.album_id=a.album_id AND c.artist_id IN (SELECT value FROM json_each(?15))) OR EXISTS(SELECT 1 FROM release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN library_membership lm ON lm.track_id=t.id CROSS JOIN track_artist_credit c ON c.track_id=t.id WHERE r.album_id=a.album_id AND c.artist_id IN (SELECT value FROM json_each(?15))))");
+        } else {
+            scope.push_str(&format!(" AND t.id IN ({tracks})"));
+            album_scope.push_str(&format!(" AND a.album_id IN (SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id JOIN library_membership lm ON lm.track_id=t.id WHERE t.id IN ({tracks}))"));
+        }
+    }
+    if !request.genres.is_empty() {
+        let tracks = "SELECT gs.track_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id WHERE g.genre IN (SELECT value FROM json_each(?16))";
+        if large_genre && !queue {
+            scope.push_str(" AND EXISTS(SELECT 1 FROM track_source gs CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id AND g.genre IN (SELECT value FROM json_each(?16)))");
+            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN track_source gs ON gs.track_id=gt.id CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gr.album_id=a.album_id AND g.genre IN (SELECT value FROM json_each(?16)))");
+        } else {
+            scope.push_str(&format!(" AND t.id IN ({tracks})"));
+            album_scope.push_str(&format!(" AND a.album_id IN (SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id JOIN library_membership lm ON lm.track_id=t.id WHERE t.id IN ({tracks}))"));
+        }
+    }
+    if !request.albums.is_empty() {
+        scope.push_str(" AND r.album_id IN (SELECT value FROM json_each(?17))");
+    }
+    if !request.tracks.is_empty() {
+        scope.push_str(" AND t.id IN (SELECT value FROM json_each(?18))");
+    }
     // Display fallback only: some imported files have Album credits but no
     // Track credits. Preserve the effective Track value whenever present.
     let album_credit = "COALESCE((SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')";
@@ -266,7 +339,7 @@ fn query(
                     Sort::Artist => "b.artist_key, b.artist_id, 0, 0",
                     _ => "b.title_key, '', 0, 0",
                 };
-                let from = if large_genre && target.is_none() {
+                let from = if (large_genre || large_artist) && target.is_none() {
                     match request.sort {
                         Sort::Year => "album_browse_order b INDEXED BY album_order_year",
                         Sort::Artist => "album_browse_order b INDEXED BY album_order_artist",
@@ -290,11 +363,11 @@ fn query(
                     "album_browse_order b INDEXED BY album_order_title CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
                 } else if album_order {
                     "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
-                } else if (stream_titles || (request.artist.is_none() && request.genre.is_none() && request.album.is_none() && request.track.is_none())) && target.is_none() {
+                } else if (stream_titles || (request.artist.is_none() && request.genre.is_none() && request.album.is_none() && request.track.is_none() && request.artists.is_empty() && request.genres.is_empty() && request.albums.is_empty() && request.tracks.is_empty())) && target.is_none() {
                     "effective_track_metadata e INDEXED BY track_browse_title CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
-                } else if request.album.is_some() {
+                } else if request.album.is_some() || !request.albums.is_empty() {
                     "release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN effective_track_metadata e ON e.track_id=t.id"
-                } else if request.artist.is_some() || request.genre.is_some() || request.track.is_some() {
+                } else if request.artist.is_some() || request.genre.is_some() || request.track.is_some() || !request.artists.is_empty() || !request.genres.is_empty() || !request.tracks.is_empty() {
                     "track t CROSS JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id"
                 } else {
                     "effective_track_metadata e JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
@@ -377,7 +450,9 @@ fn query(
     } else {
         target_filter
     };
-    let projection = if request.pane == Pane::Songs {
+    let projection = if ids_only {
+        "chosen.id".into()
+    } else if request.pane == Pane::Songs {
         format!(
             "chosen.id,e.title,{track_credit},chosen.sort_title,chosen.release_key,chosen.disc,chosen.position,chosen.release_id,a.title,{track_credit},e.year,chosen.album_key,chosen.edition, {}, ''",
             available.replace("rows.id", "chosen.id")
@@ -387,7 +462,9 @@ fn query(
     } else {
         "chosen.*, 0, ''".into()
     };
-    let joins = if request.pane == Pane::Songs && queue {
+    let joins = if ids_only {
+        ""
+    } else if request.pane == Pane::Songs && queue {
         "JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
     } else if request.pane == Pane::Songs {
         "JOIN track display_track ON display_track.id=chosen.id JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
@@ -402,7 +479,7 @@ fn query(
         .collect::<Vec<_>>()
         .join(",");
     let sql = format!(
-        "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) ORDER BY {final_order}",
+        "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} AND (?19 IS NULL OR id IN (SELECT value FROM json_each(?19))) ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) AND (?15 IS NULL OR 1) AND (?16 IS NULL OR 1) AND (?17 IS NULL OR 1) AND (?18 IS NULL OR 1) ORDER BY {final_order}",
         if request.pane == Pane::Songs && !queue {
             "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1)"
         } else {
@@ -429,10 +506,33 @@ fn query(
             } else {
                 i64::from(request.limit.clamp(1, 201))
             },
-            request.genre
+            request.genre,
+            json_ids(&request.artists),
+            json_ids(&request.genres),
+            json_ids(&request.albums),
+            json_ids(&request.tracks),
+            json_ids(&request.ids)
         ],
         |r| {
             let id: String = r.get(0)?;
+            if ids_only {
+                return Ok(Row {
+                    id: id.clone(),
+                    title: String::new(),
+                    subtitle: String::new(),
+                    year: None,
+                    group: String::new(),
+                    group_label: String::new(),
+                    cursor: Cursor {
+                        id,
+                        ..Default::default()
+                    },
+                    track: None,
+                    track_number: None,
+                    disc_number: None,
+                    multi_disc: false,
+                });
+            }
             let title: String = r.get(1)?;
             Ok(Row {
                 id: id.clone(),
@@ -470,4 +570,87 @@ fn query(
         },
     )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn json_ids(ids: &[String]) -> Option<String> {
+    (!ids.is_empty()).then(|| serde_json::to_string(ids).expect("string list"))
+}
+
+impl QueueReader {
+    pub fn browse_ids(&self, request: &Request, ids: &[String]) -> Result<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let request = Request {
+            ids: ids.to_vec(),
+            after: None,
+            ..request.clone()
+        };
+        Ok(
+            query_projection(&self.0, &request, true, false, false, None, true)?
+                .into_iter()
+                .map(|r| r.id)
+                .collect(),
+        )
+    }
+    /// Expand only a range of IDs on the reader thread, never into QML.
+    pub fn range(&self, request: &Request, anchor: &str, target: &str) -> Result<Vec<String>> {
+        let key = |id| {
+            query(
+                &self.0,
+                &Request {
+                    after: None,
+                    ..request.clone()
+                },
+                false,
+                false,
+                false,
+                Some(id),
+            )?
+            .into_iter()
+            .next()
+            .ok_or_else(|| crate::Error::Invalid("Selection endpoint no longer visible".into()))
+        };
+        let a = key(anchor)?;
+        let b = key(target)?;
+        // Complete cursor keys match every supported display order.
+        let tuple = |r: &Row| {
+            (
+                r.cursor.title.clone(),
+                r.cursor.release.clone(),
+                r.cursor.album_key.clone(),
+                r.cursor.edition.clone(),
+                r.cursor.disc,
+                r.cursor.position,
+                r.id.clone(),
+            )
+        };
+        let descending = request.sort == Sort::Descending;
+        let (first, last) = if (tuple(&a) <= tuple(&b)) != descending {
+            (a, b)
+        } else {
+            (b, a)
+        };
+        let mut request = Request {
+            after: Some(first.cursor),
+            limit: 201,
+            ..request.clone()
+        };
+        let mut ids = vec![];
+        loop {
+            let rows = query(&self.0, &request, false, ids.is_empty(), false, None)?;
+            if rows.is_empty() {
+                return Err(crate::Error::Invalid(
+                    "Selection range changed; try again".into(),
+                ));
+            }
+            for row in &rows {
+                ids.push(row.id.clone());
+                if row.id == last.id {
+                    return Ok(ids);
+                }
+            }
+            request.after = rows.last().map(|r| r.cursor.clone());
+        }
+    }
 }

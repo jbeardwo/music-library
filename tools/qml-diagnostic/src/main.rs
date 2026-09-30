@@ -4158,7 +4158,16 @@ mod library_ui_tests {
     fn album_layout_200k_bounded_resize_and_scroll() {
         let path = std::env::var_os("MUSIC_LIBRARY_ALBUM_LAYOUT_STRESS_COPY")
             .expect("disposable 200k database copy");
-        let library = music_library::Library::open(&path).unwrap();
+        let mut library = music_library::Library::open(&path).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute(
+            "DELETE FROM playlist WHERE name='Large selection fixture'",
+            [],
+        )
+        .unwrap();
+        let playlist = library.create_playlist("Large selection fixture").unwrap();
+        db.execute("INSERT INTO playlist_entry(id,playlist_id,track_id,position) SELECT 'large-selection-'||id,?1,id,row_number() OVER(ORDER BY id)-1 FROM track",[&playlist]).unwrap();
+        drop(db);
         let count: i64 = rusqlite::Connection::open(&path)
             .unwrap()
             .query_row("SELECT count(*) FROM library_membership", [], |r| r.get(0))
@@ -4226,6 +4235,167 @@ mod library_ui_tests {
             .to_string();
         eprintln!("{result}");
         assert!(result.starts_with("ok:"), "{result}");
+    }
+
+    #[test]
+    fn song_album_headers_identity_paging_and_interactions() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("headers.db");
+        let mut library = music_library::Library::open(&path).unwrap();
+        for _ in 0..2 {
+            let artist = ArtistCreditInput {
+                name: "Group Artist".into(),
+                role: None,
+            };
+            let release = library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: "Same album name".into(),
+                    year: None,
+                    artists: vec![artist.clone()],
+                    tracks: (0..201)
+                        .map(|n| CatalogTrackInput {
+                            title: format!("Song {n:03}"),
+                            disc_number: Some(if n < 100 { 1 } else { 2 }),
+                            track_number: Some(if n < 100 { n + 1 } else { n - 99 }),
+                            artists: vec![artist.clone()],
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for t in release.track_ids {
+                library.add_to_library(&t).unwrap();
+            }
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for table in [
+            "track_artist_credit",
+            "album_artist_credit",
+            "release_artist_credit",
+        ] {
+            db.execute_batch(&format!("UPDATE {table} SET artist_id=(SELECT min(id) FROM artist WHERE name='Group Artist')")).unwrap();
+        }
+        drop(db);
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../SongAlbumHeadersTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseSongAlbumHeaders".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        bridge.pinned().borrow_mut().session.shutdown_audio();
+    }
+
+    #[test]
+    fn multi_selection_and_pane_local_container_actions() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.sqlite");
+        let mut library = music_library::Library::open(&path).unwrap();
+        let mut releases = vec![];
+        for letter in ["A", "B", "C"] {
+            let artist = ArtistCreditInput {
+                name: format!("Artist {letter}"),
+                role: None,
+            };
+            let release = library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: format!("Album {letter}"),
+                    year: None,
+                    artists: vec![artist.clone()],
+                    tracks: (0..4)
+                        .map(|i| CatalogTrackInput {
+                            title: format!("{letter} {i}"),
+                            disc_number: Some(1),
+                            track_number: Some(i + 1),
+                            artists: vec![artist.clone()],
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for t in &release.track_ids {
+                library.add_to_library(t).unwrap();
+            }
+            releases.push(release);
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for table in [
+            "track_artist_credit",
+            "release_artist_credit",
+            "album_artist_credit",
+        ] {
+            db.execute_batch(&format!("UPDATE {table} SET artist_id=(SELECT min(a.id) FROM artist a WHERE a.name=(SELECT name FROM artist WHERE id={table}.artist_id))")).unwrap();
+        }
+        for (i, r) in releases.iter().enumerate() {
+            for t in &r.track_ids {
+                db.execute(
+                    "INSERT INTO playable_source(id,kind) VALUES(?1,'local_file')",
+                    [t.as_ref()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO track_source(track_id,source_id) VALUES(?1,?1)",
+                    [t.as_ref()],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO file_genre_observation(source_id,genre) VALUES(?1,?2)",
+                    rusqlite::params![t.as_ref(), ["Rock", "Pop", "Jazz"][i]],
+                )
+                .unwrap();
+            }
+        }
+        drop(db);
+        let one = library.create_playlist("Source One").unwrap();
+        let two = library.create_playlist("Source Two").unwrap();
+        for t in [
+            &releases[0].track_ids[0],
+            &releases[1].track_ids[0],
+            &releases[0].track_ids[0],
+        ] {
+            library.append_playlist_track(&one, t).unwrap();
+        }
+        for t in [&releases[1].track_ids[1], &releases[0].track_ids[1]] {
+            library.append_playlist_track(&two, t).unwrap();
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../MultiSelectionTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseMultiSelection".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
     #[test]

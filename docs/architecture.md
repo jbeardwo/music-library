@@ -2075,3 +2075,26 @@ changing selection, or navigating never updates an existing queue.
 Provider synchronization/import/export, migration UI, collaboration, folders,
 smart playlists, restart-persistent navigation and separate wishlists remain deferred.
 See `docs/playlists.md` for validation and measured paging performance.
+
+
+## Pane selection and container actions
+
+`selection::Selection` owns stable IDs, an anchor and focus independently of QML
+row indexes. The browser stores one selection per pane per session-local view.
+`browse::Request` supports OR lists of Artists, Genres, Albums and Tracks, with
+intersection between different filter kinds. Existing singleton paths remain in
+use. Bounded cardinality probes select indexed streaming for large unions; small
+unions gather indexed identities. Selected-ID queries prune invisible downstream
+selections without loading every page. Only visible selected IDs and a total count
+cross the QML boundary. Cross-page ranges and large pruning run on the reader
+thread with revision checks against stale delivery.
+
+`track_container::Target` centralizes pane-local context expansion. Library
+containers retain saved-program semantics; playlist containers preserve persisted
+occurrences independently of membership. Context queue and playlist actions share
+this resolver and never incorporate filters from another selected pane. Playlist
+batch preparation reports canonical-ID duplicates once; Yes preserves the batch,
+No skips identities currently in the destination. Batch writes use one transaction
+on a dedicated application worker connection, and never update saved membership
+or a playback snapshot. The playlist schema is unchanged. See
+[selection/action semantics and validation](selection-actions.md).

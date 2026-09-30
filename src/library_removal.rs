@@ -7,6 +7,7 @@ pub enum Target {
     Artist(ArtistId),
     Album(AlbumId),
     Track(TrackId),
+    Tracks(Vec<String>),
 }
 #[derive(Clone, Debug)]
 pub struct Preview {
@@ -15,15 +16,17 @@ pub struct Preview {
     pub has_local_sources: bool,
 }
 impl Target {
-    fn id(&self) -> &str {
+    fn parameter(&self) -> String {
         match self {
-            Self::Artist(id) => id.as_ref(),
-            Self::Album(id) => id.as_ref(),
-            Self::Track(id) => id.as_ref(),
+            Self::Artist(id) => id.as_ref().into(),
+            Self::Album(id) => id.as_ref().into(),
+            Self::Track(id) => id.as_ref().into(),
+            Self::Tracks(ids) => serde_json::to_string(ids).expect("IDs"),
         }
     }
     fn tracks(&self) -> &'static str {
         match self {
+            Self::Tracks(_) => "SELECT track_id FROM library_membership WHERE track_id IN (SELECT value FROM json_each(?1))",
             Self::Track(_) => "SELECT track_id FROM library_membership WHERE track_id=?1",
             Self::Album(_) => "SELECT t.id AS track_id FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership lm ON lm.track_id=t.id WHERE r.album_id=?1",
             Self::Artist(_) => "SELECT track_id FROM library_membership WHERE track_id IN (
@@ -38,15 +41,21 @@ fn preview(connection: &Connection, target: &Target) -> Result<Preview> {
         Target::Artist(_) => "SELECT name FROM artist WHERE id=?1",
         Target::Album(_) => "SELECT title FROM album_application_metadata WHERE album_id=?1",
         Target::Track(_) => "SELECT title FROM effective_track_metadata WHERE track_id=?1",
+        Target::Tracks(_) => "SELECT 'Selected items'",
     };
-    let title = connection.query_row(title_sql, [target.id()], |r| r.get(0))?;
+    let title = if matches!(target, Target::Tracks(_)) {
+        "Selected items".to_string()
+    } else {
+        connection.query_row(title_sql, [target.parameter()], |r| r.get(0))?
+    };
     let sql = format!(
         "WITH affected AS ({}) SELECT count(*), EXISTS(SELECT 1 FROM affected a JOIN track_source ts ON ts.track_id=a.track_id JOIN local_file_observation l ON l.source_id=ts.source_id) FROM affected",
         target.tracks()
     );
-    let (saved_tracks, has_local_sources) = connection.query_row(&sql, [target.id()], |r| {
-        Ok((r.get::<_, i64>(0)? as u64, r.get(1)?))
-    })?;
+    let (saved_tracks, has_local_sources) =
+        connection.query_row(&sql, [target.parameter()], |r| {
+            Ok((r.get::<_, i64>(0)? as u64, r.get(1)?))
+        })?;
     Ok(Preview {
         title,
         saved_tracks,
@@ -68,7 +77,7 @@ fn remove(connection: &mut Connection, target: &Target, suppress_local: bool) ->
     tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS removal_tracks(track_id TEXT PRIMARY KEY); DELETE FROM removal_tracks;")?;
     tx.execute(
         &format!("INSERT INTO removal_tracks {}", target.tracks()),
-        [target.id()],
+        [target.parameter()],
     )?;
     // Unchecked explicitly clears any older suppression for the affected sources.
     let sources = "SELECT ts.source_id FROM removal_tracks a JOIN track_source ts ON ts.track_id=a.track_id JOIN local_file_observation l ON l.source_id=ts.source_id";

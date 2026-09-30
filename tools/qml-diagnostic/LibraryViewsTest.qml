@@ -113,7 +113,12 @@
             const playlist = library.playlistChoices.find(p => p.name === "Test playlist");
             check(playlist,"created playlist in chooser");
             window.bridge.browse_action("picker-add",2,playlist.id);
+            for(let i=0;i<100 && library.pending;i++) wait();
             window.bridge.browse_action("picker-add",2,playlist.id);
+            for(let i=0;i<100 && library.pending;i++) wait();
+            check(duplicatePlaylistDialog.visible,"single duplicate confirmation");
+            window.bridge.browse_action("picker-yes",0,"");
+            for(let i=0;i<100 && library.pending;i++) wait();
             page("Playlists");
             window.bridge.browse_action("select",0,playlist.id); wait();
             check(library.panes[2].rows.length===2,"duplicate entries displayed");

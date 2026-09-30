@@ -76,6 +76,20 @@
                 check(tile(columns).y-tile(0).y===186,"tiles wrap within year section");
                 check(layoutArtworkRequests===yearRequests,"year reflow requests no artwork");
             }
+            // Exercise a visible tile inside a section larger than the viewport.
+            const visibleTile=albumList.itemAtIndex(albumsPane.visualIndex(4)).tileAt(4);
+            albumList.forceActiveFocus();
+            albumList.contentY=visibleTile.mapToItem(albumList.contentItem,0,0).y-80;waitLayout();
+            const viewport=albumList.contentY;
+            check(visibleTile.mapToItem(albumList,0,0).y>=0 && visibleTile.mapToItem(albumList,0,0).y+visibleTile.height<=albumList.height,"Ctrl test tile is already visible");
+            for(const modifier of [Qt.ControlModifier,Qt.ControlModifier,Qt.NoModifier]) {
+                albumLayoutTest.mouseClick(visibleTile,30,30,Qt.LeftButton,modifier);waitLayout();
+                check(Math.abs(albumList.contentY-viewport)<1,"visible Album toggle/click must not reposition its oversized section");
+            }
+            const nextVisible=albumList.itemAtIndex(albumsPane.visualIndex(5)).tileAt(5);
+            albumLayoutTest.mouseClick(nextVisible,30,30,Qt.LeftButton,Qt.ShiftModifier);
+            for(let n=0;n<250 && library.pending;n++) albumLayoutTest.wait(10);
+            waitLayout();check(library.panes[1].selectionCount===2 && Math.abs(albumList.contentY-viewport)<1,"visible Shift Album range retains viewport");
             window.bridge.browse_action("sort",1,"");waitLayout();
             check(library.panes[1].sort==="Artist","Artist sections remain available");
             const sectionTile=tile(10), sectionRequests=layoutArtworkRequests;
@@ -127,8 +141,29 @@
                     if(library.panes[2].rows.length!==200 || library.panes[2].page!==2) throw new Error("large Songs cursor page");
                     window.bridge.browse_action("sort",2,"");albumLayoutTest.wait(20);
                     if(library.panes[2].sort!=="Z-A" || library.panes[2].rows.length!==200) throw new Error("large reverse Songs page");
+                    window.bridge.browse_action("select",2,library.panes[2].rows[0].id);
+                    window.bridge.browse_action("next",2,"");albumLayoutTest.wait(20);
+                    window.bridge.browse_action("select-range",2,library.panes[2].rows[10].id);
+                    for(let n=0;n<250 && library.pending;n++) albumLayoutTest.wait(20);
+                    if(library.pending || library.error || library.panes[2].selectionCount!==211 || library.panes[2].rows.length!==200 || library.panes[2].selectedIds.length>200) throw new Error("large reverse Song range remains bounded");
                 }
-                if(name==="Playlists" && library.panes[2].rows.length) throw new Error("playlist Songs must stay blank in large library");
+                if(name==="Playlists") {
+                    if(library.panes[2].rows.length) throw new Error("playlist Songs must stay blank until selection");
+                    const playlist=library.panes[0].rows.find(p=>p.title==="Large selection fixture");
+                    if(!playlist) throw new Error("large playlist fixture required");
+                    window.bridge.browse_action("select",0,playlist.id);albumLayoutTest.wait(20);
+                    if(library.panes[2].rows.length!==200) throw new Error("large playlist page bound");
+                    const anchor=library.panes[2].rows[0].id;
+                    window.bridge.browse_action("select",2,anchor);
+                    window.bridge.browse_action("next",2,"");albumLayoutTest.wait(20);
+                    window.bridge.browse_action("select-range",2,library.panes[2].rows[10].id);
+                    for(let n=0;n<250 && library.pending;n++) albumLayoutTest.wait(20);
+                    if(library.pending || library.error) throw new Error("large cross-page playlist range: "+library.error);
+                    if(library.panes[2].selectionCount!==211 || library.panes[2].rows.length!==200 || library.panes[2].selectedIds.length>200) throw new Error("off-page stable selection and bounded projection");
+                    const remaining=library.panes[2].rows[10].id;
+                    window.bridge.browse_action("select-toggle",2,remaining);albumLayoutTest.wait(20);
+                    if(library.panes[2].selectionCount!==210) throw new Error("large playlist Ctrl toggle");
+                }
             }
             window.bridge.browse_action("view",0,"Artists");albumLayoutTest.wait(50);list.forceLayout();
             if(JSON.stringify(view.queue)!==queueBefore) throw new Error("large view navigation mutated queue");

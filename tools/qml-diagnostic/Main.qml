@@ -560,7 +560,7 @@ ApplicationWindow {
                     musicDelay.restart();
                 }
                 onAccepted: addMusicPanel.request()
-                Keys.onDownPressed: { musicResults.forceActiveFocus(); musicResults.currentIndex = 0; }
+                Keys.onDownPressed: event => { musicResults.forceActiveFocus(); musicResults.currentIndex = 0; }
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -975,16 +975,30 @@ ApplicationWindow {
             }
         }
     }
+    Dialog {
+        id: duplicatePlaylistDialog
+        objectName: "duplicatePlaylistDialog"
+        title: "Duplicate songs"
+        width: Math.min(480, window.width-60)
+        anchors.centerIn: parent
+        modal: true
+        visible: !!window.library.duplicateMessage
+        standardButtons: Dialog.Yes | Dialog.No
+        Label { text: window.library.duplicateMessage || ""; wrapMode: Text.Wrap; width: Math.min(420, window.width-80); textFormat: Text.PlainText }
+        onAccepted: window.bridge.browse_action("picker-yes",0,"")
+        onRejected: window.bridge.browse_action("picker-no",0,"")
+        closePolicy: Popup.NoAutoClose
+    }
     Menu {
         id: libraryMenu
-        MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("play", window.contextPane, window.contextId) }
+        MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("context-play", window.contextPane, window.contextId) }
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
-        MenuItem { text: "Add to Playlist…"; visible: window.contextPane === 2; onTriggered: { window.bridge.browse_action("picker-open",2,window.contextId); addPlaylistDialog.open(); } }
-        MenuItem { text: "Rename playlist…"; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: { playlistNameDialog.rename = true; playlistName.text = (window.library.panes[0].rows.find(r => r.id === window.contextId) || {}).title || ""; playlistNameDialog.open(); } }
-        MenuItem { text: "Delete playlist"; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: window.bridge.browse_action("playlist-delete", 0, window.contextId) }
-        MenuItem { text: "Remove entry from playlist"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-remove", 2, window.contextId) }
-        MenuItem { text: "Move up"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-up", 2, window.contextId) }
-        MenuItem { text: "Move down"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
+        MenuItem { text: "Add to Playlist…"; enabled: !window.library.pending; onTriggered: { window.bridge.browse_action("picker-open",window.contextPane,window.contextId); addPlaylistDialog.open(); } }
+        MenuItem { text: "Rename playlist…"; visible: window.library.view === "Playlists" && window.contextPane === 0; enabled: !window.library.pending && window.library.panes[0].selectionCount === 1; onTriggered: { playlistNameDialog.rename = true; playlistName.text = (window.library.panes[0].rows.find(r => r.id === window.contextId) || {}).title || ""; playlistNameDialog.open(); } }
+        MenuItem { text: "Delete playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: window.bridge.browse_action("playlist-delete", 0, window.contextId) }
+        MenuItem { text: "Remove entry from playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-remove", 2, window.contextId) }
+        MenuItem { text: "Move up"; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-up", 2, window.contextId) }
+        MenuItem { text: "Move down"; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
         MenuSeparator {}
         MenuItem { text: "Remove from library"; visible: window.library.view !== "Playlists"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }
 
@@ -1084,6 +1098,8 @@ ApplicationWindow {
         readonly property string selectedId: paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
         property string rowsSignature: ""
+        readonly property bool albumSongs: paneIndex === 2 && pageData.sort === "Album"
+        property var albumNames: ({})
         property int logicalIndex: -1
         readonly property int tileWidth: 120
         readonly property int tileHeight: 174
@@ -1099,12 +1115,17 @@ ApplicationWindow {
                 list.positionViewAtIndex(group, ListView.Contain);
                 return;
             }
-            // A section's Flow can exceed the viewport. Scroll to the actual
-            // logical tile rather than treating the whole section as one item.
-            list.positionViewAtIndex(group, ListView.Contain);
+            // Current index identifies a whole Flow section, not the clicked tile.
+            // Never position that oversized section when its tile already exists.
             list.forceLayout();
-            const section = list.itemAtIndex(group);
-            const tile = section ? section.tileAt(index) : null;
+            let section = list.itemAtIndex(group);
+            let tile = section ? section.tileAt(index) : null;
+            if (!tile) {
+                list.positionViewAtIndex(group, ListView.Contain);
+                list.forceLayout();
+                section = list.itemAtIndex(group);
+                tile = section ? section.tileAt(index) : null;
+            }
             if (!tile) return;
             const top = tile.mapToItem(list.contentItem, 0, 0).y;
             const bottom = top + tile.height;
@@ -1162,7 +1183,13 @@ ApplicationWindow {
                 }
                 if (tiles.length) paneRows.append({rowData: {tiles: tiles, groupTitle: groupTitle}});
             } else {
-                for (const row of pageData.rows) paneRows.append({rowData: row});
+                const names = {};
+                for (const row of pageData.rows) {
+                    const albumKey = pane.paneIndex === 2 && pageData.sort === "Album" ? row.albumId : "";
+                    if (albumKey) names[albumKey] = row.track.release;
+                    paneRows.append({rowData: row, albumKey: albumKey || ""});
+                }
+                pane.albumNames = names;
             }
             logicalIndex = -1;
             songId = "";
@@ -1173,12 +1200,14 @@ ApplicationWindow {
         Component.onCompleted: syncRows()
         Layout.fillHeight: true
         spacing: 0
-        function selectRow(index) {
+        function isSelected(id) { return (pageData.selectedIds || []).indexOf(id) >= 0; }
+        function selectRow(index, modifiers) {
             if (index < 0 || index >= pageData.rows.length) return;
             logicalIndex = index;
             pane.revealLogical(index);
             songId = pageData.rows[index].id;
-            window.bridge.browse_action("select", paneIndex, songId);
+            const action = (modifiers & Qt.ShiftModifier) ? "select-range" : (modifiers & Qt.ControlModifier) ? "select-toggle" : "select";
+            window.bridge.browse_action(action, paneIndex, songId);
         }
         function playRow(index) {
             if (index >= 0 && index < pageData.rows.length)
@@ -1222,17 +1251,36 @@ ApplicationWindow {
             currentIndex: -1
             activeFocusOnTab: true
             keyNavigationEnabled: false
+            // Focus must not scroll an entire Album Flow; revealLogical handles tiles.
+            highlightFollowsCurrentItem: false
+            section.property: pane.albumSongs ? "albumKey" : ""
+            section.criteria: ViewSection.FullString
+            section.labelPositioning: ViewSection.InlineLabels
+            section.delegate: Label {
+                objectName: "songAlbumHeader"
+                required property string section
+                width: list.width
+                height: pane.albumSongs ? 28 : 0
+                text: pane.albumNames[section] || "Untitled"
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                leftPadding: 9
+                verticalAlignment: Text.AlignVCenter
+                font.pixelSize: 12
+                font.bold: true
+                color: "#68636a"
+            }
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            Keys.onDownPressed: { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? pane.albumColumns : 1))); }
-            Keys.onUpPressed: { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? pane.albumColumns : 1))); }
-            Keys.onLeftPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.max(0, pane.logicalIndex - 1)); }
-            Keys.onRightPressed: { if (pane.paneIndex === 1) pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + 1)); }
+            Keys.onDownPressed: event => { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? pane.albumColumns : 1)),event.modifiers); }
+            Keys.onUpPressed: event => { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? pane.albumColumns : 1)),event.modifiers); }
+            Keys.onLeftPressed: event => { if (pane.paneIndex === 1) pane.selectRow(Math.max(0, pane.logicalIndex - 1),event.modifiers); }
+            Keys.onRightPressed: event => { if (pane.paneIndex === 1) pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + 1),event.modifiers); }
             Keys.onReturnPressed: pane.playRow(pane.logicalIndex)
             Keys.onEnterPressed: pane.playRow(pane.logicalIndex)
             Keys.onEscapePressed: {
                 if (pane.paneIndex < 2) window.bridge.browse_action("select", pane.paneIndex, "");
-                else pane.songId = "";
+                else { window.bridge.browse_action("select",2,""); pane.songId = ""; }
                 currentIndex = -1;
             }
             delegate: Rectangle {
@@ -1242,12 +1290,12 @@ ApplicationWindow {
                 required property int index
                 width: list.width
                 height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? albumLayout.implicitHeight + pane.tileGap : 48
-                color: pane.paneIndex === 1 ? "transparent" : pane.selectedId === modelData.id ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
+                color: pane.paneIndex === 1 ? "transparent" : pane.isSelected(modelData.id) ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
                 border.width: pane.paneIndex !== 1 && list.activeFocus && list.currentIndex === index ? 1 : 0
                 border.color: "#96506d"
                 Accessible.role: Accessible.ListItem
                 Accessible.name: pane.paneIndex === 1 ? (modelData.groupTitle || "Albums") : modelData.title + " " + modelData.subtitle
-                Accessible.selected: pane.selectedId === modelData.id
+                Accessible.selected: pane.isSelected(modelData.id)
                 Column {
                     visible: pane.paneIndex !== 1
                     anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
@@ -1262,7 +1310,8 @@ ApplicationWindow {
                     Label {
                         width: parent.width
                         visible: pane.paneIndex > 0
-                        text: pane.paneIndex === 2 ? row.modelData.subtitle + " · " + row.modelData.track.release : (row.modelData.subtitle || "")
+                        objectName: "songSubtitle"
+                        text: pane.paneIndex === 2 ? row.modelData.subtitle + (pane.albumSongs ? "" : " · " + row.modelData.track.release) : (row.modelData.subtitle || "")
                         textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
                     }
                 }
@@ -1298,12 +1347,12 @@ ApplicationWindow {
                                 readonly property var album: modelData.data
                                 width: pane.tileWidth
                                 height: pane.tileHeight
-                                color: pane.selectedId === album.id ? "#e8d9e0" : tileMouse.containsMouse ? "#eeece9" : "transparent"
+                                color: pane.isSelected(album.id) ? "#e8d9e0" : tileMouse.containsMouse ? "#eeece9" : "transparent"
                                 border.width: list.activeFocus && pane.logicalIndex === modelData.logicalIndex ? 1 : 0
                                 border.color: "#96506d"
                                 Accessible.role: Accessible.ListItem
                                 Accessible.name: album.title + " " + album.subtitle
-                                Accessible.selected: pane.selectedId === album.id
+                                Accessible.selected: pane.isSelected(album.id)
                                 Column {
                                     width: parent.width
                                     spacing: 4
@@ -1319,8 +1368,8 @@ ApplicationWindow {
                                     onClicked: event => {
                                         list.forceActiveFocus();
                                         if (event.button === Qt.RightButton) {
-                                            window.contextPane = 1; window.contextId = tile.album.id; libraryMenu.popup();
-                                        } else pane.selectRow(tile.modelData.logicalIndex);
+                                            window.bridge.browse_action("context",1,tile.album.id); window.contextPane = 1; window.contextId = tile.album.id; libraryMenu.popup();
+                                        } else pane.selectRow(tile.modelData.logicalIndex,event.modifiers);
                                     }
                                     onDoubleClicked: event => { if (event.button === Qt.LeftButton) pane.playRow(tile.modelData.logicalIndex); }
                                 }
@@ -1337,12 +1386,11 @@ ApplicationWindow {
                     onClicked: event => {
                         list.forceActiveFocus();
                         if (event.button === Qt.RightButton) {
-                            if (pane.paneIndex === 0 && window.library.view !== "Artists" && window.library.view !== "Playlists") return;
-                            if (window.library.view === "Playlists" && pane.paneIndex === 0) pane.selectRow(row.index);
+                            window.bridge.browse_action("context",pane.paneIndex,row.modelData.id);
                             window.contextPane = pane.paneIndex;
                             window.contextId = row.modelData.id;
                             libraryMenu.popup();
-                        } else pane.selectRow(row.index);
+                        } else pane.selectRow(row.index,event.modifiers);
                     }
                     onDoubleClicked: event => { if (event.button === Qt.LeftButton) pane.playRow(row.index); }
                 }
@@ -1429,7 +1477,7 @@ ApplicationWindow {
         }
         Label {
             visible: text.length > 0
-            text: window.library.error || window.view.error || (window.library.pending ? "Preparing queue…" : "")
+            text: window.library.error || window.view.error || (window.library.pending ? "Preparing selection or tracks…" : "")
             textFormat: Text.PlainText
             color: window.library.pending ? "#68636a" : "#9d263d"
             wrapMode: Text.Wrap
@@ -1609,7 +1657,7 @@ ApplicationWindow {
                 maximumLength: 256
                 Accessible.name: "Search query"
                 onTextChanged: if (searchPanel.opened) searchDelay.restart()
-                Keys.onDownPressed: { searchResults.forceActiveFocus(); searchResults.currentIndex = 0; }
+                Keys.onDownPressed: event => { searchResults.forceActiveFocus(); searchResults.currentIndex = 0; }
                 onAccepted: if (searchResults.count > 0) searchPanel.activate(Math.max(0, searchResults.currentIndex))
             }
             RowLayout {

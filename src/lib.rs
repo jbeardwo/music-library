@@ -29,8 +29,10 @@ pub mod provenance_acceptance;
 mod provenance_storage;
 pub mod provider_chain;
 pub mod recording;
+pub mod selection;
 pub mod song_resolution;
 pub mod storage;
+pub mod track_container;
 
 pub use application::Library;
 pub use storage::{Error, Result};
