@@ -4290,12 +4290,8 @@ mod library_ui_tests {
             .unwrap();
         }
         assert_eq!(
-            db.query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name LIKE '%playlist%'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
+            db.query_row("SELECT count(*) FROM playlist", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
             0
         );
         drop(db);

@@ -944,12 +944,49 @@ ApplicationWindow {
 
     property int contextPane: 0
     property string contextId: ""
+    Dialog {
+        id: playlistNameDialog
+        property bool rename: false
+        title: rename ? "Rename playlist" : "Create playlist"
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        TextField { id: playlistName; placeholderText: "Playlist name" }
+        onAccepted: { if (playlistName.text.trim().length) window.bridge.browse_action(rename ? "playlist-rename" : "playlist-create", 0, playlistName.text); }
+    }
+    Dialog {
+        id: addPlaylistDialog
+        title: "Add to Playlist"
+        anchors.centerIn: parent
+        modal: true
+        standardButtons: Dialog.Close
+        ColumnLayout {
+            ListView {
+                Layout.preferredWidth: 300; Layout.preferredHeight: 240
+                clip: true
+                model: window.library.playlistChoices || []
+                delegate: ItemDelegate { required property var modelData; width: ListView.view.width; text: modelData.name; onClicked: { window.bridge.browse_action("picker-add",2,modelData.id); addPlaylistDialog.close(); } }
+                Label { anchors.centerIn: parent; visible: parent.count === 0; text: "No playlists yet" }
+            }
+            RowLayout {
+                Button { text: "Previous"; enabled: window.library.playlistChoicesPrevious; onClicked: window.bridge.browse_action("picker-previous",0,"") }
+                Button { text: "Next"; enabled: window.library.playlistChoicesMore; onClicked: window.bridge.browse_action("picker-next",0,"") }
+                Button { text: "Create playlist…"; onClicked: { playlistNameDialog.rename = false; playlistName.text = ""; playlistNameDialog.open(); } }
+            }
+        }
+    }
     Menu {
         id: libraryMenu
         MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("play", window.contextPane, window.contextId) }
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
+        MenuItem { text: "Add to Playlist…"; visible: window.contextPane === 2; onTriggered: { window.bridge.browse_action("picker-open",2,window.contextId); addPlaylistDialog.open(); } }
+        MenuItem { text: "Rename playlist…"; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: { playlistNameDialog.rename = true; playlistName.text = (window.library.panes[0].rows.find(r => r.id === window.contextId) || {}).title || ""; playlistNameDialog.open(); } }
+        MenuItem { text: "Delete playlist"; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: window.bridge.browse_action("playlist-delete", 0, window.contextId) }
+        MenuItem { text: "Remove entry from playlist"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-remove", 2, window.contextId) }
+        MenuItem { text: "Move up"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-up", 2, window.contextId) }
+        MenuItem { text: "Move down"; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
         MenuSeparator {}
-        MenuItem { text: "Remove from library"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }
+        MenuItem { text: "Remove from library"; visible: window.library.view !== "Playlists"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }
 
     }
 
@@ -1151,6 +1188,7 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.preferredHeight: 44
             Label { text: pane.heading; elide: Text.ElideRight; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+            ToolButton { text: "+"; Accessible.name: "Create playlist"; visible: window.library.view === "Playlists" && pane.paneIndex === 0; onClicked: { playlistNameDialog.rename = false; playlistName.text = ""; playlistNameDialog.open(); } }
             ToolButton {
                 id: sortControl
                 text: pane.pageData.sort
@@ -1219,7 +1257,7 @@ ApplicationWindow {
                         width: parent.width
                         spacing: 8
                         Label { id: trackNumber; objectName: "trackNumber"; visible: pane.paneIndex === 2 && !!row.modelData.number; text: row.modelData.number || ""; width: visible ? Math.max(22, implicitWidth) : 0; color: "#827b80"; font.pixelSize: 14 }
-                        Label { objectName: "songTitle"; width: parent.width - (trackNumber.visible ? trackNumber.width + 8 : 0); text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && row.modelData.id === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                        Label { objectName: "songTitle"; width: parent.width - (trackNumber.visible ? trackNumber.width + 8 : 0); text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && (row.modelData.track ? row.modelData.track.trackId : row.modelData.id) === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
                     }
                     Label {
                         width: parent.width
@@ -1299,7 +1337,8 @@ ApplicationWindow {
                     onClicked: event => {
                         list.forceActiveFocus();
                         if (event.button === Qt.RightButton) {
-                            if (pane.paneIndex === 0 && window.library.view !== "Artists") return;
+                            if (pane.paneIndex === 0 && window.library.view !== "Artists" && window.library.view !== "Playlists") return;
+                            if (window.library.view === "Playlists" && pane.paneIndex === 0) pane.selectRow(row.index);
                             window.contextPane = pane.paneIndex;
                             window.contextId = row.modelData.id;
                             libraryMenu.popup();
@@ -1639,10 +1678,10 @@ ApplicationWindow {
                         Label {
                             anchors.centerIn: parent
                             visible: searchResults.count === 0 && !searchPanel.results.busy
-                            text: searchPanel.filter === 4 ? "No playlists yet" : searchText.text.trim().length === 0 ? "Type to search your library" : "No matching library items"
+                            text: searchPanel.filter === 4 ? "Playlist search is not available yet" : searchText.text.trim().length === 0 ? "Type to search your library" : "No matching library items"
                         }
                     }
-                    Label { visible: searchPanel.filter === 0; text: "PLAYLISTS · No playlists yet"; font.pixelSize: 11; color: "#68636a" }
+                    Label { visible: searchPanel.filter === 0; text: "PLAYLISTS · Search is not available yet"; font.pixelSize: 11; color: "#68636a" }
                 }
             }
         }

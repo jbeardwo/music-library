@@ -16,6 +16,8 @@ pub struct Page {
 }
 #[derive(Default)]
 pub struct Browser {
+    picker: Page,
+    picker_track: String,
     view: usize,
     views: [ViewState; 5],
     genre: String,
@@ -85,6 +87,81 @@ impl Browser {
 impl Bridge {
     pub fn browse_action_impl(&mut self, action: &str, pane: usize, id: String) {
         if pane > 2 {
+            return;
+        }
+        if action.starts_with("picker-") {
+            if action == "picker-open" {
+                self.browser.picker_track = self.browser.pages[2]
+                    .rows
+                    .iter()
+                    .find(|r| r.id == id)
+                    .and_then(|r| r.track.as_ref())
+                    .map(|t| t.track_id.as_ref().to_string())
+                    .unwrap_or(id);
+                self.browser.picker.cursors = vec![None];
+            } else if action == "picker-next" && self.browser.picker.more {
+                self.browser
+                    .picker
+                    .cursors
+                    .push(self.browser.picker.rows.last().map(|r| r.cursor.clone()));
+            } else if action == "picker-previous" && self.browser.picker.cursors.len() > 1 {
+                self.browser.picker.cursors.pop();
+            } else if action == "picker-add" {
+                if let Err(e) = self
+                    .session
+                    .library
+                    .append_playlist_track(&id, &TrackId(self.browser.picker_track.clone()))
+                {
+                    self.browser.error = e.to_string();
+                }
+                if self.browser.view == 4 {
+                    self.load_pane(2, true);
+                }
+            }
+            match self.session.library.playlists(
+                self.browser.picker.cursors.last().and_then(|c| c.as_ref()),
+                201,
+            ) {
+                Ok(mut rows) => {
+                    self.browser.picker.more = rows.len() > 200;
+                    rows.truncate(200);
+                    self.browser.picker.rows = rows;
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+            self.browse_changed();
+            return;
+        }
+        if action.starts_with("playlist-") {
+            let playlist = self.browser.artist.clone();
+            let result = match action {
+                "playlist-create" => self.session.library.create_playlist(&id).map(|_| ()),
+                "playlist-rename" => self.session.library.rename_playlist(&playlist, &id),
+                "playlist-delete" => self.session.library.delete_playlist(&id),
+                "playlist-remove" => self.session.library.remove_playlist_entry(&playlist, &id),
+                "playlist-up" | "playlist-down" => self.session.library.move_playlist_entry(
+                    &playlist,
+                    &id,
+                    action == "playlist-down",
+                ),
+                _ => return,
+            };
+            match result {
+                Ok(()) => {
+                    if action == "playlist-delete" && playlist == id {
+                        self.browser.artist.clear();
+                    }
+                    for i in 0..3 {
+                        self.load_pane(i, true);
+                    }
+                    if action == "playlist-create" {
+                        self.browser.picker.cursors = vec![None];
+                        self.browse_action_impl("picker-refresh", 0, String::new());
+                    }
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+            self.browse_changed();
             return;
         }
         match action {
@@ -204,6 +281,9 @@ impl Bridge {
             }
 
             "sort" => {
+                if self.browser.view == 4 {
+                    return;
+                }
                 match pane {
                     0 => self.browser.artist_sort = (self.browser.artist_sort + 1) % 2,
                     1 => {
@@ -273,6 +353,48 @@ impl Bridge {
             }
             "play" | "append" => {
                 if self.browser.view == 4 {
+                    if self.browser.pending
+                        || self.route_pending.is_some()
+                        || self.automatic_song_search
+                    {
+                        return;
+                    }
+                    let playlist = if pane == 0 {
+                        id.clone()
+                    } else {
+                        self.browser.artist.clone()
+                    };
+                    let start = (pane == 2).then_some(id);
+                    let reader = match self.session.library.library_queue_reader() {
+                        Ok(r) => r,
+                        Err(e) => {
+                            self.browser.error = e.to_string();
+                            self.browse_changed();
+                            return;
+                        }
+                    };
+                    let append = action == "append";
+                    let pointer = QPointer::from(&*self);
+                    let deliver = qmetaobject::queued_callback(move |result| {
+                        if let Some(object) = pointer.as_pinned() {
+                            object.borrow_mut().finish_library_queue(append, result);
+                        }
+                    });
+                    self.browser.pending = true;
+                    self.browser.worker = Some(std::thread::spawn(move || {
+                        let result = reader
+                            .read_playlist(&playlist, start.as_deref())
+                            .map_err(|e| e.to_string())
+                            .map(|(tracks, position)| {
+                                if append && start.is_some() {
+                                    (tracks.into_iter().skip(position).take(1).collect(), 0)
+                                } else {
+                                    (tracks, position)
+                                }
+                            });
+                        deliver(result);
+                    }));
+                    self.browse_changed();
                     return;
                 }
                 if self.browser.pending {
@@ -389,8 +511,8 @@ impl Bridge {
     }
 
     fn load_pane(&mut self, pane: usize, reset: bool) {
-        if self.browser.view == 4
-            || (pane == 0 && self.browser.view >= 2)
+        if (self.browser.view == 4 && (pane == 1 || (pane == 2 && self.browser.artist.is_empty())))
+            || (pane == 0 && self.browser.view >= 2 && self.browser.view != 4)
             || (pane == 1 && self.browser.view == 3)
         {
             self.browser.pages[pane] = Page::default();
@@ -429,7 +551,17 @@ impl Bridge {
             limit: 201,
             ..Default::default()
         };
-        let result = if page.cursors.len() == 1
+        let result = if self.browser.view == 4 {
+            if pane == 0 {
+                self.session.library.playlists(request.after.as_ref(), 201)
+            } else {
+                self.session.library.playlist_entries(
+                    &self.browser.artist,
+                    request.after.as_ref().map(|c| c.position),
+                    201,
+                )
+            }
+        } else if page.cursors.len() == 1
             && let Some(id) = &page.seek
         {
             self.session.library.browse_around(&request, id)
@@ -584,7 +716,14 @@ impl Bridge {
                 QVariant::from(
                     [
                         ("rows", QVariant::from(rows)),
-                        ("sort", string(self.browser.sort_label(pane))),
+                        (
+                            "sort",
+                            string(if self.browser.view == 4 {
+                                ""
+                            } else {
+                                self.browser.sort_label(pane)
+                            }),
+                        ),
                         ("more", p.more.into()),
                         ("anchored", p.seek.is_some().into()),
                         ("page", (p.cursors.len() as i32).into()),
@@ -595,6 +734,28 @@ impl Bridge {
             })
             .collect();
         [
+            (
+                "playlistChoices",
+                QVariant::from(
+                    self.browser
+                        .picker
+                        .rows
+                        .iter()
+                        .map(|r| {
+                            QVariant::from(
+                                [("id", string(&r.id)), ("name", string(&r.title))]
+                                    .into_iter()
+                                    .collect::<QVariantMap>(),
+                            )
+                        })
+                        .collect::<QVariantList>(),
+                ),
+            ),
+            ("playlistChoicesMore", self.browser.picker.more.into()),
+            (
+                "playlistChoicesPrevious",
+                (self.browser.picker.cursors.len() > 1).into(),
+            ),
             (
                 "removal",
                 QVariant::from(

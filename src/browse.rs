@@ -64,7 +64,7 @@ pub struct Row {
 
 /// A read-only connection for preparing an explicit queue away from the UI thread.
 /// It observes library membership when `read` runs and never performs migrations.
-pub struct QueueReader(rusqlite::Connection);
+pub struct QueueReader(pub(crate) rusqlite::Connection);
 impl QueueReader {
     pub fn read(self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         let request = Request {

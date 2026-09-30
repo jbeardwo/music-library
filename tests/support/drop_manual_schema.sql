@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS playlist_entry;
+DROP TABLE IF EXISTS playlist;
 DROP TABLE IF EXISTS file_genre_observation;
 ALTER TABLE file_metadata_observation DROP COLUMN genres_observed;
 DROP TABLE IF EXISTS local_root_source;

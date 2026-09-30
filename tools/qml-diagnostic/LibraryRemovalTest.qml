@@ -18,7 +18,7 @@
             } else removalTest.mouseClick(row,30,row.height/2,Qt.RightButton);
             removalTest.wait(20);
             check(libraryMenu.visible,"right click opens context menu pane="+pane+" dialog="+removalDialog.visible);
-            const item=libraryMenu.itemAt(3);
+            const item=libraryMenu.itemAt(libraryMenu.count - 1);
             check(item.text==="Remove from library","separated removal menu action");
             item.triggered(); libraryMenu.close(); waitDone(); removalTest.wait(250);
             check(removalDialog.visible,"confirmation opens");

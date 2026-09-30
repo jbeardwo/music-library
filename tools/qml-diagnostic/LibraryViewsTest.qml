@@ -106,6 +106,34 @@
             viewsTest.grabImage(window.contentItem).save("/tmp/library-views-years.png"); wait();
             page("Playlists");
             viewsTest.grabImage(window.contentItem).save("/tmp/library-views-playlists.png"); wait();
+            page("Songs");
+            const track = library.panes[2].rows[0].id;
+            window.bridge.browse_action("picker-open",2,track);
+            window.bridge.browse_action("playlist-create",0,"Test playlist"); wait();
+            const playlist = library.playlistChoices.find(p => p.name === "Test playlist");
+            check(playlist,"created playlist in chooser");
+            window.bridge.browse_action("picker-add",2,playlist.id);
+            window.bridge.browse_action("picker-add",2,playlist.id);
+            page("Playlists");
+            window.bridge.browse_action("select",0,playlist.id); wait();
+            check(library.panes[2].rows.length===2,"duplicate entries displayed");
+            const entries=library.panes[2].rows.map(r=>r.id);
+            check(entries[0]!==entries[1],"independent entry identities");
+            window.bridge.browse_action("playlist-up",2,entries[1]); wait();
+            check(library.panes[2].rows[0].id===entries[1],"move persists in view");
+            window.bridge.browse_action("sort",2,""); wait();
+            check(library.panes[2].rows[0].id===entries[1] && library.panes[2].sort==="","no playlist sorting");
+            page("Artists"); page("Playlists");
+            check(library.artist===playlist.id && library.panes[2].rows.length===2,"playlist session selection retained");
+            window.bridge.browse_action("playlist-rename",0,"Renamed playlist"); wait();
+            check(library.panes[0].rows.some(p=>p.title==="Renamed playlist"),"renamed playlist displayed");
+            window.bridge.browse_action("play",2,entries[0]);
+            for(let i=0;i<100 && library.pending;i++) wait();
+            check(view.queueTotal===2 && view.position===1,"playlist duplicate exact queue start");
+            window.bridge.browse_action("playlist-remove",2,entries[1]); wait();
+            check(library.panes[2].rows.length===1 && view.queueTotal===2,"entry removal preserves queue snapshot");
+            window.bridge.browse_action("playlist-delete",0,playlist.id); wait();
+            check(library.panes[2].rows.length===0 && view.queueTotal===2,"delete playlist preserves queue");
             return "ok";
         } catch(e) { return e.message; }
     }

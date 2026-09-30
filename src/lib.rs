@@ -23,6 +23,7 @@ pub mod matching;
 pub mod output;
 pub mod playback;
 pub mod playback_resolver;
+pub mod playlist;
 pub mod provenance;
 pub mod provenance_acceptance;
 mod provenance_storage;

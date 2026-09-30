@@ -213,7 +213,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 20 {
+        } else if version > 21 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -339,6 +339,10 @@ impl Store {
 
         if version < 20 {
             connection.execute_batch(include_str!("../migrations/0020_local_genres.sql"))?;
+        }
+
+        if version < 21 {
+            connection.execute_batch(include_str!("../migrations/0021_playlists.sql"))?;
         }
 
         Ok(Self {

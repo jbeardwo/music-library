@@ -1994,7 +1994,8 @@ toe/tricot evidence, the query discrepancy, safeguards and live request counts.
 
 The QML shell now uses provider-neutral bounded library browsing (`browse`) for
 Artists, Genres, Albums and Songs. Five session-local browsing views reuse the same
-bounded panes; Playlists is an empty presentation placeholder with no durable model.
+bounded panes; Playlists uses persisted application-owned ordered Track references
+with independent entry IDs and no dependency on library membership.
 Migration 20 retains source-owned local genre observations with indexed membership
 queries and a marker for one-time extraction on the next ordinary scan. Genre and
 Album predicates intersect without changing identity or admission behavior. Year
@@ -2040,3 +2041,37 @@ Library membership removal and durable local-source exclusions are described in
 
 The shared local admission pipeline, native From file workflow and durable multiple
 library locations are described in [Local ingestion](local-ingestion.md).
+
+
+Playlist persistence (migration 21) distinguishes four kinds of state: canonical
+Track identity belongs to `track`; saved membership belongs to
+`library_membership`; ordered playlist references belong to `playlist_entry`;
+playback owns an independent transient queue snapshot. Entries reference Track
+IDs directly, never provider identifiers or membership rows. Removing saved
+membership preserves entries. Appending an entry never saves the Track. Deleting
+an entry or playlist leaves Tracks and playback snapshots intact. The foreign key
+restricts deletion of a referenced canonical Track; ordinary library removal
+changes membership only.
+
+Playlist and entry IDs are application-generated UUIDs. Playlists store names and
+creation/update timestamps. Entries store a Track ID and an integer position;
+duplicate Track references are valid. Append uses the maximum position plus one.
+Removal leaves harmless gaps. Adjacent moves swap positions transactionally using
+a temporary position. Indexed playlist/position order supplies deterministic keyset
+pages, and a Track/playlist index supports reverse membership lookup. Existing
+effective Track metadata supplies display labels; no playlist music metadata copy
+is created. Provider import/export and migration can use these canonical IDs later.
+
+The QML prototype displays at most 200 playlists or entries per page, including the
+Add to Playlist chooser. Songs context menus open that chooser, which also offers
+playlist creation. Playlist context menus rename/delete; entry menus remove or move
+up/down. Playlist selection and pages are session-local view state. Songs remains
+blank until selection, and playlist sorting is omitted. Explicit Play reads the
+complete persisted order on the existing background queue reader. Entry identity
+locates the exact starting occurrence of a duplicate Track. The existing player
+receives Track IDs and metadata in its usual queue snapshot. Editing a playlist,
+changing selection, or navigating never updates an existing queue.
+
+Provider synchronization/import/export, migration UI, collaboration, folders,
+smart playlists, restart-persistent navigation and separate wishlists remain deferred.
+See `docs/playlists.md` for validation and measured paging performance.

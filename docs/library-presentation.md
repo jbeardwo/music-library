@@ -328,3 +328,6 @@ Each browse result remains at most 201 rows, with at most 200 expanded in QML.
 These local measurements are not cross-machine budgets. Persistent navigation,
 playlist functionality, provider genre enrichment and a larger Song metadata table
 remain deferred.
+
+Playlist persistence and editing now supersede the placeholder described above;
+see [Playlists](playlists.md). Other view, sort and paging behavior is unchanged.
