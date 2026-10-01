@@ -341,6 +341,14 @@ impl Library {
         self.store.add_catalog_release(release)
     }
 
+    /// Reuse catalog identity without changing Library membership.
+    pub fn ensure_catalog_release(
+        &mut self,
+        release: &crate::catalog::Release,
+    ) -> Result<ImportedRelease> {
+        self.store.ensure_catalog_release(release)
+    }
+
     pub fn add_catalog_selection(
         &mut self,
         release: &crate::catalog::Release,

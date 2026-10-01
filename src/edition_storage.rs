@@ -26,8 +26,8 @@ fn artists(db: &Connection, entity: &str, id: &str) -> Result<Vec<ArtistEvidence
 }
 fn snapshot(db: &Connection, release: &ReleaseId) -> Result<LocalEditionEvidence> {
     let (album,title,album_title,year): (String,String,String,Option<i32>) = db.query_row("SELECT r.album_id,m.title,a.title,m.year FROM release r JOIN release_application_metadata m ON m.release_id=r.id JOIN album_application_metadata a ON a.album_id=r.album_id WHERE r.id=?1",[release.as_ref()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
-    let mut tracks = db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.release_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?
-        .query_map([release.as_ref()], |r| Ok(LocalTrackEvidence {track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence {disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),..Default::default()} }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut tracks = db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.duration_approximate FROM track t JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.release_id=?1 ORDER BY t.disc_number,t.track_number,t.id")?
+        .query_map([release.as_ref()], |r| Ok(LocalTrackEvidence {track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence {disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),duration_approximate:r.get(6)?,..Default::default()} }))?.collect::<rusqlite::Result<Vec<_>>>()?;
     load_track_evidence(db, &mut tracks)?;
     let mut evidence = LocalEditionEvidence {
         provenance: Default::default(),

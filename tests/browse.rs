@@ -779,3 +779,137 @@ fn reverse_keysets_recover_exact_preceding_chunks_for_every_order() {
         }
     }
 }
+
+#[test]
+fn songs_details_columns_sort_globally_with_genres_and_stable_ranges() {
+    use music_library::browse::{SongColumn, Sort};
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("songs-details.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    for group in 0..3 {
+        let titles = (0..if group == 2 { 335 } else { 334 })
+            .map(|i| format!("Song {:04}", 1002 - (group * 334 + i)))
+            .collect::<Vec<_>>();
+        let tracks = titles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.as_str(), 1, i as u32 + 1))
+            .collect::<Vec<_>>();
+        let release = album(
+            &mut library,
+            ["Zulu Album", "Alpha Album", "Middle Album"][group],
+            ["Beta Artist", "Alpha Artist", ""][group],
+            &tracks,
+        );
+        for (i, t) in release.track_ids.iter().enumerate() {
+            library.add_to_library(t).unwrap();
+            db.execute(
+                "INSERT INTO playable_source(id,kind) VALUES(?1,'local_file')",
+                [t.as_ref()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO track_source(track_id,source_id) VALUES(?1,?1)",
+                [t.as_ref()],
+            )
+            .unwrap();
+            for genre in match i % 4 {
+                0 => vec![],
+                1 => vec!["Rock"],
+                2 => vec!["Jazz"],
+                _ => vec!["Rock", "Jazz"],
+            } {
+                db.execute(
+                    "INSERT INTO file_genre_observation VALUES(?1,?2)",
+                    rusqlite::params![t.as_ref(), genre],
+                )
+                .unwrap();
+            }
+            library.set_track_title_override(t, &titles[i]).unwrap();
+        }
+    }
+    let base = Request {
+        pane: Pane::Songs,
+        song_column: Some(SongColumn::Song),
+        sort: Sort::Title,
+        limit: 200,
+        ..Default::default()
+    };
+    let collect = |request: &Request| {
+        let mut request = request.clone();
+        let mut all = Vec::new();
+        loop {
+            let rows = library.browse(&request).unwrap();
+            if rows.is_empty() {
+                break;
+            }
+            assert!(rows.len() <= 200);
+            request.after = Some(rows.last().unwrap().cursor.clone());
+            all.extend(rows);
+        }
+        all
+    };
+    let canonical = collect(&base);
+    assert_eq!(canonical.len(), 1003);
+    assert!(canonical.iter().any(|r| r.genres == "Jazz · Rock"));
+    assert!(canonical.iter().any(|r| r.genres.is_empty()));
+    for column in [
+        SongColumn::Song,
+        SongColumn::Artist,
+        SongColumn::Album,
+        SongColumn::Genre,
+    ] {
+        for descending in [false, true] {
+            let request = Request {
+                song_column: Some(column),
+                descending,
+                ..base.clone()
+            };
+            let rows = collect(&request);
+            let mut expected = canonical.iter().collect::<Vec<_>>();
+            let key = |r: &music_library::browse::Row| match column {
+                SongColumn::Song => r.title.to_ascii_lowercase(),
+                SongColumn::Artist => r.subtitle.to_ascii_lowercase(),
+                SongColumn::Album => r.track.as_ref().unwrap().release_title.to_ascii_lowercase(),
+                SongColumn::Genre => r.genres.to_ascii_lowercase(),
+            };
+            expected.sort_by_key(|r| (key(r), r.id.clone()));
+            if descending {
+                expected.reverse();
+            }
+            assert_eq!(
+                rows.iter().map(|r| &r.id).collect::<Vec<_>>(),
+                expected.iter().map(|r| &r.id).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|r| &r.id)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                1003
+            );
+            let back = library
+                .browse_before(&Request {
+                    after: Some(rows[800].cursor.clone()),
+                    ..request.clone()
+                })
+                .unwrap();
+            assert_eq!(
+                back.iter().rev().map(|r| &r.id).collect::<Vec<_>>(),
+                rows[600..800].iter().map(|r| &r.id).collect::<Vec<_>>()
+            );
+            assert_eq!(
+                library
+                    .library_queue_reader()
+                    .unwrap()
+                    .range(&request, &rows[190].id, &rows[410].id)
+                    .unwrap(),
+                rows[190..=410]
+                    .iter()
+                    .map(|r| r.id.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}

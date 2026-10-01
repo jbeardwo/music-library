@@ -86,7 +86,8 @@
             numbers(false); sort(2); numbers(false);
             check(JSON.stringify(library.panes[2].rows.map(r => r.id)) === JSON.stringify(ascending.slice().reverse()), "Z-A reverses titles and ID ties");
             select(2,3); const selectedSong=library.song;
-            page("Playlists"); headings(true,false);
+            page("Playlists"); headings(true,true);
+            check(albumsPane.heading === "DETAILS", "playlist Details pane");
             check(artistsPane.heading === "PLAYLISTS", "Playlists heading");
             check(library.panes[0].rows.length === 0 && library.panes[2].rows.length === 0, "playlist placeholder and blank Songs");
             page("Artists"); headings(true,true);

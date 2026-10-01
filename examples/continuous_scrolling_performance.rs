@@ -1,7 +1,7 @@
 //! Bounded bidirectional keyset scrolling over the deterministic 200k fixture.
 use music_library::{
     Library,
-    browse::{Request, Sort},
+    browse::{Request, SongColumn, Sort},
 };
 use std::{collections::HashSet, time::Instant};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -12,13 +12,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = rusqlite::Connection::open(&path)?;
     let expected: i64 =
         db.query_row("SELECT count(*) FROM library_membership", [], |r| r.get(0))?;
-    for sort in [Sort::Title, Sort::Descending, Sort::Album] {
-        let mut request = Request {
-            sort,
-            album_sort: Sort::Title,
-            limit: 201,
-            ..Default::default()
-        };
+    let mut requests: Vec<_> = [Sort::Title, Sort::Descending, Sort::Album]
+        .into_iter()
+        .map(|sort| {
+            (
+                format!("{sort:?}"),
+                Request {
+                    sort,
+                    album_sort: Sort::Title,
+                    limit: 201,
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+    for column in [
+        SongColumn::Song,
+        SongColumn::Artist,
+        SongColumn::Album,
+        SongColumn::Genre,
+    ] {
+        for descending in [false, true] {
+            requests.push((
+                format!("Songs {column:?} descending={descending}"),
+                Request {
+                    song_column: Some(column),
+                    descending,
+                    limit: 201,
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    for (sort, mut request) in requests {
         let mut window = vec![];
         let mut seen = HashSet::new(); // Diagnostic only: proves no duplicate or missing identity.
         let mut timings = vec![];
@@ -80,6 +106,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .query_map([], |r| r.get::<_, String>(3))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         println!("{label}: {plans:?}");
+        assert!(!plans.iter().any(|p| p.contains("TEMP B-TREE")));
+    }
+    for (column, index) in [
+        ("artist_names", "song_details_artist"),
+        ("release_title", "song_details_album"),
+        ("genre_names", "song_details_genre"),
+    ] {
+        let sql = format!(
+            "EXPLAIN QUERY PLAN SELECT track_id FROM effective_track_metadata INDEXED BY {index} WHERE (lower({column}),track_id) > ('m','probe') ORDER BY lower({column}),track_id LIMIT 201"
+        );
+        let plans = db
+            .prepare(&sql)?
+            .query_map([], |r| r.get::<_, String>(3))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        println!("Songs {column}: {plans:?}");
+        assert!(plans.iter().any(|p| p.contains(index)));
         assert!(!plans.iter().any(|p| p.contains("TEMP B-TREE")));
     }
     Ok(())

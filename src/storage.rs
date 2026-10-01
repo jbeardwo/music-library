@@ -213,7 +213,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 21 {
+        } else if version > 22 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -343,6 +343,12 @@ impl Store {
 
         if version < 21 {
             connection.execute_batch(include_str!("../migrations/0021_playlists.sql"))?;
+        }
+
+        if version < 22 {
+            connection.execute_batch(include_str!(
+                "../migrations/0022_duration_and_song_details.sql"
+            ))?;
         }
 
         Ok(Self {
@@ -978,6 +984,23 @@ impl Store {
         release: &crate::catalog::Release,
         selected: Option<&[(u32, u32)]>,
     ) -> Result<ImportedRelease> {
+        self.persist_catalog_selection(release, selected, true)
+    }
+
+    /// Persist canonical catalog identity and observations without saved membership.
+    pub fn ensure_catalog_release(
+        &mut self,
+        release: &crate::catalog::Release,
+    ) -> Result<ImportedRelease> {
+        self.persist_catalog_selection(release, None, false)
+    }
+
+    fn persist_catalog_selection(
+        &mut self,
+        release: &crate::catalog::Release,
+        selected: Option<&[(u32, u32)]>,
+        save: bool,
+    ) -> Result<ImportedRelease> {
         let _total = crate::catalog::Timing::new("persistence.total");
         crate::catalog::Timing::event(format_args!(
             "import_begin tracks={} media={} identities={}",
@@ -1172,8 +1195,63 @@ impl Store {
             }
             imported
         };
+        // Refresh existing identities as well as newly created Tracks. Position
+        // matching is scoped to the exact reconciled Release and must be unique.
+        let mut positions = std::collections::HashMap::<(u32, u32), Vec<String>>::new();
+        if release
+            .media
+            .iter()
+            .flat_map(|m| &m.tracks)
+            .any(|t| t.duration.is_some())
+        {
+            let mut query =
+                tx.prepare("SELECT id,disc_number,track_number FROM track WHERE release_id=?1")?;
+            for row in query.query_map([imported.release_id.as_ref()], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<u32>>(1)?,
+                    r.get::<_, Option<u32>>(2)?,
+                ))
+            })? {
+                let (id, disc, number) = row?;
+                if let (Some(disc), Some(number)) = (disc, number) {
+                    positions.entry((disc, number)).or_default().push(id);
+                }
+            }
+        }
+        for medium in &release.media {
+            for track in &medium.tracks {
+                if let Some(duration) = track.duration {
+                    let ids = positions
+                        .get(&(medium.position, track.position))
+                        .map(Vec::as_slice)
+                        .unwrap_or_default();
+                    if let [id] = ids {
+                        observe_duration(
+                            &tx,
+                            &TrackId(id.clone()),
+                            &release.identity.provider,
+                            &format!(
+                                "{}:{}:{}",
+                                release.identity.external_id, medium.position, track.position
+                            ),
+                            duration,
+                            if duration.approximate {
+                                2
+                            } else if release.identity.provider == "spotify" {
+                                0
+                            } else {
+                                1
+                            },
+                        )?;
+                    }
+                }
+            }
+        }
         let membership = crate::catalog::Timing::detail("persistence.membership");
-        if let Some(positions) = selected {
+        if !save {
+            // Canonical existence is independent from explicit saved membership.
+        } else if let Some(positions) = selected {
             if positions.is_empty() {
                 return Err(Error::Invalid("Select a Song".into()));
             }
@@ -1881,7 +1959,7 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
     let _refresh = crate::catalog::Timing::detail("persistence.effective_fts");
     let changed = connection.execute(
         "INSERT INTO effective_track_metadata(
-            track_id, title, release_title, artist_names, year, duration_ms, format
+            track_id, title, release_title, artist_names, year, duration_ms, format, duration_approximate, genre_names
          )
          SELECT t.id,
                 COALESCE(o.value, f.track_title, app.title, ''),
@@ -1897,7 +1975,9 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
                         WHERE c.track_id = t.id ORDER BY c.position
                     )
                 ), ''),
-                COALESCE(f.year, r.year), f.duration_ms, f.format
+                COALESCE(f.year, r.year), COALESCE(CASE WHEN f.duration_ms>=0 THEN f.duration_ms END,(SELECT d.duration_ms FROM track_duration_observation d WHERE d.track_id=t.id ORDER BY d.quality,d.provider,d.source_key LIMIT 1)), f.format,
+                CASE WHEN f.duration_ms>=0 THEN 0 ELSE COALESCE((SELECT d.quality=2 FROM track_duration_observation d WHERE d.track_id=t.id ORDER BY d.quality,d.provider,d.source_key LIMIT 1),0) END,
+                COALESCE((SELECT group_concat(genre,' · ') FROM (SELECT DISTINCT g.genre FROM track_source gs JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id ORDER BY g.genre COLLATE NOCASE,g.genre)),'')
          FROM track t
          JOIN release edition ON edition.id = t.release_id
          JOIN album_application_metadata r ON r.album_id = edition.album_id
@@ -1916,7 +1996,9 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
             artist_names = excluded.artist_names,
             year = excluded.year,
             duration_ms = excluded.duration_ms,
-            format = excluded.format",
+            format = excluded.format,
+            duration_approximate = excluded.duration_approximate,
+            genre_names = excluded.genre_names",
         [track_id.as_ref()],
     )?;
     if changed == 0 {
@@ -2129,4 +2211,19 @@ fn insert_catalog_credits(
         tx.execute(&format!("INSERT INTO {table}({column},position,artist_id,credited_name,join_phrase) VALUES (?1,?2,?3,?4,?5)"),params![entity,position as i64,artist.as_ref(),credit.name,credit.join_phrase])?;
     }
     Ok(())
+}
+
+/// Record metadata only; never create identity, membership or a playback queue.
+pub(crate) fn observe_duration(
+    db: &Connection,
+    track: &TrackId,
+    provider: &str,
+    key: &str,
+    duration: crate::catalog::Duration,
+    quality: i32,
+) -> Result<()> {
+    let millis = i64::try_from(duration.milliseconds)
+        .map_err(|_| Error::Invalid("duration exceeds supported range".into()))?;
+    db.execute("INSERT INTO track_duration_observation VALUES(?1,?2,?3,?4,?5) ON CONFLICT(track_id,provider,source_key) DO UPDATE SET duration_ms=excluded.duration_ms,quality=excluded.quality",params![track.as_ref(),provider,key,millis,quality])?;
+    refresh_effective_track_impl(db, track)
 }

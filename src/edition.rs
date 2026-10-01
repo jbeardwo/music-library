@@ -25,6 +25,8 @@ pub struct TrackEvidence {
     pub title: Option<String>,
     pub artists: Vec<ArtistEvidence>,
     pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub duration_approximate: bool,
     pub recording: RecordingEvidence,
 }
 #[derive(Clone, Debug, Default)]

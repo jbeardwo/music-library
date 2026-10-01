@@ -41,6 +41,7 @@ fn fixture(n: usize, run: usize) -> Release {
             position: 1,
             tracks: (0..n)
                 .map(|i| Track {
+                    duration: None,
                     position: i as u32 + 1,
                     title: format!("Audit Track {i}"),
                     credits: credits.clone(),

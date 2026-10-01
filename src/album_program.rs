@@ -36,6 +36,8 @@ pub struct Reply {
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Match {
+    #[serde(default)]
+    pub duration: Option<crate::catalog::Duration>,
     pub title: String,
     pub recording: RecordingEvidence,
     pub recording_status: RecordingStatus,
@@ -64,6 +66,31 @@ pub enum Outcome {
     Complete(Vec<(LocalTrackEvidence, TrackOutcome)>),
     Deferred(CatalogError),
     Error(String),
+}
+
+fn agreed_duration(
+    programs: &Programs,
+    occurrences: &[ExternalIdentity],
+) -> Option<crate::catalog::Duration> {
+    let mut duration = None;
+    for track in programs
+        .programs
+        .iter()
+        .flat_map(|p| &p.tracks)
+        .filter(|t| t.identities.iter().any(|id| occurrences.contains(id)))
+    {
+        if let Some(milliseconds) = track.duration_ms {
+            let candidate = crate::catalog::Duration {
+                milliseconds,
+                approximate: track.duration_approximate,
+            };
+            if duration.is_some_and(|d| d != candidate) {
+                return None;
+            }
+            duration = Some(candidate);
+        }
+    }
+    duration
 }
 
 pub const DURATION_TOLERANCE_MS: u64 = 3_000;
@@ -384,6 +411,7 @@ fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) ->
         let ids = ids.unwrap_or_default();
         if ids.len() != 1 { return TrackOutcome::NoConfidentMatch; }
         TrackOutcome::Matched(Match {
+            duration: agreed_duration(programs,&ids),
             title: t.evidence.title.clone().unwrap_or_default(),
             recording: RecordingEvidence::default(), recording_status: RecordingStatus::NotProvided,
             occurrences: ids,
@@ -623,6 +651,7 @@ pub fn compare(local: &LocalTrackEvidence, programs: &Programs) -> TrackOutcome 
         }
     }
     let result = Match {
+        duration: agreed_duration(programs, &occurrences),
         title: first.title.clone().unwrap_or_default(),
         recording: RecordingEvidence {
             identities,
@@ -668,8 +697,8 @@ pub(crate) fn local_tracks(
     album: &AlbumId,
 ) -> Result<(Vec<LocalTrackEvidence>, Vec<TrackId>)> {
     let mut artist_conflicts = vec![];
-    let mut tracks=db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.artist_names FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 ORDER BY r.id,t.disc_number,t.track_number,t.id")?
-        .query_map([album.as_ref()],|r|Ok((LocalTrackEvidence{track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence{disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),..Default::default()}},r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut tracks=db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.artist_names,e.duration_approximate FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 ORDER BY r.id,t.disc_number,t.track_number,t.id")?
+        .query_map([album.as_ref()],|r|Ok((LocalTrackEvidence{track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence{disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),duration_approximate:r.get(7)?,..Default::default()}},r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let names: Vec<_> = tracks.iter().map(|t| t.1.clone()).collect();
     let mut tracks: Vec<_> = tracks.drain(..).map(|t| t.0).collect();
     crate::edition_storage::load_track_evidence(db, &mut tracks)?;
@@ -787,6 +816,16 @@ pub(crate) fn persist_agreed_occurrences(
             return Err(crate::storage::Error::Invalid(
                 "invalid agreed Track identity".into(),
             ));
+        }
+        if let Some(duration) = m.duration {
+            crate::storage::observe_duration(
+                db,
+                &track.track_id,
+                provider,
+                &identity.external_id,
+                duration,
+                if duration.approximate { 2 } else { 0 },
+            )?;
         }
         if !existing.contains(track.track_id.as_ref()) {
             insert.execute(params![
@@ -970,6 +1009,16 @@ impl Store {
                 for id in &m.recording.identities {
                     tx.execute("INSERT INTO recording_external_identity(recording_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",params![t.recording_id.as_ref(),id.provider,id.kind,id.external_id])?;
                 }
+                if let Some(duration) = m.duration {
+                    crate::storage::observe_duration(
+                        &tx,
+                        &t.track_id,
+                        &reply.input.album.provider,
+                        &reply.input.album.external_id,
+                        duration,
+                        if duration.approximate { 2 } else { 0 },
+                    )?;
+                }
                 // Retain the Album-scoped association, without converting sampled
                 // occurrences into exact edition or Recording identities.
                 let json = serde_json::to_string(m)
@@ -1018,6 +1067,7 @@ impl Store {
                 accepted.push((
                     track,
                     Match {
+                        duration: None,
                         title,
                         recording: RecordingEvidence::default(),
                         recording_status: RecordingStatus::NotProvided,

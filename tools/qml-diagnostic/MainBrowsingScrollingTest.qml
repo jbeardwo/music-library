@@ -8,6 +8,7 @@
                 const name=spec[0],p=spec[1],pane=spec[2];
                 bridge.browse_action("view",0,name);wait();
                 const l=browsingScrollTest.findChild(window.contentItem,"libraryPane"+p);
+                if(!library.panes[p].rows.length) continue;
                 const first=library.panes[p].rows[0].id;
                 const epoch=library.panes[p].epoch;
                 let fetches=0;
@@ -34,6 +35,35 @@
                 browsingScrollTest.grabImage(window.contentItem).save("/tmp/library-continuous-"+name.toLowerCase()+"-deep.png");
                 for(let n=0;n<12 && library.panes[p].before;n++) { l.positionViewAtBeginning();wait(); }
                 check(!library.panes[p].before && library.panes[p].rows[0].id===first,"bidirectional "+name+" scrolling");
+            }
+            bridge.browse_action("view",0,"Songs"); wait();
+            check(window.exerciseCurrentTableResize()==="ok","200k main Songs column resizing");
+            function key(r,c) {return String(c==="song"?r.title:c==="artist"?r.subtitle:c==="album"?(r.track?r.track.release:""):r.genres).toLowerCase();}
+            for(const column of ["artist","album","genre","song"]) {
+                for(const descending of [false,true]) {
+                    const header=browsingScrollTest.findChild(window.contentItem,"songsHeader"+(column==="song"?"Song":column.charAt(0).toUpperCase()+column.slice(1)));
+                    browsingScrollTest.mouseClick(header);wait();
+                    check(library.songsColumn===column && library.songsDescending===descending,"header sort direction");
+                    check(library.panes[2].rows.length<=200 && !library.panes[2].before,"sort resets logical window");
+                    const seen={};let previous=null;
+                    for(let chunk=0;chunk<7;chunk++) {
+                        for(const row of library.panes[2].rows) {
+                            if(seen[row.id]) continue;
+                            if(previous) {
+                                const a=key(previous,column),b=key(row,column);
+                                check(descending?(a>b || (a===b && previous.id>row.id)):(a<b || (a===b && previous.id<row.id)),"global deterministic "+column+" order descending="+descending+" previous="+a+"/"+previous.id+" current="+b+"/"+row.id);
+                            }
+                            seen[row.id]=true;previous=row;
+                        }
+                        check(library.panes[2].rows.length<=600,"bounded sorted Songs window");
+                        if(!library.panes[2].more) break;
+                        const list=browsingScrollTest.findChild(window.contentItem,"libraryPane2");
+                        const last=library.panes[2].rows.slice(-1)[0].id;
+                        list.forceLayout();list.positionViewAtEnd();
+                        for(let poll=0;poll<100 && library.panes[2].rows.slice(-1)[0].id===last;poll++) browsingScrollTest.wait(20);
+                        check(library.panes[2].rows.slice(-1)[0].id!==last,"sorted chunk loaded");
+                    }
+                }
             }
             return "ok";
         } catch(e) {return String(e);}

@@ -19,6 +19,9 @@ ApplicationWindow {
     // qmllint enable unqualified
     readonly property var library: window.bridge.browse_snapshot
     Component.onCompleted: { window.bridge.browse_action("refresh", 0, ""); syncQueue(); }
+    // Independent table widths live with the window for the current session.
+    property var songsColumnWidths: []
+    property var playlistColumnWidths: []
     property string queueSignature: ""
     ListModel { id: queueRows; dynamicRoles: true }
     function syncQueue() {
@@ -463,7 +466,7 @@ ApplicationWindow {
     Menu {
         id: addMusicChooser
         objectName: "addMusicChooser"
-        MenuItem { text: "From catalog"; onTriggered: addMusicPanel.open() }
+        MenuItem { text: "From catalog"; onTriggered: { window.bridge.add_music_action("destination", ""); addMusicPanel.playlistMode = false; addMusicPanel.open(); } }
         MenuItem { text: "From file"; onTriggered: localImportPanel.open() }
     }
     Dialog {
@@ -531,7 +534,9 @@ ApplicationWindow {
     Dialog {
         id: addMusicPanel
         objectName: "addMusicPanel"
-        title: "Add Music"
+        title: playlistMode ? "Add Tracks from Catalog" : "Add Music"
+        property bool playlistMode: false
+        property var selectedTracks: []
         anchors.centerIn: parent
         width: Math.min(900, window.width - 48)
         height: Math.min(650, window.height - 80)
@@ -542,9 +547,10 @@ ApplicationWindow {
         readonly property var view: window.bridge.music_snapshot
         function request() {
             musicDelay.stop();
+            selectedTracks = [];
             window.bridge.add_music_action("search", filter + ":" + musicQuery.text);
         }
-        onOpened: { musicQuery.forceActiveFocus(); musicQuery.selectAll(); request(); }
+        onOpened: { selectedTracks = []; musicQuery.forceActiveFocus(); musicQuery.selectAll(); request(); }
         onClosed: { musicDelay.stop(); window.bridge.add_music_action("close", ""); }
         Timer { id: musicDelay; interval: 300; onTriggered: addMusicPanel.request() }
         contentItem: ColumnLayout {
@@ -590,7 +596,7 @@ ApplicationWindow {
                         Button {
                             text: "Back"
                             visible: addMusicPanel.view.back
-                            onClicked: { musicDelay.stop(); window.bridge.add_music_action("back", ""); }
+                            onClicked: { addMusicPanel.selectedTracks = []; musicDelay.stop(); window.bridge.add_music_action("back", ""); }
                         }
                         Label {
                             text: addMusicPanel.view.heading || "CATALOG RESULTS"
@@ -609,7 +615,7 @@ ApplicationWindow {
                         wrapMode: Text.Wrap
                     }
                     RowLayout {
-                        visible: addMusicPanel.view.detail && !addMusicPanel.view.song
+                        visible: !addMusicPanel.playlistMode && addMusicPanel.view.detail && !addMusicPanel.view.song
                         Button {
                             objectName: "addCatalogAlbum"
                             text: addMusicPanel.view.complete ? "In library" : "Add Album"
@@ -646,7 +652,7 @@ ApplicationWindow {
                                 Label { width: parent.width; text: modelData.title + (modelData.membership ? "    ·    " + modelData.membership : ""); textFormat: Text.PlainText; elide: Text.ElideRight }
                                 Label { width: parent.width; text: modelData.context; textFormat: Text.PlainText; elide: Text.ElideRight; opacity: 0.7 }
                             }
-                            onClicked: window.bridge.add_music_action("open", String(index))
+                            onClicked: { addMusicPanel.selectedTracks = []; window.bridge.add_music_action("open", String(index)); }
                         }
                         Keys.onReturnPressed: if (currentIndex >= 0 && !musicDelay.running) window.bridge.add_music_action("open", String(currentIndex))
                         ScrollBar.vertical: ScrollBar {}
@@ -669,7 +675,19 @@ ApplicationWindow {
                                 Label { text: modelData.title; textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight }
                                 Label { text: modelData.artist; textFormat: Text.PlainText; Layout.fillWidth: true; elide: Text.ElideRight; opacity: 0.7 }
                             }
+                            CheckBox {
+                                visible: addMusicPanel.playlistMode
+                                checked: addMusicPanel.selectedTracks.indexOf(modelData.key) >= 0
+                                onClicked: {
+                                    let keys = addMusicPanel.selectedTracks.slice();
+                                    const i = keys.indexOf(modelData.key);
+                                    if (checked && i < 0) keys.push(modelData.key);
+                                    if (!checked && i >= 0) keys.splice(i, 1);
+                                    addMusicPanel.selectedTracks = keys;
+                                }
+                            }
                             Button {
+                                visible: !addMusicPanel.playlistMode
                                 text: modelData.saved ? "In library" : "Add Song"
                                 enabled: !modelData.saved
                                 onClicked: window.bridge.add_music_action("song", modelData.key)
@@ -696,6 +714,13 @@ ApplicationWindow {
                         onClicked: window.bridge.add_music_action("more", "")
                     }
                 }
+            }
+            Button {
+                objectName: "addCatalogTracksToPlaylist"
+                visible: addMusicPanel.playlistMode && addMusicPanel.view.detail
+                text: "Add selected tracks"
+                enabled: addMusicPanel.selectedTracks.length > 0 && !window.library.pending
+                onClicked: { window.bridge.add_music_action("playlist", addMusicPanel.selectedTracks.join(",")); }
             }
             Label { text: addMusicPanel.view.status; visible: text.length > 0; Layout.fillWidth: true; wrapMode: Text.Wrap }
         }
@@ -996,9 +1021,10 @@ ApplicationWindow {
         MenuItem { text: "Add to Playlist…"; enabled: !window.library.pending; onTriggered: { window.bridge.browse_action("picker-open",window.contextPane,window.contextId); addPlaylistDialog.open(); } }
         MenuItem { text: "Rename playlist…"; visible: window.library.view === "Playlists" && window.contextPane === 0; enabled: !window.library.pending && window.library.panes[0].selectionCount === 1; onTriggered: { playlistNameDialog.rename = true; playlistName.text = (window.library.panes[0].rows.find(r => r.id === window.contextId) || {}).title || ""; playlistNameDialog.open(); } }
         MenuItem { text: "Delete playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: window.bridge.browse_action("playlist-delete", 0, window.contextId) }
+        MenuItem { text: "Save to Library"; visible: window.library.view === "Playlists" && window.contextPane === 2; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; onTriggered: window.bridge.browse_action("save-playlist-track", 2, window.contextId) }
         MenuItem { text: "Remove entry from playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-remove", 2, window.contextId) }
-        MenuItem { text: "Move up"; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-up", 2, window.contextId) }
-        MenuItem { text: "Move down"; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
+        MenuItem { text: "Move up"; enabled: !window.library.pending && window.library.playlistReorderAllowed && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-up", 2, window.contextId) }
+        MenuItem { text: "Move down"; enabled: !window.library.pending && window.library.playlistReorderAllowed && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
         MenuSeparator {}
         MenuItem { text: "Remove from library"; visible: window.library.view !== "Playlists"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }
 
@@ -1090,10 +1116,60 @@ ApplicationWindow {
         }
     }
 
+    component SongColumnDivider: MouseArea {
+        id: divider
+        required property int index
+        required property Item tablePane
+        required property Item resizeViewport
+        required property real scrollOffset
+        property bool bodyDivider: false
+        x: tablePane.columnEdge(index)-scrollOffset-width/2
+        width: 12
+        height: resizeViewport.height
+        hoverEnabled: true
+        cursorShape: Qt.SplitHCursor
+        acceptedButtons: Qt.LeftButton
+        preventStealing: true
+        property real initialX: 0
+        property var initialWidths: []
+        onPressed: event => {
+            initialX=mapToItem(resizeViewport,event.x,event.y).x;
+            initialWidths=tablePane.tableColumns.slice();
+        }
+        onPositionChanged: event => {
+            if(pressed) tablePane.resizeColumns(index,initialWidths,mapToItem(resizeViewport,event.x,event.y).x-initialX);
+        }
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.verticalCenter: parent.verticalCenter
+            width: 1
+            height: divider.bodyDivider ? parent.height : parent.height-8
+            color: divider.pressed ? "#96506d" : divider.containsMouse ? "#827b80" : divider.bodyDivider ? "#e8e5e2" : "#d9d6d3"
+        }
+    }
+
     component LibraryPane: ColumnLayout {
         id: pane
         required property int paneIndex
         required property string heading
+        readonly property bool playlistTable: paneIndex === 2 && window.library.view === "Playlists"
+        readonly property bool songsTable: paneIndex === 2 && window.library.view === "Songs"
+        readonly property bool detailsTable: playlistTable || songsTable
+        readonly property real tableWidth: Math.max(0, list.width - 16)
+        readonly property var columnMinimums: songsTable ? [180,120,120,100] : [32,160,120,120,64]
+        readonly property var defaultColumns: songsTable ? [Math.max(220,tableWidth*0.36),Math.max(150,tableWidth*0.24),Math.max(150,tableWidth*0.24),Math.max(120,tableWidth*0.16)] : [40,Math.max(180,(tableWidth-104)*0.44),Math.max(120,(tableWidth-104)*0.28),Math.max(120,(tableWidth-104)*0.28),64]
+        readonly property var adjustedColumns: songsTable ? window.songsColumnWidths : window.playlistColumnWidths
+        readonly property var tableColumns: adjustedColumns.length === columnMinimums.length ? adjustedColumns : defaultColumns.map((w,i) => Math.max(columnMinimums[i],w))
+        readonly property real columnsWidth: tableColumns.reduce((sum,w) => sum+w,0)
+        function columnEdge(index) { return tableColumns.slice(0,index+1).reduce((sum,w) => sum+w,0); }
+        function resizeColumns(index, initialWidths, delta) {
+            const widths=initialWidths.slice();
+            const total=widths[index]+widths[index+1];
+            widths[index]=Math.max(columnMinimums[index],Math.min(total-columnMinimums[index+1],widths[index]+delta));
+            widths[index+1]=total-widths[index];
+            if(songsTable) window.songsColumnWidths=widths;
+            else window.playlistColumnWidths=widths;
+        }
         readonly property var pageData: window.library.panes[paneIndex]
         readonly property string selectedId: paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
@@ -1291,10 +1367,11 @@ ApplicationWindow {
             ToolButton { text: "+"; Accessible.name: "Create playlist"; visible: window.library.view === "Playlists" && pane.paneIndex === 0; onClicked: { playlistNameDialog.rename = false; playlistName.text = ""; playlistNameDialog.open(); } }
             ToolButton {
                 id: sortControl
+                objectName: "paneSortControl"
                 text: pane.pageData.sort
                 background: Rectangle { color: sortControl.hovered ? "#eeece9" : "transparent" }
                 contentItem: Label { text: sortControl.text; color: "#827b80"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                visible: text.length > 0
+                visible: text.length > 0 && !pane.songsTable
                 font.pixelSize: 12
                 Accessible.name: pane.heading + " sort: " + text
                 onClicked: window.bridge.browse_action("sort", pane.paneIndex, "")
@@ -1307,8 +1384,107 @@ ApplicationWindow {
             }
         }
         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: "#d9d6d3" }
+        ColumnLayout {
+            id: playlistDetailsPane
+            objectName: "playlistDetails"
+            visible: window.library.view === "Playlists" && pane.paneIndex === 1
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.margins: 12
+            spacing: 12
+            readonly property var details: window.library.playlistDetails || {}
+            ColumnLayout {
+                visible: window.library.panes[0].selectionCount === 1
+                Layout.fillWidth: true
+                // Keep actions independent of changing metadata/loading height.
+                RowLayout {
+                    objectName: "playlistDetailsToolbar"
+                    Layout.fillWidth: true
+                    Button {
+                        objectName: "playlistAddTracks"
+                        text: "Add Tracks from Catalog"
+                        Layout.fillWidth: true
+                        enabled: !window.library.pending
+                        onClicked: {
+                            window.bridge.add_music_action("destination", window.library.panes[0].selectedIds[0]);
+                            addMusicPanel.playlistMode = true;
+                            addMusicPanel.open();
+                        }
+                    }
+                    Item {
+                        implicitWidth: 24
+                        implicitHeight: 24
+                        Layout.minimumWidth: implicitWidth
+                        Layout.maximumWidth: implicitWidth
+                        BusyIndicator {
+                            objectName: "playlistDetailsBusy"
+                            anchors.centerIn: parent
+                            width: 24
+                            height: 24
+                            running: !!playlistDetailsPane.details.pending
+                            visible: running
+                        }
+                    }
+                }
+                Label { objectName: "playlistDetailsName"; text: parent.parent.details.name || ""; textFormat: Text.PlainText; font.bold: true; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Label { objectName: "playlistDetailsCount"; text: parent.parent.details.count !== undefined && parent.parent.details.count !== "" ? parent.parent.details.count + " tracks" : ""; textFormat: Text.PlainText }
+                Label { objectName: "playlistDetailsDuration"; text: parent.parent.details.duration ? "Total duration: " + parent.parent.details.duration : ""; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            }
+            Item { Layout.fillHeight: true }
+        }
+        Item {
+            id: tableHeaderViewport
+            objectName: pane.songsTable ? "songsTableHeader" : "playlistTableHeader"
+            visible: pane.detailsTable
+            Layout.fillWidth: true
+            Layout.minimumWidth: 0
+            Layout.preferredWidth: 0
+            Layout.preferredHeight: visible ? 28 : 0
+            clip: true
+            Row {
+                x: -list.contentX
+                height: 28
+                Repeater {
+                    model: pane.songsTable ? [{key:"song",label:"Song"},{key:"artist",label:"Artist"},{key:"album",label:"Album"},{key:"genre",label:"Genre"}] : [{key:"position",label:"#"},{key:"title",label:"Title"},{key:"artist",label:"Artist"},{key:"album",label:"Album"},{key:"length",label:"Length"}]
+                    delegate: Button {
+                        id: playlistHeaderButton
+                        required property var modelData
+                        required property int index
+                        objectName: (pane.songsTable ? "songsHeader" : "playlistHeader") + modelData.label
+                        width: pane.tableColumns[index] || 0
+                        height: 28
+                        flat: true
+                        leftPadding: 0
+                        rightPadding: 0
+                        text: modelData.label + ((pane.songsTable ? window.library.songsColumn : window.library.playlistSort) === modelData.key ? ((pane.songsTable ? window.library.songsDescending : window.library.playlistDescending) ? " ▾" : " ▴") : "")
+                        font.pixelSize: 11
+                        contentItem: Label {
+                            text: playlistHeaderButton.text
+                            font.pixelSize: 11
+                            leftPadding: 6
+                            rightPadding: 6
+                            verticalAlignment: Text.AlignVCenter
+                            elide: Text.ElideRight
+                            color: (pane.songsTable ? window.library.songsColumn : window.library.playlistSort) === playlistHeaderButton.modelData.key ? "#242126" : "#68636a"
+                        }
+                        onClicked: window.bridge.browse_action(pane.songsTable ? "songs-sort" : "playlist-sort",2,modelData.key)
+                    }
+                }
+            }
+            Repeater {
+                model: pane.tableColumns.length-1
+                delegate: SongColumnDivider {
+                    tablePane: pane
+                    resizeViewport: tableHeaderViewport
+                    scrollOffset: list.contentX
+                    objectName: (pane.songsTable ? "songsColumnDivider" : "playlistColumnDivider")+index
+                    z: 2
+                }
+            }
+        }
         ListView {
             id: list
+            visible: !(window.library.view === "Playlists" && pane.paneIndex === 1)
             objectName: "libraryPane" + pane.paneIndex
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -1344,7 +1520,31 @@ ApplicationWindow {
             onContentYChanged: if (!pane.adjustingWindow && !viewportTimer.running) viewportTimer.start()
             onHeightChanged: if (!pane.adjustingWindow) viewportTimer.restart()
             boundsBehavior: Flickable.StopAtBounds
+            contentWidth: pane.detailsTable ? Math.max(width,pane.columnsWidth+16) : width
+            flickableDirection: pane.detailsTable ? Flickable.HorizontalAndVerticalFlick : Flickable.VerticalFlick
+            ScrollBar.horizontal: ScrollBar { policy: pane.detailsTable ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
             ScrollBar.vertical: ScrollBar {}
+            // Viewport-level strips stay available over rows and empty space.
+            // Keeping them outside contentItem also preserves vertical flicking.
+            Item {
+                id: tableBodyDividers
+                parent: list
+                visible: pane.detailsTable
+                width: list.width-(list.ScrollBar.vertical.visible ? list.ScrollBar.vertical.width : 0)
+                height: list.height-(list.ScrollBar.horizontal.visible ? list.ScrollBar.horizontal.height : 0)
+                clip: true
+                z: 3
+                Repeater {
+                    model: pane.tableColumns.length-1
+                    delegate: SongColumnDivider {
+                        tablePane: pane
+                        resizeViewport: tableBodyDividers
+                        scrollOffset: list.contentX
+                        bodyDivider: true
+                        objectName: (pane.songsTable ? "songsBodyColumnDivider" : "playlistBodyColumnDivider")+index
+                    }
+                }
+            }
             Keys.onDownPressed: event => { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? pane.albumColumns : 1)),event.modifiers); }
             Keys.onUpPressed: event => { pane.selectRow(Math.max(0, pane.logicalIndex - (pane.paneIndex === 1 ? pane.albumColumns : 1)),event.modifiers); }
             Keys.onLeftPressed: event => { if (pane.paneIndex === 1) pane.selectRow(Math.max(0, pane.logicalIndex - 1),event.modifiers); }
@@ -1361,31 +1561,59 @@ ApplicationWindow {
                 required property var rowData
                 readonly property var modelData: rowData
                 required property int index
-                width: list.width
-                height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? albumLayout.implicitHeight + pane.tileGap : 48
+                width: pane.detailsTable ? list.contentWidth : list.width
+                height: pane.paneIndex === 0 ? 34 : pane.paneIndex === 1 ? albumLayout.implicitHeight + pane.tileGap : pane.detailsTable ? 30 : 48
                 color: pane.paneIndex === 1 ? "transparent" : pane.isSelected(modelData.id) ? "#e8d9e0" : mouse.containsMouse ? "#eeece9" : "transparent"
                 border.width: pane.paneIndex !== 1 && list.activeFocus && list.currentIndex === index ? 1 : 0
                 border.color: "#96506d"
                 Accessible.role: Accessible.ListItem
                 Accessible.name: pane.paneIndex === 1 ? (modelData.groupTitle || "Albums") : modelData.title + " " + modelData.subtitle
                 Accessible.selected: pane.isSelected(modelData.id)
+                Accessible.description: pane.playlistTable && modelData.track && !modelData.track.available ? "Local unavailable" : ""
+                ToolTip.visible: pane.playlistTable && mouse.containsMouse && modelData.track && !modelData.track.available
+                ToolTip.text: "Local unavailable; playback will try supported providers"
+                ToolTip.delay: 700
                 Column {
-                    visible: pane.paneIndex !== 1
+                    visible: pane.paneIndex !== 1 && !pane.detailsTable
                     anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                     anchors.leftMargin: 9; anchors.rightMargin: 16
                     spacing: 2
                     Row {
                         width: parent.width
                         spacing: 8
-                        Label { id: trackNumber; objectName: "trackNumber"; visible: pane.paneIndex === 2 && !!row.modelData.number; text: row.modelData.number || ""; width: visible ? Math.max(22, implicitWidth) : 0; color: "#827b80"; font.pixelSize: 14 }
-                        Label { objectName: "songTitle"; width: parent.width - (trackNumber.visible ? trackNumber.width + 8 : 0); text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && (row.modelData.track ? row.modelData.track.trackId : row.modelData.id) === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
+                        Label { id: trackNumber; objectName: pane.playlistTable ? "" : "trackNumber"; visible: pane.paneIndex === 2 && !!row.modelData.number; text: row.modelData.number || ""; width: visible ? Math.max(22, Math.ceil(numberMetrics.advanceWidth)) : 0; color: "#827b80"; font.pixelSize: 14 }
+                        TextMetrics { id: numberMetrics; font: trackNumber.font; text: trackNumber.text }
+                        Label { objectName: pane.detailsTable ? "" : "songTitle"; width: parent.width - (trackNumber.visible ? trackNumber.width + 8 : 0); text: row.modelData.title || "Untitled"; color: pane.paneIndex === 2 && (row.modelData.track ? row.modelData.track.trackId : row.modelData.id) === window.view.currentId ? "#c6283e" : "#242126"; textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 14 }
                     }
                     Label {
                         width: parent.width
                         visible: pane.paneIndex > 0
-                        objectName: "songSubtitle"
-                        text: pane.paneIndex === 2 ? row.modelData.subtitle + (pane.albumSongs ? "" : " · " + row.modelData.track.release) : (row.modelData.subtitle || "")
+                        objectName: pane.detailsTable ? "" : "songSubtitle"
+                        text: pane.paneIndex === 2 ? [row.modelData.subtitle || "Unknown artist", pane.albumSongs ? "" : row.modelData.track.release, window.library.view === "Playlists" && !row.modelData.track.available ? "Local unavailable" : ""].filter(value => value.length > 0).join(" · ") : (row.modelData.subtitle || "")
                         textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
+                    }
+                }
+                Row {
+                    visible: pane.detailsTable
+                    anchors.verticalCenter: parent.verticalCenter
+                    Repeater {
+                        model: pane.songsTable && row && row.modelData ? [row.modelData.title || "Untitled",row.modelData.subtitle || "Unknown artist",row.modelData.track ? row.modelData.track.release || "" : "",row.modelData.genres || ""] : pane.playlistTable && row && row.modelData ? [row.modelData.number || "", row.modelData.title || "Untitled", row.modelData.subtitle || "Unknown artist", row.modelData.track ? row.modelData.track.release || "" : "", row.modelData.length || "--:--"] : []
+                        delegate: Label {
+                            required property var modelData
+                            required property int index
+                            objectName: (pane.songsTable ? ["songTitle","songsArtist","songsAlbum","songsGenre"] : ["trackNumber","songTitle","playlistArtist","playlistAlbum","playlistLength"])[index] || ""
+                            width: pane.tableColumns[index] || 0
+                            leftPadding: 6
+                            rightPadding: 6
+                            text: modelData
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.pixelSize: 12
+                            height: row.height
+                            verticalAlignment: Text.AlignVCenter
+                            color: index === (pane.songsTable ? 0 : 1) && row && row.modelData && row.modelData.track && row.modelData.track.trackId === window.view.currentId ? "#c6283e" : "#242126"
+                            opacity: pane.playlistTable && row && row.modelData && row.modelData.track && !row.modelData.track.available ? 0.65 : 1
+                        }
                     }
                 }
                 function viewportTileAnchor() {
@@ -1542,6 +1770,15 @@ ApplicationWindow {
             Layout.fillHeight: true
             Layout.leftMargin: 16; Layout.rightMargin: 16
             orientation: Qt.Horizontal
+            property bool playlistOrder: false
+            function syncOrder() {
+                const wanted = window.library.view === "Playlists";
+                if (wanted === playlistOrder || count !== 3) return;
+                moveItem(wanted ? 1 : 2, wanted ? 2 : 1);
+                playlistOrder = wanted;
+            }
+            Component.onCompleted: syncOrder()
+            Connections { target: window; function onLibraryChanged() { librarySplit.syncOrder(); } }
             handle: Rectangle {
                 objectName: "librarySplitHandle"
                 implicitWidth: 16
@@ -1556,8 +1793,8 @@ ApplicationWindow {
             // The center pane absorbs changes from either divider, keeping the
             // opposite outside pane (and thus the opposite divider) stationary.
             LibraryPane { id: artistsPane; objectName: "artistsPane"; paneIndex: 0; heading: window.library.view === "Genres" ? "GENRES" : window.library.view === "Playlists" ? "PLAYLISTS" : "ARTISTS"; visible: ["Artists", "Genres", "Playlists"].indexOf(window.library.view) >= 0; SplitView.minimumWidth: 160; SplitView.preferredWidth: (librarySplit.width - 32) * 230 / 1020 }
-            LibraryPane { id: albumsPane; objectName: "albumsPane"; paneIndex: 1; heading: "ALBUMS"; visible: ["Artists", "Genres", "Albums"].indexOf(window.library.view) >= 0; SplitView.minimumWidth: tileWidth + 2 * tileInset + scrollAllowance; SplitView.fillWidth: true }
-            LibraryPane { id: songsPane; objectName: "songsPane"; paneIndex: 2; heading: "SONGS"; SplitView.fillWidth: !albumsPane.visible; SplitView.minimumWidth: 260; SplitView.preferredWidth: (librarySplit.width - 32) * 470 / 1020 }
+            LibraryPane { id: albumsPane; objectName: "albumsPane"; paneIndex: 1; heading: window.library.view === "Playlists" ? "DETAILS" : "ALBUMS"; visible: ["Artists", "Genres", "Albums", "Playlists"].indexOf(window.library.view) >= 0; SplitView.minimumWidth: window.library.view === "Playlists" ? 220 : tileWidth + 2 * tileInset + scrollAllowance; SplitView.preferredWidth: window.library.view === "Playlists" ? 260 : (librarySplit.width - 32) * 320 / 1020; SplitView.fillWidth: window.library.view !== "Playlists" }
+            LibraryPane { id: songsPane; objectName: "songsPane"; paneIndex: 2; heading: "SONGS"; SplitView.fillWidth: !albumsPane.visible || window.library.view === "Playlists"; SplitView.minimumWidth: 260; SplitView.preferredWidth: (librarySplit.width - 32) * 470 / 1020 }
         }
         Label {
             visible: text.length > 0

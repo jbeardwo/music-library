@@ -1149,7 +1149,16 @@ fn established_spotify_occurrence_ignores_credit_only_with_position_and_title() 
                 matches!(&result, music_library::album_program::Outcome::Complete(rows) if rows.iter().all(|(_, o)| matches!(o, TrackOutcome::Matched(m) if m.recording_status == RecordingStatus::NotProvided && m.recording.identities.is_empty())))
             );
         }
-        assert_eq!(before, lib.local_album_tracks(&album).unwrap());
+        let after = lib.local_album_tracks(&album).unwrap();
+        let mut expected = before.clone();
+        for (old, new) in expected.iter_mut().zip(&after) {
+            old.evidence.duration_ms = new.evidence.duration_ms;
+            old.evidence.duration_approximate = new.evidence.duration_approximate;
+        }
+        assert_eq!(
+            expected, after,
+            "duration enrichment preserves identity and other metadata"
+        );
         assert!(
             lib.list_release_external_identities(&imported.release_id)
                 .unwrap()
@@ -1261,7 +1270,16 @@ fn preferred_demon_days_persists_dare_with_unresolved_contributors() {
         }),
     })
     .unwrap();
-    assert_eq!(before, lib.local_album_tracks(&album).unwrap());
+    let after = lib.local_album_tracks(&album).unwrap();
+    let mut expected = before.clone();
+    for (old, new) in expected.iter_mut().zip(&after) {
+        old.evidence.duration_ms = new.evidence.duration_ms;
+        old.evidence.duration_approximate = new.evidence.duration_approximate;
+    }
+    assert_eq!(
+        expected, after,
+        "duration enrichment preserves identity and other metadata"
+    );
     drop(lib);
     let lib = music_library::Library::open(&path).unwrap();
     for (t, expected) in before.iter().zip(&preferred.tracks) {

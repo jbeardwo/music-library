@@ -22,6 +22,12 @@ pub struct Association {
 impl Association {
     pub fn matched(&self) -> Match {
         Match {
+            duration: self.candidate.evidence.duration_ms.map(|milliseconds| {
+                crate::catalog::Duration {
+                    milliseconds,
+                    approximate: self.candidate.evidence.duration_approximate,
+                }
+            }),
             title: self.candidate.evidence.title.clone().unwrap_or_default(),
             recording: self.candidate.evidence.recording.clone(),
             recording_status: if self.candidate.evidence.recording.identities.is_empty() {
@@ -199,6 +205,20 @@ impl Store {
             if conflict {
                 return Err(Error::Invalid("Conflicting existing canonical Recording identity; replacement requires a separate correction path".into()));
             }
+        }
+        if let Some(milliseconds) = candidate.evidence.duration_ms {
+            let duration = crate::catalog::Duration {
+                milliseconds,
+                approximate: candidate.evidence.duration_approximate,
+            };
+            crate::storage::observe_duration(
+                &tx,
+                &selection.track_id,
+                &selection.album.provider,
+                &selection.album.external_id,
+                duration,
+                if duration.approximate { 2 } else { 0 },
+            )?;
         }
         let json = serde_json::to_string(candidate).map_err(|e| Error::Invalid(e.to_string()))?;
         tx.execute("INSERT INTO manual_track_association(track_id,album_provider,album_kind,album_external_id,candidate_json) VALUES(?1,?2,?3,?4,?5)",params![selection.track_id.as_ref(),selection.album.provider,selection.album.kind,selection.album.external_id,json])?;

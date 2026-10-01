@@ -108,8 +108,15 @@ pub struct Medium {
     pub position: u32,
     pub tracks: Vec<Track>,
 }
+/// A catalog observation, independent of membership and playback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Duration {
+    pub milliseconds: u64,
+    pub approximate: bool,
+}
 #[derive(Clone, Debug)]
 pub struct Track {
+    pub duration: Option<Duration>,
     pub position: u32,
     pub title: String,
     pub credits: Vec<Credit>,

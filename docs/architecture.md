@@ -2107,3 +2107,39 @@ keyset queries in 200-row chunks (201 queried for lookahead), retaining at most
 their existing bounded paging; main browsing has no pagination controls.
 See [continuous scrolling](continuous-scrolling.md) for window, viewport and
 selection ownership, validation and measurements.
+
+Playlist catalog additions reuse canonical catalog edition import through
+`ensure_catalog_release`, which persists identity/observations without saved
+membership. Selected positions resolve to canonical Track IDs before the existing
+batch playlist duplicate/append operation. Playlist entries still reference Track
+UUIDs directly; no schema change or provider-specific playlist representation is
+required. Explicit later Library saving reconciles the existing catalog edition.
+See [playlist data flow](playlists.md#direct-catalog-additions).
+
+Playlist Details are a selected-playlist storage aggregate over entry occurrences
+and effective Track durations, delivered by a read-only background reader and
+cached independently of row scrolling/reordering. Playlist display ordinals are
+separate from album Track numbers and entry UUIDs; bounded reads rank their first
+entry through the persisted-order index, within the same read snapshot as the
+page. See [Playlist Details and position display](playlists.md#playlist-details-and-position-display).
+
+
+Playlist Songs display ordering is independent of durable playlist ordering and
+queue snapshots. Alternate column sorts use a reconstructible, connection-local
+SQLite TEMP entry/sort-key projection with indexed keyset pagination. The worker
+prepares only selected playlists; QML still fetches 200 rows and retains at most
+600. Canonical entry UUIDs remain action identity, and absolute canonical ordinals
+remain the # values under every sort. Metadata stays on canonical Tracks/Releases;
+no durable schema or membership changes are needed for this display cache.
+
+### Main Songs details and independent duration observations
+
+The main Songs view now uses global indexed title/artist/Release/local-genre
+sorting and the existing bounded continuous window. Embedded song panes retain
+their presentation. Migration 22 stores provider/catalog duration evidence on
+canonical Tracks, independently of Library membership, sources, playlists and
+queues, and materializes approximation and compact local genres. Catalog import
+and accepted matching enrich duration without playback or rendering-time provider
+requests. Playlist rows and occurrence-based aggregates consume the same effective
+values. See [Songs details and duration](songs-details-and-duration.md) for source
+precedence, existing-data backfill, data flow and validation.

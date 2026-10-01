@@ -80,6 +80,7 @@ impl Fixture {
                     position: 1,
                     tracks: (1..=count)
                         .map(|n| catalog::Track {
+                            duration: None,
                             position: n,
                             title: format!("Song {n}"),
                             credits: vec![credit(artist)],
@@ -382,6 +383,7 @@ fn album_artist_display_matches_catalog_join_phrases_despite_different_track_art
             media: vec![catalog::Medium {
                 position: 1,
                 tracks: vec![catalog::Track {
+                    duration: None,
                     position: 1,
                     title: "Song 1".into(),
                     credits: vec![credit("Artist A")],

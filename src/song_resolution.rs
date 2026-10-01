@@ -378,6 +378,17 @@ impl Store {
             ));
         }
         tx.execute("INSERT INTO track_external_identity(track_id,provider,kind,external_id) VALUES(?1,?2,?3,?4)",params![selection.input.track_id.as_ref(),candidate.identity.provider,candidate.identity.kind,candidate.identity.external_id])?;
+        crate::storage::observe_duration(
+            &tx,
+            &selection.input.track_id,
+            &candidate.identity.provider,
+            &candidate.identity.external_id,
+            crate::catalog::Duration {
+                milliseconds: candidate.duration_ms,
+                approximate: false,
+            },
+            0,
+        )?;
         tx.commit()?;
         Ok(candidate.identity.clone())
     }

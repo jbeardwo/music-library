@@ -696,6 +696,12 @@ impl CatalogProvider for Spotify {
         let mut media: std::collections::BTreeMap<u32, Vec<Track>> = Default::default();
         for t in &program.tracks {
             media.entry(t.disc.unwrap_or(1)).or_default().push(Track {
+                duration: t
+                    .duration_ms
+                    .map(|milliseconds| music_library::catalog::Duration {
+                        milliseconds,
+                        approximate: false,
+                    }),
                 position: t
                     .number
                     .ok_or_else(|| CatalogError::Other("Song position is missing".into()))?,
@@ -849,6 +855,7 @@ impl CatalogProvider for Spotify {
                     disc: Some(song.disc_number),
                     number: Some(song.track_number),
                     duration_ms: Some(song.duration_ms),
+                    duration_approximate: false,
                     artists: song
                         .artists
                         .iter()

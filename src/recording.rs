@@ -335,6 +335,19 @@ impl Store {
                     |r| r.get(0).map(RecordingId),
                 )?;
                 bind_musicbrainz_tx(&tx, &source, &candidate.identity, &candidate.isrcs)?;
+                if let Some(milliseconds) = candidate.duration_ms {
+                    crate::storage::observe_duration(
+                        &tx,
+                        &track.track_id,
+                        &candidate.identity.provider,
+                        &candidate.identity.external_id,
+                        crate::catalog::Duration {
+                            milliseconds,
+                            approximate: true,
+                        },
+                        2,
+                    )?;
+                }
             }
             results.push((track.clone(), outcome));
         }

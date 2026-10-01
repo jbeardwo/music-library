@@ -634,6 +634,13 @@ fn interactive_catalog_search_browse_detail_and_selective_import_are_bounded() {
     assert_eq!(albums.next_offset, Some(20));
     let detail = mock.client.catalog_album(&albums.items[0]).unwrap();
     assert_eq!(detail.media[0].tracks.len(), 2);
+    assert_eq!(
+        detail.media[0].tracks[0].duration,
+        Some(music_library::catalog::Duration {
+            milliseconds: 200000,
+            approximate: false
+        })
+    );
     let temp = tempfile::tempdir().unwrap();
     let mut library = music_library::Library::open(temp.path().join("catalog.sqlite")).unwrap();
     let imported = library.add_catalog_selection(&detail, &[(1, 1)]).unwrap();

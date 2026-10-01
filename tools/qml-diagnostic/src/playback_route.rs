@@ -953,6 +953,7 @@ impl Bridge {
                     .confirm_song_resolution(&selection, index)
                 {
                     Ok(_) => {
+                        self.browse_action_impl("refresh", 0, String::new());
                         self.spotify_resolution_message =
                             "Unique Spotify song accepted and saved".into();
                         // Availability may have changed while HTTP was in flight.

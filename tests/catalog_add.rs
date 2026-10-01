@@ -41,6 +41,7 @@ fn release(key: &str) -> Release {
             Medium {
                 position: 1,
                 tracks: vec![Track {
+                    duration: None,
                     position: 1,
                     title: "Song (Live)".into(),
                     credits: credits.clone(),
@@ -55,6 +56,7 @@ fn release(key: &str) -> Release {
             Medium {
                 position: 2,
                 tracks: vec![Track {
+                    duration: None,
                     position: 1,
                     title: "Song - Remix".into(),
                     credits,
@@ -222,6 +224,17 @@ fn atomic_source_less_add_preserves_credits_identities_membership_and_reimport()
             .len(),
         1
     );
+    let mixed_playlist = library.create_playlist("Mixed batch").unwrap();
+    let first = library
+        .prepare_catalog_playlist_append(&mixed_playlist, &input, &[(1, 1)])
+        .unwrap();
+    library.apply_playlist_append(&first, true).unwrap();
+    let mixed = library
+        .prepare_catalog_playlist_append(&mixed_playlist, &input, &[(2, 1), (1, 1)])
+        .unwrap();
+    assert_eq!(mixed.duplicate_entries, 1);
+    assert_eq!(library.apply_playlist_append(&mixed, false).unwrap(), 1);
+    assert_eq!(library.apply_playlist_append(&mixed, true).unwrap(), 2);
     let db = Connection::open(&path).unwrap();
     for table in ["playable_source", "track_source"] {
         assert_eq!(
@@ -318,7 +331,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        21
+        22
     );
 }
 
@@ -785,5 +798,270 @@ fn catalog_preview_reuses_only_an_unambiguous_existing_reference() {
             .catalog_existing_reference(&album)
             .unwrap()
             .is_none()
+    );
+}
+
+#[test]
+fn catalog_playlist_identity_membership_reload_and_duplicates() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("playlist.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let playlist = library.create_playlist("Catalog only").unwrap();
+    let mut input = release("playlist-edition");
+    input.media[0].tracks[0]
+        .identities
+        .push(id("spotify", "track", "provider-playable"));
+    input.date.clear();
+    input.media[1].tracks[0].credits.clear();
+    let plan = library
+        .prepare_catalog_playlist_append(&playlist, &input, &[(2, 1), (1, 1)])
+        .unwrap();
+    assert_eq!(plan.duplicate_entries, 0);
+    assert_eq!(library.apply_playlist_append(&plan, true).unwrap(), 2);
+    let ids = plan.tracks.clone();
+    use music_library::playback_resolver::{RemoteCapability, Route};
+    let remote = RemoteCapability {
+        provider: "spotify",
+        unavailable: None,
+        catalog_available: false,
+        accepts: |i| i.kind == "track",
+    };
+    assert_eq!(
+        library.playback_route(&ids[1], &remote).unwrap(),
+        Route::Remote(id("spotify", "track", "provider-playable"))
+    );
+    assert!(matches!(
+        library.playback_route(&ids[0], &remote).unwrap(),
+        Route::Unavailable(_)
+    ));
+
+    let db = Connection::open(&path).unwrap();
+    for table in ["library_membership", "local_file_observation"] {
+        assert_eq!(
+            db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    for pane in [
+        music_library::browse::Pane::Artists,
+        music_library::browse::Pane::Albums,
+        music_library::browse::Pane::Songs,
+        music_library::browse::Pane::Genres,
+    ] {
+        assert!(
+            library
+                .browse(&music_library::browse::Request {
+                    pane,
+                    limit: 200,
+                    ..Default::default()
+                })
+                .unwrap()
+                .is_empty()
+        );
+    }
+    assert!(
+        library
+            .search(&SearchRequest::default())
+            .unwrap()
+            .is_empty()
+    );
+    let duplicate = library
+        .prepare_catalog_playlist_append(&playlist, &input, &[(1, 1)])
+        .unwrap();
+    assert_eq!(duplicate.tracks[0], ids[1]);
+    assert_eq!(duplicate.duplicate_entries, 1);
+    assert_eq!(library.apply_playlist_append(&duplicate, false).unwrap(), 0);
+    assert_eq!(library.apply_playlist_append(&duplicate, true).unwrap(), 1);
+    let rows = library.playlist_entries(&playlist, None, 200).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0].title, "Song - Remix");
+    assert_eq!(rows[0].subtitle, "");
+    assert!(!rows[0].track.as_ref().unwrap().available);
+    assert_ne!(rows[1].id, rows[2].id);
+    let entry_ids = rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+    drop(library);
+    let mut library = Library::open(&path).unwrap();
+    assert_eq!(
+        library
+            .playlist_entries(&playlist, None, 200)
+            .unwrap()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>(),
+        entry_ids
+    );
+    let (snapshot, start) = library
+        .library_queue_reader()
+        .unwrap()
+        .read_playlist(&playlist, Some(&entry_ids[2]))
+        .unwrap();
+    assert_eq!(start, 2);
+    assert_eq!(
+        snapshot
+            .iter()
+            .map(|r| r.track_id.clone())
+            .collect::<Vec<_>>(),
+        [ids[0].clone(), ids[1].clone(), ids[1].clone()]
+    );
+    let saved = library.add_catalog_selection(&input, &[(1, 1)]).unwrap();
+    assert!(saved.track_ids.contains(&ids[1]));
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        2
+    );
+    library
+        .remove_playlist_entry(&playlist, &entry_ids[1])
+        .unwrap();
+    assert_eq!(library.search(&SearchRequest::default()).unwrap().len(), 1);
+    library.remove_from_library(&ids[1]).unwrap();
+    assert_eq!(
+        library
+            .playlist_entries(&playlist, None, 200)
+            .unwrap()
+            .len(),
+        2
+    );
+    library
+        .remove_playlist_entry(&playlist, &entry_ids[2])
+        .unwrap();
+    assert_eq!(
+        library.ensure_catalog_release(&input).unwrap().track_ids,
+        saved.track_ids
+    );
+}
+
+#[test]
+fn catalog_duration_is_durable_membership_independent_and_enriches_same_identity() {
+    use music_library::catalog::Duration;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("duration.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let mut input = release("duration-edition");
+    input.media[0].tracks[0].duration = Some(Duration {
+        milliseconds: 123_000,
+        approximate: true,
+    });
+    let playlist = library.create_playlist("Durations").unwrap();
+    let plan = library
+        .prepare_catalog_playlist_append(&playlist, &input, &[(1, 1), (1, 1), (2, 1)])
+        .unwrap();
+    library.apply_playlist_append(&plan, true).unwrap();
+    let rows = library.playlist_entries(&playlist, None, 200).unwrap();
+    assert_eq!(rows[0].duration_ms, Some(123_000));
+    assert!(rows[0].duration_approximate);
+    assert_eq!(rows[1].duration_ms, Some(123_000));
+    assert_eq!(rows[2].duration_ms, None);
+    let canonical = rows[0].track.as_ref().unwrap().track_id.clone();
+    let details = library.playlist_details(&playlist).unwrap().unwrap();
+    assert_eq!(details.known_duration_ms, 246_000);
+    assert_eq!(details.unknown_duration_count, 1);
+    assert_eq!(details.approximate_duration_count, 2);
+    assert!(
+        library
+            .search(&SearchRequest::default())
+            .unwrap()
+            .is_empty()
+    );
+    drop(library);
+    let mut library = Library::open(&path).unwrap();
+    assert_eq!(
+        library.playlist_entries(&playlist, None, 200).unwrap()[0].duration_ms,
+        Some(123_000)
+    );
+    let imported = library.ensure_catalog_release(&input).unwrap();
+    library
+        .attach_release_external_identity(
+            &imported.release_id,
+            &id("spotify", "album", "spotify-duration-album"),
+        )
+        .unwrap();
+    let mut spotify = input.clone();
+    spotify.identity = id("spotify", "album", "spotify-duration-album");
+    spotify.media[0].tracks[0].duration = Some(Duration {
+        milliseconds: 124_000,
+        approximate: false,
+    });
+    let enriched = library.ensure_catalog_release(&spotify).unwrap();
+    assert_eq!(imported.track_ids, enriched.track_ids);
+    let rows = library.playlist_entries(&playlist, None, 200).unwrap();
+    assert_eq!(rows[0].track.as_ref().unwrap().track_id, canonical);
+    assert_eq!(rows[0].duration_ms, Some(124_000));
+    assert!(!rows[0].duration_approximate);
+    library.ensure_catalog_release(&input).unwrap(); // lower-quality refresh cannot replace provider evidence
+    let details = library.playlist_details(&playlist).unwrap().unwrap();
+    assert_eq!(details.known_duration_ms, 248_000);
+    assert_eq!(details.approximate_duration_count, 0);
+    assert_eq!(details.unknown_duration_count, 1);
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM library_membership", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        library
+            .library_queue_reader()
+            .unwrap()
+            .read_playlist(&playlist, None)
+            .unwrap()
+            .0
+            .len(),
+        3
+    );
+    drop(library);
+    let library = Library::open(&path).unwrap();
+    assert_eq!(
+        library.playlist_entries(&playlist, None, 200).unwrap()[0].duration_ms,
+        Some(124_000)
+    );
+}
+
+#[test]
+fn duration_migration_backfills_persisted_evidence_without_library_membership() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("backfill.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let imported = library
+        .ensure_catalog_release(&release("backfill"))
+        .unwrap();
+    let track = &imported.track_ids[0];
+    drop(library);
+    let db = Connection::open(&path).unwrap();
+    let candidate = music_library::manual_track::Candidate {
+        evidence: music_library::edition::TrackEvidence {
+            duration_ms: Some(123_456),
+            ..Default::default()
+        },
+        supporting_programs: 1,
+    };
+    db.execute(
+        "INSERT INTO manual_track_association VALUES (?1,'musicbrainz','release_group','group',?2)",
+        rusqlite::params![track.as_ref(), serde_json::to_string(&candidate).unwrap()],
+    )
+    .unwrap();
+    db.execute_batch(include_str!("support/drop_song_details.sql"))
+        .unwrap();
+    db.execute_batch("PRAGMA user_version=21").unwrap();
+    drop(db);
+    let library = Library::open(&path).unwrap();
+    let evidence = library.edition_evidence(&imported.release_id).unwrap();
+    assert_eq!(evidence.tracks[0].evidence.duration_ms, Some(123_456));
+    assert!(evidence.tracks[0].evidence.duration_approximate);
+    let db = Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM library_membership", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track_duration_observation", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        1
     );
 }

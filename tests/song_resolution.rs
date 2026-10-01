@@ -32,6 +32,7 @@ fn release() -> Release {
         media: vec![Medium {
             position: 1,
             tracks: vec![Track {
+                duration: None,
                 position: 1,
                 title: "Song".into(),
                 credits,
@@ -514,5 +515,53 @@ fn album_program_context_survives_partial_membership_and_date_precision_ranks_lo
             .map(|a| a.class)
             .collect::<Vec<_>>(),
         vec![Class::Alternate, Class::Preferred]
+    );
+}
+
+#[test]
+fn provider_metadata_enriches_playlist_only_duration_without_playback() {
+    use music_library::catalog::Duration;
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("duration.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let mut catalog = release();
+    catalog.media[0].tracks[0].duration = Some(Duration {
+        milliseconds: 199_000,
+        approximate: true,
+    });
+    let playlist = library.create_playlist("Unsaved").unwrap();
+    let plan = library
+        .prepare_catalog_playlist_append(&playlist, &catalog, &[(1, 1), (1, 1)])
+        .unwrap();
+    library.apply_playlist_append(&plan, true).unwrap();
+    let before = library.playlist_entries(&playlist, None, 200).unwrap();
+    let track = before[0].track.as_ref().unwrap().track_id.clone();
+    let input = library.song_resolution_input(&track).unwrap();
+    let mut provider = candidate();
+    provider.album = input.album.clone();
+    library
+        .confirm_song_resolution(&Selection::new(input, vec![provider]), 0)
+        .unwrap();
+    drop(library);
+    let library = Library::open(&path).unwrap();
+    let after = library.playlist_entries(&playlist, None, 200).unwrap();
+    assert_eq!(
+        before.iter().map(|r| &r.id).collect::<Vec<_>>(),
+        after.iter().map(|r| &r.id).collect::<Vec<_>>()
+    );
+    for row in after {
+        assert_eq!(row.track.unwrap().track_id, track);
+        assert_eq!(row.duration_ms, Some(200_000));
+        assert!(!row.duration_approximate);
+    }
+    let details = library.playlist_details(&playlist).unwrap().unwrap();
+    assert_eq!(details.known_duration_ms, 400_000);
+    assert_eq!(details.approximate_duration_count, 0);
+    let db = rusqlite::Connection::open(path).unwrap();
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM library_membership", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }

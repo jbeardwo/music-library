@@ -22,8 +22,18 @@ pub enum Sort {
     Album,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SongColumn {
+    #[default]
+    Song,
+    Artist,
+    Album,
+    Genre,
+}
 #[derive(Clone, Debug, Default)]
 pub struct Request {
+    pub song_column: Option<SongColumn>,
+    pub descending: bool,
     pub pane: Pane,
     pub sort: Sort,
     /// Ordering of Album groups when Songs use Album mode. Default is newest first.
@@ -64,6 +74,11 @@ pub struct Row {
     pub group_label: String,
     pub cursor: Cursor,
     pub track: Option<TrackSearchResult>,
+    /// Absolute 1-based ordinal in a playlist, independent of cursor gaps and Track ordering.
+    pub playlist_position: Option<u64>,
+    pub duration_ms: Option<u64>,
+    pub duration_approximate: bool,
+    pub genres: String,
     pub track_number: Option<u32>,
     pub disc_number: Option<u32>,
     pub multi_disc: bool,
@@ -359,7 +374,7 @@ fn query_projection(
                     ("b.title_key", "''", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
                 } else if album_order {
                     ("b.year_key", "b.title_key", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
-                } else { ("lower(e.title)", "''", "0", "0") };
+                } else { (match request.song_column {Some(SongColumn::Artist)=>"lower(e.artist_names)",Some(SongColumn::Album)=>"lower(e.release_title)",Some(SongColumn::Genre)=>"lower(e.genre_names)",_=>"lower(e.title)"}, "''", "0", "0") };
                 let album_filter = if request.album.is_some() { " AND r.album_id=?2" }
                     else if album_order && target.is_some() { " AND b.album_id=(SELECT r2.album_id FROM track t2 JOIN release r2 ON r2.id=t2.release_id WHERE t2.id=?11)" }
                     else { "" };
@@ -369,7 +384,7 @@ fn query_projection(
                 } else if album_order {
                     "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
                 } else if (stream_titles || (request.artist.is_none() && request.genre.is_none() && request.album.is_none() && request.track.is_none() && request.artists.is_empty() && request.genres.is_empty() && request.albums.is_empty() && request.tracks.is_empty())) && target.is_none() {
-                    "effective_track_metadata e INDEXED BY track_browse_title CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
+                    match request.song_column {Some(SongColumn::Artist)=>"effective_track_metadata e INDEXED BY song_details_artist CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",Some(SongColumn::Album)=>"effective_track_metadata e INDEXED BY song_details_album CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",Some(SongColumn::Genre)=>"effective_track_metadata e INDEXED BY song_details_genre CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",_=>"effective_track_metadata e INDEXED BY track_browse_title CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"}
                 } else if request.album.is_some() || !request.albums.is_empty() {
                     "release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN effective_track_metadata e ON e.track_id=t.id"
                 } else if request.artist.is_some() || request.genre.is_some() || request.track.is_some() || !request.artists.is_empty() || !request.genres.is_empty() || !request.tracks.is_empty() {
@@ -421,7 +436,7 @@ fn query_projection(
     } else {
         cursor.to_string()
     };
-    let descending = request.sort == Sort::Descending;
+    let descending = request.sort == Sort::Descending || request.descending;
     let cursor = if reverse != descending {
         cursor.replace(" >= ", " <= ").replace(" > ", " < ")
     } else {
@@ -486,9 +501,9 @@ fn query_projection(
     let sql = format!(
         "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} AND (?19 IS NULL OR id IN (SELECT value FROM json_each(?19))) ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) AND (?15 IS NULL OR 1) AND (?16 IS NULL OR 1) AND (?17 IS NULL OR 1) AND (?18 IS NULL OR 1) ORDER BY {final_order}",
         if request.pane == Pane::Songs && !queue {
-            "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1)"
+            "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names"
         } else {
-            "NULL, NULL, 0"
+            "NULL, NULL, 0, ''"
         }
     );
     let mut statement = connection.prepare(&sql)?;
@@ -533,6 +548,10 @@ fn query_projection(
                         ..Default::default()
                     },
                     track: None,
+                    playlist_position: None,
+                    duration_ms: None,
+                    duration_approximate: false,
+                    genres: String::new(),
                     track_number: None,
                     disc_number: None,
                     multi_disc: false,
@@ -546,6 +565,10 @@ fn query_projection(
                 year: r.get(10)?,
                 group: r.get(4)?,
                 group_label: r.get(14)?,
+                playlist_position: None,
+                duration_ms: None,
+                duration_approximate: false,
+                genres: r.get(18)?,
                 track_number: r.get(15)?,
                 disc_number: r.get(16)?,
                 multi_disc: r.get(17)?,
@@ -630,7 +653,7 @@ impl QueueReader {
                 r.id.clone(),
             )
         };
-        let descending = request.sort == Sort::Descending;
+        let descending = request.sort == Sort::Descending || request.descending;
         let (first, last) = if (tuple(&a) <= tuple(&b)) != descending {
             (a, b)
         } else {

@@ -797,6 +797,7 @@ fn edition_evidence(
                 title: track.title.or(Some(track.recording.title)),
                 artists: artist_evidence(track.credits.unwrap_or(track.recording.credits)),
                 duration_ms: track.length.or(track.recording.length),
+                duration_approximate: track.length.is_none(),
                 recording: RecordingEvidence {
                     identities: vec![identity("recording", &track.recording.id)],
                     isrcs: track.recording.isrcs,
@@ -1079,6 +1080,12 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
                         credits(values)
                     };
                     Ok(catalog::Track {
+                        duration: t.length.or(t.recording.length).map(|milliseconds| {
+                            catalog::Duration {
+                                milliseconds,
+                                approximate: t.length.is_none(),
+                            }
+                        }),
                         position: t.position,
                         title: t.title.unwrap_or(t.recording.title),
                         credits: artist,
@@ -1273,6 +1280,22 @@ mod tests {
             vec![("Label".into(), Some("CAT-1".into()))]
         );
         assert_eq!(rich.tracks[2].duration_ms, Some(123000));
+        json["media"][1]["tracks"][0]["recording"]["length"] = serde_json::json!(98000);
+        let catalog = convert_release(serde_json::from_value(json.clone()).unwrap()).unwrap();
+        assert_eq!(
+            catalog.media[1].tracks[0].duration,
+            Some(catalog::Duration {
+                milliseconds: 123000,
+                approximate: false
+            })
+        );
+        assert_eq!(
+            catalog.media[0].tracks[1].duration,
+            Some(catalog::Duration {
+                milliseconds: 98000,
+                approximate: true
+            })
+        );
         json["media"][0]["track-count"] = serde_json::json!(2);
         assert!(
             !edition_evidence(serde_json::from_value(json).unwrap())

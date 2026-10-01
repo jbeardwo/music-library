@@ -75,6 +75,7 @@ struct Bridge {
                     });
                 match result {
                     Ok(id) => {
+                        self.browse_action_impl("refresh", 0, String::new());
                         self.spotify_playback_song =
                             music_library_spotify::playback::Song::from_associations(&[id]).ok();
                         self.spotify_resolution_selection = None;
@@ -367,6 +368,7 @@ struct Bridge {
             };
             match result {
                 Ok(album) => {
+                    self.browse_action_impl("refresh", 0, String::new());
                     if let Err(e) = self.refresh_manual_album(&album) {
                         self.manual_error = e;
                         self.manual_changed();
@@ -1898,6 +1900,7 @@ fn program_callback(
                     .matching_tracks
                     .insert(id.clone(), reply.input.tracks.clone());
                 matcher.complete_programs(&mut bridge.session.library, reply);
+                bridge.browse_action_impl("refresh", 0, String::new());
                 bridge.matcher = Some(matcher);
                 if let Err(e) = bridge.refresh_manual_album(&id) {
                     bridge.session.error = e;
@@ -1998,6 +2001,7 @@ fn matching_callback(
             if let Some(row) = bridge.matching_rows.iter_mut().find(|r| r.0 == id) {
                 row.2 = outcome;
             }
+            bridge.browse_action_impl("refresh", 0, String::new());
             bridge.matching_changed();
         }
     })
@@ -3008,6 +3012,7 @@ mod event_delivery_tests {
                     media: vec![Medium {
                         position: 1,
                         tracks: vec![Track {
+                            duration: None,
                             position: 1,
                             title: "Catalog Song".into(),
                             credits: vec![],
@@ -3453,6 +3458,7 @@ mod event_delivery_tests {
             let outcome = Outcome::Complete(vec![(
                 local.clone(),
                 TrackOutcome::Matched(Match {
+                    duration: None,
                     title: "Feel Good Inc.".into(),
                     recording: RecordingEvidence::default(),
                     recording_status: music_library::album_program::RecordingStatus::Ambiguous,
@@ -3497,6 +3503,7 @@ mod event_delivery_tests {
             let song_outcome = Outcome::Complete(vec![(
                 local.clone(),
                 TrackOutcome::Matched(music_library::album_program::Match {
+                    duration: None,
                     title: "Feel Good Inc.".into(),
                     recording: RecordingEvidence::default(),
                     recording_status: music_library::album_program::RecordingStatus::NotProvided,
@@ -4310,7 +4317,8 @@ mod library_ui_tests {
             .replacen(
                 "    function ready() {",
                 &format!(
-                    "{}\n    function ready() {{",
+                    "{}\n{}\n    function ready() {{",
+                    include_str!("../SongColumnResizeTest.qml"),
                     include_str!("../MainBrowsingScrollingTest.qml")
                 ),
                 1,
@@ -4344,7 +4352,11 @@ mod library_ui_tests {
                     }],
                     tracks: vec![CatalogTrackInput {
                         title: format!("Song {n:04}"),
-                        artists: vec![],
+                        // Exercise the track-artist sort rather than a Release-credit display fallback.
+                        artists: vec![ArtistCreditInput {
+                            name: format!("Artist {n:04}"),
+                            role: None,
+                        }],
                         disc_number: None,
                         track_number: None,
                     }],
@@ -4383,6 +4395,87 @@ mod library_ui_tests {
             .unwrap();
         assert!(count >= 200_000);
         run_main_browsing_scrolling(music_library::Library::open(path).unwrap());
+    }
+
+    #[test]
+    #[ignore = "requires disposable deterministic 200k library copy"]
+    fn playlist_table_200k_bounded_sorting() {
+        use music_library::domain::{CatalogReleaseInput, CatalogTrackInput};
+        let path = std::env::var_os("MUSIC_LIBRARY_PLAYLIST_TABLE_STRESS_COPY")
+            .expect("disposable 200k copy");
+        let mut library = music_library::Library::open(&path).unwrap();
+        let playlist = library.create_playlist("! Table stress").unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let members: i64 = db
+            .query_row("SELECT COUNT(*) FROM library_membership", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(members, 200_000);
+        db.execute("INSERT INTO playlist_entry(id,playlist_id,track_id,position) SELECT ?1||'-'||p.track_id,?1,p.track_id,row_number() OVER(ORDER BY p.title COLLATE NOCASE DESC,p.track_id)-1 FROM effective_track_metadata p",[&playlist]).unwrap();
+        let catalog = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Catalog only".into(),
+                year: None,
+                artists: vec![],
+                tracks: vec![CatalogTrackInput {
+                    title: "Catalog only track".into(),
+                    artists: vec![],
+                    disc_number: None,
+                    track_number: None,
+                }],
+            })
+            .unwrap();
+        library
+            .append_playlist_track(&playlist, &catalog.track_ids[0])
+            .unwrap();
+        library
+            .append_playlist_track(&playlist, &catalog.track_ids[0])
+            .unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n{}\n    function ready() {{",
+                    include_str!("../SongColumnResizeTest.qml"),
+                    include_str!("../PlaylistTableStressTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exercisePlaylistTableStress".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM library_membership", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            members
+        );
+        let canonical = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .playlist_entries(&playlist, None, 1)
+            .unwrap();
+        assert_eq!(canonical[0].playlist_position, Some(1));
+        bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .delete_playlist(&playlist)
+            .unwrap();
+        #[cfg(feature = "gstreamer")]
+        bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
     #[test]
@@ -4430,6 +4523,16 @@ mod library_ui_tests {
             let playlist = library
                 .create_playlist(&format!("Playlist {n:03}"))
                 .unwrap();
+            if n == 2 {
+                for track in tracks.iter().rev() {
+                    library.append_playlist_track(&playlist, track).unwrap();
+                }
+                library
+                    .append_playlist_track(&playlist, &tracks[500])
+                    .unwrap();
+                let db = rusqlite::Connection::open(&path).unwrap();
+                db.execute("UPDATE effective_track_metadata SET duration_ms=CASE WHEN CAST(substr(title,6) AS INTEGER)%17=0 THEN NULL ELSE CAST(substr(title,6) AS INTEGER)*1000 END",[]).unwrap();
+            }
             if n == 0 {
                 for _ in 0..1003 {
                     library
@@ -4670,6 +4773,109 @@ mod library_ui_tests {
                 .to_string(),
             "ok"
         );
+    }
+
+    #[test]
+    fn song_details_columns_resize_without_model_or_playback_changes() {
+        let (_temp, mut library) = sample::create().unwrap();
+        let tracks = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap();
+        let playlist = library.create_playlist("Columns").unwrap();
+        for track in tracks.iter().take(5) {
+            library
+                .append_playlist_track(&playlist, &track.track_id)
+                .unwrap();
+        }
+        library
+            .append_playlist_track(&playlist, &tracks[0].track_id)
+            .unwrap();
+        let available = tracks.iter().find(|t| t.title == "02 Available").unwrap();
+        let mut session = Session::new(library);
+        session.play_row(available.track_id.as_ref());
+        assert_eq!(
+            session.playback.state().status,
+            music_library::playback::PlaybackStatus::Playing
+        );
+        let bridge = QObjectBox::new(Bridge::new(session));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../SongColumnResizeTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseSongColumnResize".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn playlist_catalog_button_geometry_stays_stable() {
+        let (_temp, mut library) = sample::create().unwrap();
+        let track = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "02 Available")
+            .unwrap()
+            .track_id;
+        let playlist = library.create_playlist("Geometry audit").unwrap();
+        library.append_playlist_track(&playlist, &track).unwrap();
+        let db = rusqlite::Connection::open(_temp.path().join("diagnostic.sqlite")).unwrap();
+        db.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<200000) INSERT INTO playlist_entry(id,playlist_id,track_id,position) SELECT 'geometry-'||x,?1,?2,x FROM n",rusqlite::params![playlist,track.as_ref()]).unwrap();
+        drop(db);
+
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.browse_action_impl("view", 0, "Playlists".into());
+            b.browse_action_impl("select", 0, playlist);
+        }
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../PlaylistGeometryTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        for playing in [false, true] {
+            assert_eq!(
+                engine
+                    .invoke_method(
+                        "auditPlaylistGeometry".into(),
+                        &[20000.into(), playing.into()]
+                    )
+                    .to_qstring()
+                    .to_string(),
+                "ok"
+            );
+        }
     }
 
     #[test]

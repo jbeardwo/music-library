@@ -226,6 +226,7 @@ pub fn resolve(
                 m.occurrences.retain(|id| mappings.iter().all(|rows| {
                     matches!(&rows[i], TrackOutcome::Matched(other) | TrackOutcome::AlreadyMatched(other) if other.occurrences.contains(id))
                 }));
+                if !mappings.iter().all(|rows|matches!(&rows[i],TrackOutcome::Matched(other)|TrackOutcome::AlreadyMatched(other) if other.duration==m.duration)) {m.duration=None;}
                 // No Recording claim is made while provider objects are unresolved.
                 m.recording.identities.clear();
                 if m.recording_status == album_program::RecordingStatus::Identified {

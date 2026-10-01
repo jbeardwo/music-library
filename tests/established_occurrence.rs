@@ -124,7 +124,16 @@ fn live_toe_and_tricot_programs_persist_occurrences_without_linguistic_identity(
             "{name}: occurrence comparison + transaction {:?}",
             started.elapsed()
         );
-        assert_eq!(before, lib.local_album_tracks(&album).unwrap());
+        let after = lib.local_album_tracks(&album).unwrap();
+        let mut expected = before.clone();
+        for (old, new) in expected.iter_mut().zip(&after) {
+            old.evidence.duration_ms = new.evidence.duration_ms;
+            old.evidence.duration_approximate = new.evidence.duration_approximate;
+        }
+        assert_eq!(
+            expected, after,
+            "provider duration enrichment preserves canonical identity"
+        );
         assert!(
             lib.list_release_external_identities(&imported.release_id)
                 .unwrap()

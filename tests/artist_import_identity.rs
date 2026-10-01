@@ -184,6 +184,8 @@ fn migration_preserves_conflicting_artist_ids_and_unrelated_equal_names() {
         ],
     )
     .unwrap();
+    db.execute_batch(include_str!("support/drop_song_details.sql"))
+        .unwrap();
     db.execute_batch(
         "DROP TRIGGER IF EXISTS artist_lookup_insert;
 DROP TRIGGER IF EXISTS artist_lookup_update;

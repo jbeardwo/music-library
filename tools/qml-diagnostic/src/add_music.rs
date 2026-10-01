@@ -170,6 +170,7 @@ struct PageState {
 }
 #[derive(Default)]
 pub struct State {
+    pub(crate) destination: Option<String>,
     workers: Vec<Worker>,
     generation: Arc<AtomicU64>,
     pending: usize,
@@ -250,6 +251,54 @@ impl Bridge {
     }
     fn music_action_inner(&mut self, action: &str, value: &str) -> Result<(), String> {
         match action {
+            "destination" => {
+                self.add_music.destination = (!value.is_empty()).then(|| value.to_string());
+            }
+            "playlist" => {
+                if self.browser.duplicate_plan.is_some() || self.browser.pending {
+                    return Err("Finish the current playlist operation first".into());
+                }
+                let destination = self
+                    .add_music
+                    .destination
+                    .clone()
+                    .ok_or("Select a playlist")?;
+                let release = self
+                    .add_music
+                    .page
+                    .detail
+                    .clone()
+                    .ok_or("Select an Album or Song")?;
+                let positions = value
+                    .split(',')
+                    .map(|key| {
+                        let (d, n) = key.split_once(':').ok_or("Select a Song")?;
+                        Ok((
+                            d.parse::<u32>().map_err(|e| e.to_string())?,
+                            n.parse::<u32>().map_err(|e| e.to_string())?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                let plan = self
+                    .session
+                    .library
+                    .prepare_catalog_playlist_append(&destination, &release, &positions)
+                    .map_err(|e| e.to_string())?;
+                let imported = self
+                    .session
+                    .library
+                    .ensure_catalog_release(&release)
+                    .map_err(|e| e.to_string())?;
+                self.enrich_catalog_spotify(&imported);
+                if plan.duplicate_entries > 0 {
+                    self.browser.duplicate_plan = Some(plan);
+                    self.browse_changed();
+                } else {
+                    self.commit_selection_append(plan, true);
+                }
+                self.add_music.status =
+                    "Selection prepared for playlist. Library membership unchanged.".into();
+            }
             "invalidate" | "close" => {
                 self.music_invalidate();
             }
@@ -702,6 +751,7 @@ mod tests {
                     Medium {
                         position: 1,
                         tracks: vec![Track {
+                            duration: None,
                             position: 1,
                             title: "Hatsumimi".into(),
                             credits: a.credits.clone(),
@@ -711,9 +761,10 @@ mod tests {
                     Medium {
                         position: 2,
                         tracks: vec![Track {
+                            duration: None,
                             position: 1,
                             title: "Second Song".into(),
-                            credits: a.credits,
+                            credits: vec![],
                             identities: vec![id("track", "two")],
                         }],
                     },
@@ -796,7 +847,259 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live catalog result on a fresh disposable database"]
+    fn live_catalog_only_playlist_qml() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("catalog-only.sqlite");
+        let mut client = music_library_musicbrainz::MusicBrainz::new();
+        let albums = client.catalog_albums("Demon Days").unwrap();
+        let album = albums
+            .items
+            .iter()
+            .find(|a| a.title == "Demon Days" && a.artist == "Gorillaz")
+            .expect("real catalog result");
+        let release = client.catalog_album(album).unwrap();
+        assert!(
+            release.media[0].tracks[0].duration.is_some(),
+            "real catalog returned duration"
+        );
+        let position = (
+            release.media[0].position,
+            release.media[0].tracks[0].position,
+        );
+        let title = release.media[0].tracks[0].title.clone();
+        let mut library = music_library::Library::open(&path).unwrap();
+        let destination = library.create_playlist("Real catalog only").unwrap();
+        let bridge =
+            qmetaobject::QObjectBox::new(Bridge::new(crate::session::Session::new(library)));
+        let mut engine = qmetaobject::QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.auto_match = false;
+            b.add_music.destination = Some(destination.clone());
+            b.add_music.page.detail = Some(release);
+            b.browse_action_impl("view", 0, "Playlists".into());
+            b.browse_action_impl("select", 0, destination.clone());
+        }
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                r#"
+    TestCase { id: livePlaylistTest; when: false }
+    function liveAdd(key) {
+        window.bridge.add_music_action("playlist", key);
+        for (let n=0; n<500 && library.pending; ++n) livePlaylistTest.wait(10);
+        livePlaylistTest.wait(50);
+        const length = livePlaylistTest.findChild(window.contentItem, "playlistLength");
+        if (!length || !length.visible || length.text === "--:--") throw new Error("real catalog Length missing before playback");
+        livePlaylistTest.grabImage(window.contentItem).save("/tmp/catalog-only-playlist.png");
+        return library.panes[2].rows.length;
+    }
+    function ready() {
+"#,
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "liveAdd".into(),
+                    &[string(format!("{}:{}", position.0, position.1))]
+                )
+                .to_int(),
+            1
+        );
+        let pinned = bridge.pinned();
+        let b = pinned.borrow();
+        assert!(
+            b.session
+                .library
+                .search(&Default::default())
+                .unwrap()
+                .is_empty()
+        );
+        for pane in [
+            music_library::browse::Pane::Artists,
+            music_library::browse::Pane::Genres,
+            music_library::browse::Pane::Albums,
+            music_library::browse::Pane::Songs,
+        ] {
+            assert!(
+                b.session
+                    .library
+                    .browse(&music_library::browse::Request {
+                        pane,
+                        limit: 200,
+                        ..Default::default()
+                    })
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM library_membership", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let row = b
+            .session
+            .library
+            .playlist_entries(&destination, None, 200)
+            .unwrap()
+            .remove(0);
+        assert_eq!(row.title, title);
+        let track = row.track.unwrap().track_id;
+        let capability = music_library::playback_resolver::RemoteCapability {
+            provider: "spotify",
+            unavailable: None,
+            catalog_available: false,
+            accepts: |i| i.kind == "track",
+        };
+        let route = b
+            .session
+            .library
+            .playback_route(&track, &capability)
+            .unwrap();
+        assert!(matches!(
+            route,
+            music_library::playback_resolver::Route::Unavailable(_)
+        ));
+        let reopened = music_library::Library::open(&path).unwrap();
+        assert!(
+            row.duration_ms.is_some(),
+            "duration is known without playing"
+        );
+        assert_eq!(
+            reopened.playlist_entries(&destination, None, 200).unwrap()[0].duration_ms,
+            row.duration_ms
+        );
+        assert_eq!(
+            reopened.playlist_entries(&destination, None, 200).unwrap()[0].id,
+            row.id
+        );
+        assert!(reopened.search(&Default::default()).unwrap().is_empty());
+        println!(
+            "LIVE catalog-only playlist: {title}; Library=0; reloaded entry preserved; route={route:?}"
+        );
+    }
+
+    #[test]
+    fn playlist_duration_metadata_without_playback_qml() {
+        use music_library::catalog::Duration;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("durations.sqlite");
+        let mut library = music_library::Library::open(&path).unwrap();
+        let playlist = library.create_playlist("Metadata only").unwrap();
+        let (calls, recv) = mpsc::channel();
+        let mut input = Fake { calls, fail: false }.catalog_album(&album()).unwrap();
+        input.media[0].tracks[0].duration = Some(Duration {
+            milliseconds: 123_000,
+            approximate: true,
+        });
+        assert_eq!(recv.try_iter().count(), 1);
+        let bridge =
+            qmetaobject::QObjectBox::new(Bridge::new(crate::session::Session::new(library)));
+        let mut engine = qmetaobject::QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.auto_match = false;
+            b.add_music.destination = Some(playlist.clone());
+            b.add_music.page.detail = Some(input.clone());
+            b.browse_action_impl("view", 0, "Playlists".into());
+            b.browse_action_impl("select", 0, playlist.clone());
+        }
+
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../DurationMetadataTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("addDurationPlaylist".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let before = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .playlist_entries(&playlist, None, 200)
+            .unwrap();
+        let reopened = music_library::Library::open(&path).unwrap();
+        assert_eq!(
+            reopened.playlist_entries(&playlist, None, 200).unwrap()[0].duration_ms,
+            Some(123_000)
+        );
+        assert!(reopened.search(&Default::default()).unwrap().is_empty());
+        drop(reopened);
+        input.media[0].tracks[0].duration = Some(Duration {
+            milliseconds: 124_000,
+            approximate: false,
+        });
+        input.media[1].tracks[0].duration = Some(Duration {
+            milliseconds: 1000,
+            approximate: false,
+        });
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.session.library.ensure_catalog_release(&input).unwrap();
+            b.browse_action_impl("refresh", 0, String::new());
+        }
+        assert_eq!(
+            engine
+                .invoke_method("checkExactDurationPlaylist".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let pinned = bridge.pinned();
+        let b = pinned.borrow();
+        let after = b
+            .session
+            .library
+            .playlist_entries(&playlist, None, 200)
+            .unwrap();
+        assert_eq!(
+            before.iter().map(|r| &r.id).collect::<Vec<_>>(),
+            after.iter().map(|r| &r.id).collect::<Vec<_>>()
+        );
+        assert!(
+            b.session
+                .library
+                .search(&Default::default())
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            recv.try_iter().count(),
+            0,
+            "rendering does not request provider metadata"
+        );
+    }
+
+    #[test]
     fn interactive_add_music_qml() {
+        assert!(!include_str!("../Main.qml").contains("libraryTracksDialog"));
+        assert!(!include_str!("../Main.qml").contains("addTracksMenu"));
         let temp = tempfile::tempdir().unwrap();
         let library = music_library::Library::open(temp.path().join("catalog.sqlite")).unwrap();
         let bridge =
@@ -841,7 +1144,57 @@ mod tests {
         assert!(engine.invoke_method("ready".into(), &[]).to_bool());
         assert_eq!(
             engine
+                .invoke_method("exerciseCatalogPlaylist".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert_eq!(
+            engine
                 .invoke_method("exerciseAddMusic".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert_eq!(
+            engine
+                .invoke_method("exerciseLibraryContextPlaylist".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let db = rusqlite::Connection::open(temp.path().join("catalog.sqlite")).unwrap();
+        db.execute("UPDATE effective_track_metadata SET duration_ms=CASE WHEN title='Second Song' THEN 2000 ELSE 1000 END", []).unwrap();
+        bridge
+            .pinned()
+            .borrow_mut()
+            .browse_action_impl("refresh", 0, String::new());
+        assert_eq!(
+            engine
+                .invoke_method("exercisePlaylistTable".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert_eq!(
+            engine
+                .invoke_method("exercisePlaylistDetailsKnown".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        db.execute(
+            "UPDATE effective_track_metadata SET duration_ms=NULL WHERE title='Hatsumimi'",
+            [],
+        )
+        .unwrap();
+        bridge
+            .pinned()
+            .borrow_mut()
+            .browse_action_impl("refresh", 0, String::new());
+        assert_eq!(
+            engine
+                .invoke_method("exercisePlaylistDetailsPartialAndClear".into(), &[])
                 .to_qstring()
                 .to_string(),
             "ok"
@@ -863,6 +1216,26 @@ mod tests {
             assert_eq!(b.add_music.saved.len(), 1);
             b.music_action_inner("album", "").unwrap();
             assert_eq!(b.add_music.saved.len(), 2);
+            let entry = b
+                .session
+                .library
+                .playlist_entries(
+                    &b.session.library.playlists(None, 200).unwrap()[0].id,
+                    None,
+                    200,
+                )
+                .unwrap()
+                .into_iter()
+                .find(|r| r.track.as_ref().is_some_and(|t| t.track_id == track))
+                .unwrap();
+            b.session.library.remove_from_library(&track).unwrap();
+            b.browse_action_impl("save-playlist-track", 2, entry.id);
+            b.music_context().unwrap();
+            assert_eq!(
+                b.add_music.saved.len(),
+                2,
+                "explicit Save to Library reuses canonical identity"
+            );
         }
         assert!(recv.try_iter().any(|call| call == "browse"));
         assert!(bridge.pinned().borrow().catalog.worker.is_none());
