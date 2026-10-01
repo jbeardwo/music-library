@@ -2003,7 +2003,7 @@ headers and Track numbers are bounded display projections, while alphabetical
 Songs support both directions. Membership and credit filtering occur in SQL with stable
 cursor ordering and dedicated browse indexes. Artist/Album queue preparation uses a
 read-only connection off the Qt thread; the existing playback boundary and resolver
-still own queue execution. QML receives at most 200 rows per pane/queue page, and
+still own queue execution. QML receives at most 600 rows per continuous library pane and 200 rows per queue page, and
 playback notifications do not rebuild library lists. This remains a frontend
 prototype, not a public skin format. See [interaction, performance and validation](library-player-ui.md).
 
@@ -2062,10 +2062,10 @@ pages, and a Track/playlist index supports reverse membership lookup. Existing
 effective Track metadata supplies display labels; no playlist music metadata copy
 is created. Provider import/export and migration can use these canonical IDs later.
 
-The QML prototype displays at most 200 playlists or entries per page, including the
-Add to Playlist chooser. Songs context menus open that chooser, which also offers
+The main QML panes use continuous 600-row windows of playlists or entries; the
+Add to Playlist chooser retains its separate 200-row paging. Songs context menus open that chooser, which also offers
 playlist creation. Playlist context menus rename/delete; entry menus remove or move
-up/down. Playlist selection and pages are session-local view state. Songs remains
+up/down. Playlist selection, loaded windows and visible-row anchors are session-local view state. Songs remains
 blank until selection, and playlist sorting is omitted. Explicit Play reads the
 complete persisted order on the existing background queue reader. Entry identity
 locates the exact starting occurrence of a duplicate Track. The existing player
@@ -2098,3 +2098,12 @@ No skips identities currently in the destination. Batch writes use one transacti
 on a dedicated application worker connection, and never update saved membership
 or a playback snapshot. The playlist schema is unchanged. See
 [selection/action semantics and validation](selection-actions.md).
+
+### Continuous library scrolling
+
+The main Artists, Genres, Albums, Songs and Playlists panes use bidirectional
+keyset queries in 200-row chunks (201 queried for lookahead), retaining at most
+600 materialized rows per pane. The queue drawer and destination chooser retain
+their existing bounded paging; main browsing has no pagination controls.
+See [continuous scrolling](continuous-scrolling.md) for window, viewport and
+selection ownership, validation and measurements.

@@ -91,7 +91,28 @@ impl Library {
         Ok(())
     }
     pub fn playlists(&self, after: Option<&Cursor>, limit: u32) -> Result<Vec<Row>> {
-        let mut q=self.store.connection.prepare("SELECT id,name FROM playlist WHERE name COLLATE NOCASE >= ?1 COLLATE NOCASE AND (name COLLATE NOCASE,id)>(?1 COLLATE NOCASE,?2) ORDER BY name COLLATE NOCASE,id LIMIT ?3")?;
+        self.playlists_direction(after, limit, false)
+    }
+    /// Fetch preceding playlist identities nearest-first for a scrolling window.
+    pub fn playlists_before(&self, before: &Cursor, limit: u32) -> Result<Vec<Row>> {
+        self.playlists_direction(Some(before), limit, true)
+    }
+    fn playlists_direction(
+        &self,
+        after: Option<&Cursor>,
+        limit: u32,
+        reverse: bool,
+    ) -> Result<Vec<Row>> {
+        let sql = "SELECT id,name FROM playlist WHERE name COLLATE NOCASE >= ?1 COLLATE NOCASE AND (name COLLATE NOCASE,id)>(?1 COLLATE NOCASE,?2) ORDER BY name COLLATE NOCASE,id LIMIT ?3";
+        let sql = if reverse {
+            sql.replace(" >= ", " <= ").replace(")>", ")<").replace(
+                "ORDER BY name COLLATE NOCASE,id",
+                "ORDER BY name COLLATE NOCASE DESC,id DESC",
+            )
+        } else {
+            sql.to_string()
+        };
+        let mut q = self.store.connection.prepare(&sql)?;
         Ok(q.query_map(
             params![
                 after.map(|c| c.title.as_str()).unwrap_or(""),
@@ -183,7 +204,40 @@ pub(crate) fn read_selected_entries(
     limit: Option<u32>,
     entries: &[String],
 ) -> Result<Vec<Row>> {
-    let mut q=connection.prepare("SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5")?;
+    read_selected_entries_direction(connection, playlists, after, limit, entries, false)
+}
+fn read_selected_entries_direction(
+    connection: &Connection,
+    playlists: &[String],
+    after: Option<&Cursor>,
+    limit: Option<u32>,
+    entries: &[String],
+    reverse: bool,
+) -> Result<Vec<Row>> {
+    let sql = "SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5";
+    let sql = if reverse {
+        sql.replace(")>", ")<").replace(
+            "ORDER BY p.playlist_id,p.position,p.id",
+            "ORDER BY p.playlist_id DESC,p.position DESC,p.id DESC",
+        )
+    } else {
+        sql.to_string()
+    };
+    // For one selected playlist, expose the position bound directly to the
+    // order index. The complete tuple still resolves entry identity and ties.
+    let sql = if playlists.len() == 1 && after.is_some_and(|c| c.release == playlists[0]) {
+        sql.replace(
+            "ORDER BY",
+            if reverse {
+                "AND p.position <= ?3 ORDER BY"
+            } else {
+                "AND p.position >= ?3 ORDER BY"
+            },
+        )
+    } else {
+        sql
+    };
+    let mut q = connection.prepare(&sql)?;
     Ok(q.query_map(
         params![
             serde_json::to_string(playlists).expect("IDs"),
@@ -230,6 +284,22 @@ pub(crate) fn read_selected_entries(
 }
 
 impl Library {
+    /// Fetch preceding entries nearest-first, preserving duplicate entry identities.
+    pub fn selected_playlist_entries_before(
+        &self,
+        playlists: &[String],
+        before: &Cursor,
+        limit: u32,
+    ) -> Result<Vec<Row>> {
+        read_selected_entries_direction(
+            &self.store.connection,
+            playlists,
+            Some(before),
+            Some(limit.clamp(1, 201)),
+            &[],
+            true,
+        )
+    }
     pub fn selected_playlist_entries(
         &self,
         playlists: &[String],

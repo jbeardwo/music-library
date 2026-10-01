@@ -114,3 +114,81 @@ fn failed_playlist_migration_is_atomic() {
         0
     );
 }
+
+#[test]
+fn reverse_playlist_windows_preserve_duplicate_entries_and_name_ties() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut l = Library::open(tmp.path().join("scroll.sqlite")).unwrap();
+    let track = l
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Release".into(),
+            year: None,
+            artists: vec![],
+            tracks: vec![CatalogTrackInput {
+                title: "Song".into(),
+                disc_number: None,
+                track_number: None,
+                artists: vec![],
+            }],
+        })
+        .unwrap()
+        .track_ids
+        .remove(0);
+    let mut playlists = vec![];
+    for _ in 0..205 {
+        playlists.push(l.create_playlist("Same name").unwrap());
+    }
+    let first = l.playlists(None, 200).unwrap();
+    let second = l.playlists(Some(&first[199].cursor), 200).unwrap();
+    let back = l.playlists_before(&second[0].cursor, 200).unwrap();
+    assert_eq!(
+        back.iter().rev().map(|r| &r.id).collect::<Vec<_>>(),
+        first.iter().map(|r| &r.id).collect::<Vec<_>>()
+    );
+    for p in &playlists[..2] {
+        for _ in 0..205 {
+            l.append_playlist_track(p, &track).unwrap();
+        }
+    }
+    let first = l
+        .selected_playlist_entries(&playlists[..2], None, 200)
+        .unwrap();
+    let second = l
+        .selected_playlist_entries(&playlists[..2], Some(&first[199].cursor), 200)
+        .unwrap();
+    let back = l
+        .selected_playlist_entries_before(&playlists[..2], &second[0].cursor, 200)
+        .unwrap();
+    assert_eq!(
+        back.iter().rev().map(|r| &r.id).collect::<Vec<_>>(),
+        first.iter().map(|r| &r.id).collect::<Vec<_>>()
+    );
+    let third = l
+        .selected_playlist_entries(&playlists[..2], Some(&second[199].cursor), 200)
+        .unwrap();
+    let ordered = first
+        .iter()
+        .chain(&second)
+        .chain(&third)
+        .collect::<Vec<_>>();
+    assert!(
+        ordered
+            .windows(2)
+            .all(|w| (&w[0].cursor.release, w[0].cursor.position, &w[0].id)
+                < (&w[1].cursor.release, w[1].cursor.position, &w[1].id))
+    );
+    let ids = first
+        .iter()
+        .chain(&second)
+        .chain(&third)
+        .map(|r| &r.id)
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(ids.len(), 410);
+    assert!(
+        first
+            .iter()
+            .chain(&second)
+            .chain(&third)
+            .all(|r| r.track.as_ref().unwrap().track_id == track)
+    );
+}

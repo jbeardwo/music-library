@@ -20,7 +20,8 @@ Migration 21 adds playlist timestamps, names and ordered entry records. The
 playlist/name index serves listing, playlist/position serves cursor paging and
 adjacent moves, and Track/playlist serves membership lookup. Integer positions
 persist; removal can leave gaps, and adjacent swaps preserve order atomically.
-Both panes and the chooser expand at most 200 rows into QML. Complete queue reads
+Main panes retain at most 600 rows in continuously scrolling windows; the chooser
+retains its separate 200-row paging. See [continuous scrolling](continuous-scrolling.md). Complete queue reads
 run off the UI thread using the same application queue reader as library playback.
 
 Validation includes real SQLite lifecycle, restart, duplicate, membership

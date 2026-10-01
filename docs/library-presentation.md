@@ -11,15 +11,15 @@ is grey. The existing player and queue shell remains instantiated across views.
 | Artists | Artists / Albums / Songs; existing credit and selection hierarchy |
 | Genres | Genres / Albums / Songs; saved Tracks carrying the selected local genre |
 | Albums | Albums / Songs; all saved Albums, then optional Album filter |
-| Songs | One full-width, cursor-paged saved Songs pane |
-| Playlists | Empty Playlists placeholder / blank Songs pane |
+| Songs | One full-width, continuously scrolling saved Songs pane |
+| Playlists | Playlists / selected playlist entries, with duplicate entry identities |
 
-Selections, sort choices and page cursors are remembered independently per view
+Selections, sort choices, loaded windows and visible-row anchors are remembered independently per view
 for the session. Search navigation returns to Artists and retains its existing
 keyset seek behavior. Navigation, selection and sorts never replace or reorder a
 queue. Explicit Play captures the applicable complete Songs request, including
 both Genre and Album when selected. Single-Song append stays a single Track.
-No playlist tables, editing, membership or playback behavior are introduced.
+Playlist behavior is documented in [playlists.md](playlists.md).
 
 Migration 20 adds indexed `file_genre_observation`, owned by the local source.
 Repeated tag values remain separate strings; surrounding whitespace and empty
@@ -40,8 +40,8 @@ genre observations; identity, user overrides and membership rules are unchanged.
 
 Year sorting inserts newest-first year headers and an Unknown section last. Each
 section has its own wrapping Flow of fixed 120×174 tiles with 120px artwork. Headers
-and sections are built only from the database-ordered bounded page; a continuation
-page repeats its first year header. The Album ListView retains a bounded maximum
+and sections are built only from the database-ordered bounded window. A retained continuation group has one heading at
+its window start, outside the preserved viewport when its start was discarded. The Album ListView retains a bounded maximum
 page-height cache so transient Flow estimates cannot evict/recreate sections while
 resizing. Album ordering, artwork scheduling and keyboard navigation stay intact.
 
@@ -56,9 +56,9 @@ section headings keyed by the primary credited Artist's application ID; equal
 names do not merge sections. Album IDs remain internal.
 
 Tiles retain selection, double-click, context-menu Play/append, Enter, arrow-key
-focus and direct local-search navigation. QML receives at most 200 logical rows
-per pane; a Flow per Artist or year section lays out that bounded page without changing
-its logical order. The page stays instantiated during reflow, preserving delegates
+focus and direct local-search navigation. QML receives at most 600 logical rows
+per pane; a Flow per Artist or year section lays out that bounded window without changing
+its logical order. The window stays instantiated during reflow, preserving delegates
 and avoiding artwork requests caused by width changes.
 Partial Albums and Tracks without playable sources use the same queries.
 
@@ -331,3 +331,5 @@ remain deferred.
 
 Playlist persistence and editing now supersede the placeholder described above;
 see [Playlists](playlists.md). Other view, sort and paging behavior is unchanged.
+
+Main-pane loading and scroll state now follow [continuous scrolling](continuous-scrolling.md). Earlier page-specific measurements below describe the underlying 200-row query chunks.

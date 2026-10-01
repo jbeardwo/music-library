@@ -905,7 +905,7 @@ The library prototype presents Albums as artwork tiles and marks the current
 queue Track in red by application Track identity, separately from selection.
 Artist and Album sorts and scoped Songs sorts operate on bounded SQL browse
 results. Explicit Play snapshots the complete displayed logical order, including
-results beyond the visible page; later browsing, sorting and search navigation
+results beyond the visible window; later browsing, sorting and search navigation
 must not mutate that queue. Add to queue remains additive.
 
 Artwork is provider-neutral, asynchronous and cached outside music folders and
@@ -925,6 +925,16 @@ Right-click preserves a selected pane's full selection or selects the clicked
 unselected item alone. Queue and playlist actions expand only that pane's Artists,
 Genres, Albums, Songs or playlist occurrences. Add to Playlist checks canonical
 identity once per batch and asks Yes (all copies) or No (skip identities already
-in the destination). Selection and context actions preserve the 200-row QML bound,
+in the destination). Selection and context actions preserve bounded QML windows,
 saved-membership independence and transient queue snapshots. See
 [selection/action semantics](selection-actions.md).
+
+Main browse panes scroll continuously, loading more results automatically without
+page controls or visible page transitions. Loading and discarding internal chunks
+must preserve the apparent viewport, canonical Album headers, stable-ID selection,
+logical Shift ranges, context actions and exact duplicate playlist-entry order.
+Filtering and sorting reset the affected loading state; each view restores its
+session-local logical position on return. Browsing must stay bounded and efficient
+at 200k Tracks rather than materializing the whole result set in QML. See
+[continuous scrolling](continuous-scrolling.md) for the current window sizes and
+validation. Restart-persistent navigation remains deferred.

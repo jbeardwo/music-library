@@ -722,3 +722,60 @@ fn genres_intersect_saved_membership_and_album_scope_with_bounded_reverse_pages(
         );
     }
 }
+
+#[test]
+fn reverse_keysets_recover_exact_preceding_chunks_for_every_order() {
+    use music_library::browse::Sort;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut l = Library::open(tmp.path().join("reverse.sqlite")).unwrap();
+    for n in 0..220 {
+        let r = album(
+            &mut l,
+            &format!("Album {:03}", n / 2),
+            &format!("Artist {:03}", n / 2),
+            &[("Same song", 1, 1), ("Same song", 2, 1)],
+        );
+        for t in r.track_ids {
+            l.add_to_library(&t).unwrap();
+        }
+    }
+    for (pane, sorts) in [
+        (Pane::Artists, vec![Sort::Title, Sort::Descending]),
+        (Pane::Albums, vec![Sort::Title, Sort::Year, Sort::Artist]),
+        (
+            Pane::Songs,
+            vec![Sort::Title, Sort::Descending, Sort::Album],
+        ),
+    ] {
+        for sort in sorts {
+            for album_sort in [Sort::Title, Sort::Year] {
+                let request = Request {
+                    pane,
+                    sort,
+                    album_sort,
+                    limit: 200,
+                    ..Default::default()
+                };
+                let first = l.browse(&request).unwrap();
+                let second = l
+                    .browse(&Request {
+                        after: Some(first.last().unwrap().cursor.clone()),
+                        ..request.clone()
+                    })
+                    .unwrap();
+                assert!(!second.is_empty());
+                let back = l
+                    .browse_before(&Request {
+                        after: Some(second[0].cursor.clone()),
+                        ..request
+                    })
+                    .unwrap();
+                assert_eq!(
+                    back.iter().rev().map(|r| &r.id).collect::<Vec<_>>(),
+                    first.iter().map(|r| &r.id).collect::<Vec<_>>(),
+                    "{pane:?} {sort:?} {album_sort:?}"
+                );
+            }
+        }
+    }
+}

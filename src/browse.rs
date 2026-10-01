@@ -171,6 +171,11 @@ impl Library {
         Ok(rows)
     }
 
+    /// Fetch predecessors nearest-first for a bounded scrolling window.
+    pub fn browse_before(&self, request: &Request) -> Result<Vec<Row>> {
+        query(&self.store.connection, request, false, false, true, None)
+    }
+
     pub fn browse(&self, request: &Request) -> Result<Vec<Row>> {
         self.store.browse(request, false)
     }

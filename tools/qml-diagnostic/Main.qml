@@ -1098,6 +1098,52 @@ ApplicationWindow {
         readonly property string selectedId: paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : paneIndex === 1 ? window.library.album : songId
         property string songId: ""
         property string rowsSignature: ""
+        property string datasetKey: ""
+        property bool adjustingWindow: false
+        property var renderedRows: []
+        function viewportAnchor() {
+            for (let i = 0; i < paneRows.count; ++i) {
+                const item = list.itemAtIndex(i);
+                if (!item) continue;
+                if (paneIndex === 1) {
+                    const anchor = item.viewportTileAnchor();
+                    if (anchor) return anchor;
+                } else {
+                    const y = item.mapToItem(list, 0, 0).y;
+                    if (y + item.height > 0 && y < list.height)
+                        return {id: renderedRows[i].id, pixel: y};
+                }
+            }
+            return null;
+        }
+        function rememberViewport() {
+            if (adjustingWindow || !visible) return;
+            const anchor = viewportAnchor();
+            if (anchor) window.bridge.browse_action("scroll-position", paneIndex, anchor.id + "\n" + anchor.pixel);
+        }
+        function restoreAnchor(anchor) {
+            if (!anchor) { list.positionViewAtBeginning(); return; }
+            const index = pageData.rows.findIndex(r => r.id === anchor.id);
+            if (index < 0) { list.positionViewAtBeginning(); return; }
+            const visual = visualIndex(index);
+            list.positionViewAtIndex(visual, ListView.Beginning);
+            list.forceLayout();
+            const section = list.itemAtIndex(visual);
+            const item = paneIndex === 1 ? (section ? section.tileAt(index) : null) : section;
+            if (item) {
+                list.contentY += item.mapToItem(list, 0, 0).y - anchor.pixel;
+            }
+        }
+        function updateViewport() {
+            if (adjustingWindow || !visible || !pageData.rows.length) return;
+            rememberViewport();
+            const end = list.originY + list.contentHeight - list.height;
+            if (pageData.more && end - list.contentY < Math.max(120, list.height))
+                window.bridge.browse_action("scroll-forward", paneIndex, "");
+            else if (pageData.before && list.contentY - list.originY < Math.max(80, list.height / 2))
+                window.bridge.browse_action("scroll-backward", paneIndex, "");
+        }
+        Timer { id: viewportTimer; interval: 32; onTriggered: pane.updateViewport() }
         readonly property bool albumSongs: paneIndex === 2 && pageData.sort === "Album"
         property var albumNames: ({})
         property int logicalIndex: -1
@@ -1138,6 +1184,7 @@ ApplicationWindow {
         }
         onAlbumColumnsChanged: preserveReflowPosition()
         function visualIndex(index) {
+            if (paneIndex !== 1) return index >= 0 && index < paneRows.count ? index : -1;
             for (let i = 0; i < paneRows.count; ++i) {
                 const entry = paneRows.get(i).rowData;
                 if (paneIndex !== 1 ? i === index : entry.tiles.some(t => t.logicalIndex === index)) return i;
@@ -1148,6 +1195,7 @@ ApplicationWindow {
         onNavigationChanged: Qt.callLater(function() {
             const target = pane.paneIndex === 0 ? (window.library.view === "Genres" ? window.library.genre : window.library.artist) : pane.paneIndex === 1 ? window.library.album : window.library.song;
             if (pane.paneIndex === 2) pane.songId = target;
+            if (pane.pageData.scrollId) return;
             for (let i = 0; i < pane.pageData.rows.length; ++i) {
                 if (pane.pageData.rows[i].id === target) {
                     logicalIndex = i;
@@ -1162,9 +1210,17 @@ ApplicationWindow {
         })
         ListModel { id: paneRows; dynamicRoles: true }
         function syncRows() {
-            const signature = JSON.stringify([pageData.rows, pageData.sort, paneIndex === 1 ? !!window.library.artist : false]);
+            const key = window.library.view + ":" + pageData.epoch;
+            const signature = JSON.stringify([key, pageData.rows, pageData.sort, paneIndex === 1 ? !!window.library.artist : false]);
             if (signature === rowsSignature) return;
+            const sameDataset = key === datasetKey;
+            const anchor = sameDataset ? viewportAnchor() : (pageData.scrollId ? {id: pageData.scrollId, pixel: pageData.scrollPixel} : null);
+            const focused = logicalIndex >= 0 && renderedRows[logicalIndex] ? renderedRows[logicalIndex].id : "";
+            const flickVelocity = sameDataset && list.flicking ? list.verticalVelocity : 0;
+            adjustingWindow = true;
+            datasetKey = key;
             rowsSignature = signature;
+            list.model = null;
             paneRows.clear();
             if (paneIndex === 1) {
                 let tiles = [];
@@ -1191,10 +1247,25 @@ ApplicationWindow {
                 }
                 pane.albumNames = names;
             }
-            logicalIndex = -1;
-            songId = "";
-            list.currentIndex = -1;
-            list.positionViewAtBeginning();
+            list.model = paneRows;
+            renderedRows = pageData.rows;
+            logicalIndex = sameDataset ? pageData.rows.findIndex(r => r.id === focused) : -1;
+            songId = paneIndex === 2 ? window.library.song : "";
+            list.currentIndex = logicalIndex >= 0 ? visualIndex(logicalIndex) : -1;
+            list.forceLayout();
+            if (paneIndex === 1) {
+                for (let i = 0; i < paneRows.count; ++i) {
+                    const section = list.itemAtIndex(i);
+                    if (section) section.layoutTiles();
+                }
+                list.forceLayout();
+            }
+            restoreAnchor(anchor);
+            // Model replacement stops the animation. Continue its remaining
+            // motion with the current velocity after restoring the viewport.
+            if (flickVelocity) list.flick(0, -flickVelocity);
+            adjustingWindow = false;
+            viewportTimer.restart();
         }
         onPageDataChanged: syncRows()
         Component.onCompleted: syncRows()
@@ -1243,9 +1314,9 @@ ApplicationWindow {
             Layout.fillHeight: true
             clip: true
             model: paneRows
-            // Retain the bounded Album page so width reflow cannot recreate
+            // Retain the bounded Album window so width reflow cannot recreate
             // section delegates or schedule new artwork requests.
-            // Bound by the largest possible page height, including one header
+            // Bound by the largest possible window height, including one header
             // per Album. Transient Flow height estimates must not evict sections.
             cacheBuffer: pane.paneIndex === 1 ? pane.pageData.rows.length * (pane.tileHeight + pane.tileGap + 30) : 0
             currentIndex: -1
@@ -1270,6 +1341,8 @@ ApplicationWindow {
                 font.bold: true
                 color: "#68636a"
             }
+            onContentYChanged: if (!pane.adjustingWindow && !viewportTimer.running) viewportTimer.start()
+            onHeightChanged: if (!pane.adjustingWindow) viewportTimer.restart()
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
             Keys.onDownPressed: event => { pane.selectRow(Math.min(pane.pageData.rows.length - 1, pane.logicalIndex + (pane.paneIndex === 1 ? pane.albumColumns : 1)),event.modifiers); }
@@ -1315,6 +1388,17 @@ ApplicationWindow {
                         textFormat: Text.PlainText; elide: Text.ElideRight; font.pixelSize: 11; color: "#68636a"
                     }
                 }
+                function viewportTileAnchor() {
+                    for (let i = 0; i < tileRepeater.count; ++i) {
+                        const tile = tileRepeater.itemAt(i);
+                        if (!tile) continue;
+                        const y = tile.mapToItem(list, 0, 0).y;
+                        if (y + tile.height > 0 && y < list.height)
+                            return {id: tile.album.id, pixel: y};
+                    }
+                    return null;
+                }
+                function layoutTiles() { albumFlow.forceLayout(); }
                 function tileAt(logical) {
                     for (let i = 0; i < tileRepeater.count; ++i) {
                         const tile = tileRepeater.itemAt(i);
@@ -1334,6 +1418,7 @@ ApplicationWindow {
                         color: "#68636a"
                     }
                     Flow {
+                        id: albumFlow
                         x: pane.tileInset
                         width: Math.max(pane.tileWidth, list.width - 2 * pane.tileInset - pane.scrollAllowance)
                         spacing: pane.tileGap
@@ -1405,13 +1490,7 @@ ApplicationWindow {
                 color: "#777078"
             }
         }
-        RowLayout {
-            Layout.fillWidth: true
-            visible: pane.pageData.more || pane.pageData.page > 1
-            ToolButton { text: "‹"; Accessible.name: "Previous " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.page > 1 || pane.pageData.anchored; onClicked: window.bridge.browse_action("previous", pane.paneIndex, "") }
-            Label { text: "Page " + pane.pageData.page; Layout.fillWidth: true; horizontalAlignment: Text.AlignHCenter; color: "#68636a" }
-            ToolButton { text: "›"; Accessible.name: "Next " + pane.heading.toLowerCase() + " page"; enabled: pane.pageData.more; onClicked: window.bridge.browse_action("next", pane.paneIndex, "") }
-        }
+
     }
 
     ColumnLayout {
@@ -1431,7 +1510,12 @@ ApplicationWindow {
                         Accessible.name: modelData + " library view"
                         background: Rectangle { color: parent.hovered ? "#eeece9" : "transparent" }
                         contentItem: Label { text: parent.text; font.pixelSize: 20; font.bold: window.library.view === text; color: window.library.view === text ? "#242126" : "#827b80" }
-                        onClicked: window.bridge.browse_action("view", 0, modelData)
+                        onClicked: {
+                            artistsPane.rememberViewport();
+                            albumsPane.rememberViewport();
+                            songsPane.rememberViewport();
+                            window.bridge.browse_action("view", 0, modelData);
+                        }
                     }
                 }
             }

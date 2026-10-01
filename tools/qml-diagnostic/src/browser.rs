@@ -1,4 +1,4 @@
-//! Presentation state for three independent, bounded library panes.
+//! Presentation state for independent, bidirectional library windows.
 use crate::{Bridge, row_value, string};
 use music_library::{
     browse::{Cursor, Pane, Request, Row, Sort},
@@ -7,12 +7,17 @@ use music_library::{
 use qmetaobject::{QPointer, QVariant, QVariantList, QVariantMap};
 
 const PAGE: usize = 200;
+const WINDOW: usize = PAGE * 3;
 #[derive(Clone, Default)]
 pub struct Page {
     rows: Vec<Row>,
     cursors: Vec<Option<Cursor>>,
     more: bool,
     seek: Option<String>,
+    before: bool,
+    epoch: u32,
+    scroll_id: String,
+    scroll_pixel: f64,
 }
 #[derive(Default)]
 pub struct Browser {
@@ -196,7 +201,9 @@ impl Bridge {
                 };
                 self.browser.switch_view(view);
                 for i in 0..3 {
-                    self.load_pane(i, false);
+                    if self.browser.pages[i].rows.is_empty() {
+                        self.load_pane(i, false);
+                    }
                 }
             }
             "remove-preview" => {
@@ -361,6 +368,16 @@ impl Bridge {
             }
             "select" | "select-toggle" | "select-range" | "context" => {
                 self.select_items(action, pane, id);
+            }
+            "scroll-position" => {
+                if let Some((row, pixel)) = id.rsplit_once('\n') {
+                    self.browser.pages[pane].scroll_id = row.to_string();
+                    self.browser.pages[pane].scroll_pixel = pixel.parse().unwrap_or(0.0);
+                }
+                return;
+            }
+            "scroll-forward" | "scroll-backward" => {
+                self.scroll_pane(pane, action == "scroll-backward");
             }
             "next" => {
                 if self.browser.pages[pane].more {
@@ -570,6 +587,75 @@ impl Bridge {
         self.changed();
     }
 
+    fn scroll_pane(&mut self, pane: usize, reverse: bool) {
+        let page = &self.browser.pages[pane];
+        if (reverse && !page.before) || (!reverse && !page.more) || page.rows.is_empty() {
+            return;
+        }
+        let cursor = if reverse {
+            page.rows.first()
+        } else {
+            page.rows.last()
+        }
+        .map(|r| r.cursor.clone())
+        .expect("nonempty window");
+        let request = Request {
+            after: Some(cursor.clone()),
+            limit: 201,
+            ..self.browser.pane_request(pane)
+        };
+        let playlists = self.browser.selections[0]
+            .ids
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        let result = if self.browser.view == 4 {
+            match (pane, reverse) {
+                (0, true) => self.session.library.playlists_before(&cursor, 201),
+                (0, false) => self.session.library.playlists(Some(&cursor), 201),
+                (_, true) => self
+                    .session
+                    .library
+                    .selected_playlist_entries_before(&playlists, &cursor, 201),
+                (_, false) => {
+                    self.session
+                        .library
+                        .selected_playlist_entries(&playlists, Some(&cursor), 201)
+                }
+            }
+        } else if reverse {
+            self.session.library.browse_before(&request)
+        } else {
+            self.session.library.browse(&request)
+        };
+        match result {
+            Ok(mut rows) => {
+                let more = rows.len() > PAGE;
+                rows.truncate(PAGE);
+                let page = &mut self.browser.pages[pane];
+                if reverse {
+                    rows.reverse();
+                    rows.append(&mut page.rows);
+                    page.before = more;
+                    if rows.len() > WINDOW {
+                        rows.truncate(WINDOW);
+                        page.more = true;
+                    }
+                    page.rows = rows;
+                } else {
+                    page.rows.append(&mut rows);
+                    page.more = more;
+                    if page.rows.len() > WINDOW {
+                        page.rows.drain(..page.rows.len() - WINDOW);
+                        page.before = true;
+                    }
+                }
+                self.browser.error.clear();
+            }
+            Err(e) => self.browser.error = e.to_string(),
+        }
+    }
+
     fn load_pane(&mut self, pane: usize, reset: bool) {
         if (self.browser.view == 4 && (pane == 1 || (pane == 2 && self.browser.artist.is_empty())))
             || (pane == 0 && self.browser.view >= 2 && self.browser.view != 4)
@@ -582,6 +668,10 @@ impl Bridge {
         if reset || page.cursors.is_empty() {
             page.cursors = vec![None];
             page.seek = None;
+            page.before = false;
+            page.epoch = page.epoch.wrapping_add(1);
+            page.scroll_id.clear();
+            page.scroll_pixel = 0.0;
         }
         let mut request = self.browser.pane_request(pane);
         request.after = self.browser.pages[pane].cursors.last().cloned().flatten();
@@ -604,7 +694,16 @@ impl Bridge {
         } else if page.cursors.len() == 1
             && let Some(id) = &page.seek
         {
-            self.session.library.browse_around(&request, id)
+            match self.session.library.browse_around(&request, id) {
+                Ok(rows) => Ok(rows),
+                Err(_) => {
+                    // The preserved anchor may have been removed by a durable edit.
+                    page.seek = None;
+                    page.before = false;
+                    page.scroll_id.clear();
+                    self.session.library.browse(&request)
+                }
+            }
         } else {
             self.session.library.browse(&request)
         };
@@ -692,6 +791,9 @@ impl Bridge {
                 more,
                 cursors: vec![None],
                 seek: (!target.is_empty()).then_some(target.clone()),
+                before: !target.is_empty(),
+                epoch: self.browser.pages[pane].epoch.wrapping_add(1),
+                ..Default::default()
             });
         }
         self.browser.pages = pages
@@ -787,6 +889,10 @@ impl Bridge {
                             }),
                         ),
                         ("more", p.more.into()),
+                        ("before", p.before.into()),
+                        ("epoch", p.epoch.into()),
+                        ("scrollId", string(&p.scroll_id)),
+                        ("scrollPixel", p.scroll_pixel.into()),
                         ("anchored", p.seek.is_some().into()),
                         ("page", (p.cursors.len() as i32).into()),
                     ]
@@ -1042,6 +1148,22 @@ impl Browser {
 }
 impl Bridge {
     fn refresh_selection(&mut self) {
+        // Durable edits/import/removal can change inactive views too. Retain an
+        // identity anchor, but never return to a stale materialized window.
+        for state in &mut self.browser.views {
+            for page in &mut state.pages {
+                let target = if page.scroll_id.is_empty() {
+                    page.rows.first().map(|r| r.id.clone())
+                } else {
+                    Some(page.scroll_id.clone())
+                };
+                page.rows.clear();
+                page.cursors = vec![None];
+                page.seek = target;
+                page.before = page.seek.is_some();
+                page.epoch = page.epoch.wrapping_add(1);
+            }
+        }
         if self.browser.view < 2 {
             match self
                 .session

@@ -4301,6 +4301,189 @@ mod library_ui_tests {
         bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
+    fn run_main_browsing_scrolling(library: music_library::Library) {
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../MainBrowsingScrollingTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseMainBrowsingScrolling".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn artists_genres_and_album_tiles_scroll_continuously() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("panes.db");
+        let mut library = music_library::Library::open(&path).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for n in 0..803 {
+            let release = library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: format!("Album {n:04}"),
+                    year: Some(2000 + n % 5),
+                    artists: vec![ArtistCreditInput {
+                        name: format!("Artist {n:04}"),
+                        role: None,
+                    }],
+                    tracks: vec![CatalogTrackInput {
+                        title: format!("Song {n:04}"),
+                        artists: vec![],
+                        disc_number: None,
+                        track_number: None,
+                    }],
+                })
+                .unwrap();
+            let t = &release.track_ids[0];
+            library.add_to_library(t).unwrap();
+            db.execute(
+                "INSERT INTO playable_source(id,kind) VALUES(?1,'local_file')",
+                [t.as_ref()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO track_source(track_id,source_id) VALUES(?1,?1)",
+                [t.as_ref()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO file_genre_observation(source_id,genre) VALUES(?1,?2)",
+                rusqlite::params![t.as_ref(), format!("Genre {n:04}")],
+            )
+            .unwrap();
+        }
+        drop(db);
+        run_main_browsing_scrolling(library);
+    }
+
+    #[test]
+    #[ignore = "requires disposable deterministic 200k library copy"]
+    fn continuous_scrolling_200k_bounded_qml_render() {
+        let path = std::env::var_os("MUSIC_LIBRARY_CONTINUOUS_STRESS_COPY")
+            .expect("disposable 200k database copy");
+        let count: i64 = rusqlite::Connection::open(&path)
+            .unwrap()
+            .query_row("SELECT count(*) FROM library_membership", [], |r| r.get(0))
+            .unwrap();
+        assert!(count >= 200_000);
+        run_main_browsing_scrolling(music_library::Library::open(path).unwrap());
+    }
+
+    #[test]
+    fn continuous_scrolling_bounded_windows_selection_and_playlists() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("scrolling.db");
+        let mut library = music_library::Library::open(&path).unwrap();
+        let artist = ArtistCreditInput {
+            name: "Scrolling Artist".into(),
+            role: None,
+        };
+        let mut tracks = vec![];
+        for (start, end) in [(0, 701), (701, 1003)] {
+            let release = library
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: "Same title".into(),
+                    year: None,
+                    artists: vec![artist.clone()],
+                    tracks: (start..end)
+                        .map(|n| CatalogTrackInput {
+                            title: format!("Song {n:04}"),
+                            disc_number: Some(1),
+                            track_number: Some(n - start + 1),
+                            artists: vec![artist.clone()],
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for t in &release.track_ids {
+                library.add_to_library(t).unwrap();
+            }
+            tracks.extend(release.track_ids);
+        }
+        let db = rusqlite::Connection::open(&path).unwrap();
+        for table in [
+            "track_artist_credit",
+            "album_artist_credit",
+            "release_artist_credit",
+        ] {
+            db.execute_batch(&format!("UPDATE {table} SET artist_id=(SELECT min(id) FROM artist WHERE name='Scrolling Artist')")).unwrap();
+        }
+        drop(db);
+        for n in 0..205 {
+            let playlist = library
+                .create_playlist(&format!("Playlist {n:03}"))
+                .unwrap();
+            if n == 0 {
+                for _ in 0..1003 {
+                    library
+                        .append_playlist_track(&playlist, &tracks[0])
+                        .unwrap();
+                }
+            }
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../ContinuousScrollingTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exerciseContinuousScrolling".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let removed = engine
+            .invoke_method("cacheSongsBeforeRefresh".into(), &[])
+            .to_qstring()
+            .to_string();
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.session
+                .library
+                .remove_from_library(&music_library::domain::TrackId(removed.clone()))
+                .unwrap();
+            b.browse_action_impl("refresh", 0, String::new());
+        }
+        assert_eq!(
+            engine
+                .invoke_method("exerciseInactiveRefresh".into(), &[string(removed)])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        #[cfg(feature = "gstreamer")]
+        bridge.pinned().borrow_mut().session.shutdown_audio();
+    }
+
     #[test]
     fn multi_selection_and_pane_local_container_actions() {
         use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
