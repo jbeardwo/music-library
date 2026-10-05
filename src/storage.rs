@@ -869,34 +869,15 @@ impl Store {
             )?;
         }
         let credits = local_album_credit(request, &observations);
-        let album_id = if let Some(ref credits) = credits {
-            let artist_key = crate::matching::credit(
-                &credits.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-            )
-            .expect("validated credit");
-            let candidates = tx.prepare(
-                "SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65"
-            )?.query_map(params![crate::matching::normalize(&request.release_title), artist_key], |r| r.get::<_, String>(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            // Bound pathological same-name groups; never accept from a truncated set.
-            let mut supported = Vec::new();
-            if candidates.len() <= 64 {
-                for id in candidates {
-                    if album_has_track_support(&tx, &id, request, &observations)? {
-                        supported.push(id);
-                        if supported.len() == 2 {
-                            break;
-                        }
-                    }
-                }
-            }
-            if let [id] = supported.as_slice() {
-                crate::domain::AlbumId(id.clone())
-            } else {
-                create_album_tx(&tx, &request.release_title, None, credits)?
-            }
+        let album_id = if let Some(id) = supported_local_album(&tx, request, &observations)? {
+            id
         } else {
-            create_album_tx(&tx, &request.release_title, None, &request.release_artists)?
+            create_album_tx(
+                &tx,
+                &request.release_title,
+                None,
+                credits.as_deref().unwrap_or(&request.release_artists),
+            )?
         };
         // Album agreement is never evidence of edition identity, even with one stored Release.
         let release_id = ReleaseId::new();
@@ -1490,14 +1471,14 @@ impl Store {
     }
 }
 
-struct ImportObservation {
+pub(crate) struct ImportObservation {
     album: Option<String>,
     title: Option<String>,
     album_artists: Vec<String>,
     track_artists: Vec<String>,
 }
 
-fn import_observations(
+pub(crate) fn import_observations(
     tx: &Transaction<'_>,
     request: &ImportReleaseRequest,
 ) -> Result<Vec<ImportObservation>> {
@@ -1534,6 +1515,34 @@ fn import_observations(
             }
         })
         .collect()
+}
+
+/// Existing provider-neutral Album reconciliation, shared by attachment and creation.
+pub(crate) fn supported_local_album(
+    tx: &Transaction<'_>,
+    request: &ImportReleaseRequest,
+    observations: &[ImportObservation],
+) -> Result<Option<crate::domain::AlbumId>> {
+    let Some(credits) = local_album_credit(request, observations) else {
+        return Ok(None);
+    };
+    let artist_key =
+        crate::matching::credit(&credits.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+            .expect("validated credit");
+    let candidates = tx.prepare("SELECT album_id FROM album_application_metadata WHERE match_title=?1 AND match_artist_credit=?2 LIMIT 65")?.query_map(params![crate::matching::normalize(&request.release_title),artist_key], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    if candidates.len() > 64 {
+        return Ok(None);
+    }
+    let mut supported = vec![];
+    for id in candidates {
+        if album_has_track_support(tx, &id, request, observations)? {
+            supported.push(id);
+        }
+        if supported.len() > 1 {
+            return Ok(None);
+        }
+    }
+    Ok(supported.pop().map(crate::domain::AlbumId))
 }
 
 // Compare within one stored edition, never assemble evidence from incompatible editions.

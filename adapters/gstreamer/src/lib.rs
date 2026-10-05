@@ -630,4 +630,109 @@ mod tests {
             matches!(event, EngineEventKind::EndOfStream)
         });
     }
+    #[test]
+    #[ignore = "requires ignored test-media/Get Disowned real audio"]
+    fn attached_catalog_source_plays_real_audio_and_survives_reopen() {
+        mod fixture {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/support/local_attachment.rs"
+            ));
+        }
+        use music_library::{
+            Library,
+            filesystem::LoftyMetadataExtractor,
+            local_ingestion::Request,
+            playback::Playback,
+            playback_resolver::{RemoteCapability, Route},
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let database = temp.path().join("library.sqlite");
+        let root = temp.path().join("music");
+        std::fs::create_dir(&root).unwrap();
+        let mut library = Library::open(&database).unwrap();
+        let imported = library
+            .add_catalog_release(&fixture::get_disowned())
+            .unwrap();
+        let track = imported.track_ids[0].clone();
+        let queue = vec![track.clone(), imported.track_ids[1].clone(), track.clone()];
+        let (send, receive) = std::sync::mpsc::channel();
+        let engine = GStreamerEngine::new(move |event| {
+            let _ = send.send(event);
+        })
+        .unwrap();
+        let mut playback = Playback::new(engine);
+        // The queue exists before the Track gains any local route.
+        playback.set_queue(queue.clone()).unwrap();
+        assert!(library.available_playback_source(&track).unwrap().is_none());
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../test-media/Get Disowned/01 Some Grace.mp3");
+        std::fs::copy(source, root.join("Some Grace.mp3")).unwrap();
+        let report = library
+            .ingest_local(
+                &Request::Folder(root),
+                &mut LoftyMetadataExtractor,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!((report.attached, report.imported), (1, 0));
+        let remote = RemoteCapability {
+            provider: "spotify",
+            unavailable: Some("offline".into()),
+            catalog_available: false,
+            accepts: |_| true,
+        };
+        assert!(matches!(
+            library.playback_route(&track, &remote).unwrap(),
+            Route::Local(_)
+        ));
+        playback.play(&library).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "GStreamer did not advance real MP3 audio"
+            );
+            let event = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            if let EngineEventKind::Error(error) = &event.kind {
+                panic!("{error}");
+            }
+            playback.handle_event(&library, event).unwrap();
+            if playback.state().status == PlaybackStatus::Playing
+                && playback.state().media_position_ms > 0
+            {
+                break;
+            }
+        }
+        assert_eq!(playback.state().queue, queue);
+        println!(
+            "actual backend: GStreamer/local; MP3 playing at {} ms; queue unchanged",
+            playback.state().media_position_ms
+        );
+        playback.stop().unwrap();
+        drop(playback);
+        drop(library);
+        let library = Library::open(&database).unwrap();
+        assert!(matches!(
+            library.playback_route(&track, &remote).unwrap(),
+            Route::Local(_)
+        ));
+        assert_eq!(
+            library
+                .track_provider_occurrences(&track, "spotify")
+                .unwrap()[0]
+                .external_id,
+            "38CLjvzuqaIADFFZrThgn5"
+        );
+        assert_eq!(
+            library
+                .search(&music_library::domain::SearchRequest{limit:200,..Default::default()})
+                .unwrap()
+                .len(),
+            10
+        );
+        println!(
+            "reopen: same Track ID, Spotify identity, membership and persisted local preference without another scan"
+        );
+    }
 }

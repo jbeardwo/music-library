@@ -17,6 +17,7 @@ pub mod edition_storage;
 pub mod filesystem;
 pub mod library_removal;
 pub mod library_search;
+mod local_attachment;
 pub mod local_ingestion;
 pub mod manual_track;
 pub mod matching;

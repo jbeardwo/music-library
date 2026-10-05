@@ -679,6 +679,7 @@ dependencies = [
  "gstreamer",
  "gstreamer-play",
  "music-library",
+ "serde_json",
  "tempfile",
 ]
 

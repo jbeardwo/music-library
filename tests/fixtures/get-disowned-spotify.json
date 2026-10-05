@@ -1,0 +1,80 @@
+{
+  "note": "Persisted Spotify catalog snapshot from the 2026-10-05 Hop Along reconciliation audit; no audio or credentials.",
+  "title": "Get Disowned",
+  "year": 2012,
+  "album_id": "6zEACGVNVUlFO2BKOELUZG",
+  "artist": "Hop Along",
+  "artist_id": "3yYUV3hkJit05YIUEODqgp",
+  "tracks": [
+    {
+      "title": "Some Grace",
+      "disc": 1,
+      "number": 1,
+      "spotify_id": "38CLjvzuqaIADFFZrThgn5",
+      "duration_ms": 187872
+    },
+    {
+      "title": "Tibetan Pop Stars",
+      "disc": 1,
+      "number": 2,
+      "spotify_id": "3MVL733KX2m9G76qPnTttk",
+      "duration_ms": 261121
+    },
+    {
+      "title": "Diamond Mine",
+      "disc": 1,
+      "number": 3,
+      "spotify_id": "5C27Xh2HEaohUiKj6zHnaz",
+      "duration_ms": 332094
+    },
+    {
+      "title": "No Good Al Joad",
+      "disc": 1,
+      "number": 4,
+      "spotify_id": "2Nwusz12YpUlr4Frn8uLX7",
+      "duration_ms": 207720
+    },
+    {
+      "title": "Kids On the Boardwalk",
+      "disc": 1,
+      "number": 5,
+      "spotify_id": "7bojmDbSaH2hMy88Nlg70s",
+      "duration_ms": 170272
+    },
+    {
+      "title": "Laments",
+      "disc": 1,
+      "number": 6,
+      "spotify_id": "4Bo9g2CI7x538iaWpyDH6T",
+      "duration_ms": 403072
+    },
+    {
+      "title": "Trouble Found Me",
+      "disc": 1,
+      "number": 7,
+      "spotify_id": "4FmIGj5PVxMsO2AwXvQhaC",
+      "duration_ms": 226551
+    },
+    {
+      "title": "Sally II",
+      "disc": 1,
+      "number": 8,
+      "spotify_id": "5muPqnyB6aoIQZKFqtUWXI",
+      "duration_ms": 152550
+    },
+    {
+      "title": "Young and Happy!",
+      "disc": 1,
+      "number": 9,
+      "spotify_id": "7c5dRnNhi6IUsxxTucokeC",
+      "duration_ms": 293869
+    },
+    {
+      "title": "Get Disowned",
+      "disc": 1,
+      "number": 10,
+      "spotify_id": "4NWwyHs03AgYA5d4LKfd8c",
+      "duration_ms": 172161
+    }
+  ]
+}

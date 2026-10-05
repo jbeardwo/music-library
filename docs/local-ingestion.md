@@ -154,3 +154,82 @@ The opt-in source-lookup stress test also passed after scoped Artist finalizatio
 
 A full Library Locations/ignored-files settings screen, cancellation and filesystem
 move inference are deferred. Existing matching and artwork policy are unchanged.
+
+## Later local-source attachment
+
+Before a candidate group creates any entities, the shared ingestion finalizer now
+reconciles its unassociated sources against persisted canonical Tracks. Files,
+folders, rescans and configured locations execute this same step. Previously the
+importer could reuse an Album but always created a new Release and Track; adding
+local files after catalog/Spotify import could therefore duplicate music.
+
+Exact embedded MusicBrainz occurrence identity is checked first. The file adapter
+validates typed Artist, edition and occurrence MBIDs as well as the existing Album
+and Recording claims; this does not promote those raw fields to canonical
+identities globally. Invalid or conflicting supported claims defer attachment.
+An exact Recording identity still requires Album/edition context because a
+Recording can occur on multiple release-specific Tracks. Independent identity
+conflicts block attachment. No provider connection is required.
+
+When exact occurrence identity is unavailable, the existing indexed Album
+reconciliation supplies context: ordered credit agreement plus positioned title
+support within one stored edition, without contradictory overlaps. The existing
+`album_program::inspect_candidate` comparator then checks each plausible persisted
+edition's Tracks. Attachment requires trusted Recording agreement or corroborated
+title and explicit position, compatible contributor evidence and no identity
+conflict. Multiple plausible canonical Tracks are unresolved; row order never
+selects one. Existing metadata-only local editions retain conservative local/local
+import behavior unless persisted provider identity supports attachment. Album agreement does not create or bind an edition identity. There
+is no new fuzzy matcher, title/Artist-only merge rule, or live provider request.
+
+Plans are evaluated before source writes so one arriving file cannot change the
+evidence used for the next. The source association, suppression override,
+effective metadata refresh and existing provenance reconciliation commit together.
+Existing Artist, Album, Release, Recording and Track entities are retained; no
+provider identity or user override is replaced. File observations retain their
+source ownership and use existing effective-metadata precedence. Artwork rules
+are unchanged. Two distinct paths can attach two distinct sources to one Track;
+repeated canonical paths reuse the existing source.
+
+Attachment itself never changes saved membership, including playlist-only Tracks.
+Repeated automatic admission no longer restores membership on already-associated
+Tracks; otherwise the scan after attachment would save a playlist-only Track.
+The existing explicit re-add of an associated source still expresses save intent
+and clears suppression. Automatic suppression remains effective; explicitly
+selected unassociated suppressed sources can attach to existing Tracks normally.
+New unmatched local music retains the existing separate-Track admission behavior.
+Reports distinguish attached sources from unmatched candidates imported separately.
+
+Matching narrows through indexed identities or the existing Album match key. Album
+context and edition evidence are cached per candidate group; Track identities and
+ordered credits use the existing batched evidence loader. More than 64 plausible
+editions or more than 4096 Tracks in an edition defer attachment rather than
+accepting a truncated set. Network and filesystem work never occur in the write
+transaction. No matching runs at startup to restore an existing association.
+
+Playback already resolves the current logical Track ID when starting an entry.
+Its readable-local preference sees the new association without queue rewriting,
+playlist-specific routing, or changes to source priority. Source disappearance,
+availability/fallback lifecycle changes, historic staging cleanup and configurable
+source preferences remain outside this slice.
+
+Validation: `tests/local_source_attachment.rs` covers catalog and playlist-only
+Tracks, exact offline identities, ambiguity/conflicts, all admission modes,
+suppression, multiple copies, search and reopen. Its ignored real-audio test copies
+all ten `test-media/Get Disowned` files into a temporary root after catalog Tracks
+are established from the checked-in offline Spotify snapshot. All ten sources
+attach without changing IDs or memberships. The ignored GStreamer test
+`attached_catalog_source_plays_real_audio_and_survives_reopen` queues Tracks before
+attachment, plays a copied MP3 through actual GStreamer audio output, checks queue
+order, then reopens the library and checks persisted local preference. The fixture
+has no embedded provider IDs, so these real-audio checks exercise Album/program
+corroboration. The ignored directory and original audio remain unchanged.
+
+The 200k unrelated-source stress case passed with 7–116 ms folder admissions,
+104 ms cached rescan and 5 ms direct admission in this debug run. The regular core
+suite passed 327 tests with one unrelated baseline failure excluded:
+`catalog_playlist_identity_membership_reload_and_duplicates` expects an empty
+subtitle despite existing Album-credit fallback. The same failure was reproduced
+against the unchanged `HEAD` source. All eight focused attachment tests, including
+the real album and rollback test, passed; GStreamer real output, adapter tests,
+core Clippy and desktop compilation passed.

@@ -95,6 +95,15 @@ impl Bridge {
                     Ok(mut report) => {
                         report.unreadable += invalid_urls;
                         let mut summary = vec![format!("Imported {} Tracks", report.imported)];
+                        if report.attached > 0 {
+                            summary.push(format!(
+                                "Attached {} local files to existing music",
+                                report.attached
+                            ));
+                        }
+                        if report.unresolved > 0 {
+                            summary.push(format!("{} files had no confident existing match and were imported separately", report.unresolved));
+                        }
                         if report.unsupported > 0 {
                             summary
                                 .push(format!("Skipped {} unsupported files", report.unsupported));

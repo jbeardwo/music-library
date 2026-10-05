@@ -32,6 +32,10 @@ pub struct Report {
     pub parsed: u64,
     pub unchanged: u64,
     pub imported: u64,
+    /// Newly associated local routes; saved membership is preserved.
+    pub attached: u64,
+    /// Candidates without sufficient persisted identity, admitted as separate Tracks.
+    pub unresolved: u64,
     pub unsupported: u64,
     pub unreadable: u64,
     pub locations_failed: u64,
@@ -402,8 +406,10 @@ impl Library {
         if explicit {
             // Unassociated exclusions are cleared only inside successful import_release.
             tx.execute("DELETE FROM local_source_suppression WHERE source_id IN (SELECT j.value FROM json_each(?1) j JOIN track_source ts ON ts.source_id=j.value)", [&json])?;
+            // Automatic presence never restores saved state on an existing Track.
+            // Explicit re-add retains the established membership restoration intent.
+            report.imported += tx.execute("INSERT OR IGNORE INTO library_membership(track_id) SELECT ts.track_id FROM json_each(?1) j CROSS JOIN track_source ts ON ts.source_id=j.value JOIN local_file_observation l ON l.source_id=ts.source_id WHERE l.available=1 AND NOT EXISTS(SELECT 1 FROM local_source_suppression x WHERE x.source_id=l.source_id)", [&json])? as u64;
         }
-        report.imported += tx.execute("INSERT OR IGNORE INTO library_membership(track_id) SELECT ts.track_id FROM json_each(?1) j CROSS JOIN track_source ts ON ts.source_id=j.value JOIN local_file_observation l ON l.source_id=ts.source_id WHERE l.available=1 AND NOT EXISTS(SELECT 1 FROM local_source_suppression x WHERE x.source_id=l.source_id)", [&json])? as u64;
         tx.execute(
             "INSERT OR IGNORE INTO ingestion_sources SELECT value FROM json_each(?1)",
             [&json],
@@ -477,6 +483,20 @@ impl Library {
                         })
                         .collect(),
                 };
+                let attached = self.store.attach_local_candidates(&candidates, &request)?;
+                report.attached += attached.len() as u64;
+                let attached: HashSet<_> = attached.into_iter().collect();
+                let mut request = request;
+                request.tracks.retain(|t| !attached.contains(&t.source_id));
+                report.unresolved += request.tracks.len() as u64;
+                if request.tracks.is_empty() {
+                    self.store.connection.execute("DELETE FROM ingestion_candidates WHERE parent=?1 AND title_key=?2 AND credit_key=?3", params![&parent,&title,&credit])?;
+                    progress(Progress {
+                        scanned: report.scanned,
+                        imported: report.imported,
+                    });
+                    continue;
+                }
                 match self.import_release(&request) {
                     Ok(imported) => report.imported += imported.track_ids.len() as u64,
                     Err(crate::Error::Database(error)) => return Err(error.into()),

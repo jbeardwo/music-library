@@ -2,7 +2,7 @@
 use crate::{domain::ExternalIdentity, provenance::*};
 use lofty::tag::{ItemKey, Tag};
 
-/// Picard's Album-group and Recording identifiers are MBIDs. Only canonical
+/// Picard's typed Artist, Album, edition, Recording and occurrence IDs are MBIDs. Only canonical
 /// hyphenated, non-nil UUID strings qualify; malformed raw tags remain observable.
 pub(crate) fn validate(o: &Observation) -> crate::provenance_acceptance::Validation {
     use crate::provenance_acceptance::Validation;
@@ -11,6 +11,13 @@ pub(crate) fn validate(o: &Observation) -> crate::provenance_acceptance::Validat
             (o.scope, o.semantics, o.identity.kind.as_str()),
             (Scope::Album, Semantics::AlbumIdentity, "release_group")
                 | (Scope::Recording, Semantics::RecordingIdentity, "recording")
+                | (Scope::Edition, Semantics::EditionIdentity, "release")
+                | (Scope::Occurrence, Semantics::OccurrenceIdentity, "track")
+                | (
+                    Scope::TrackArtist | Scope::AlbumArtist,
+                    Semantics::ArtistIdentity,
+                    "artist"
+                )
         )
     {
         return Validation::Unsupported;
