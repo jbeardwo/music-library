@@ -176,6 +176,10 @@ impl Bridge {
         }
     }
     pub fn apply_player_update(&mut self, update: Update) {
+        let playlist_authorized = self.spotify_playback_state.authorization
+            == music_library_spotify::playback::AuthorizationState::Authorizing
+            && update.snapshot.authorization
+                == music_library_spotify::playback::AuthorizationState::Connected;
         let old = &self.spotify_playback_state.state;
         let new = &update.snapshot.state;
         if old.track_id != new.track_id
@@ -218,6 +222,7 @@ impl Bridge {
                 .set_volume((f64::from(percent) / 100. / gain).clamp(0., 1.));
         }
         self.spotify_playback_state = update.snapshot;
+        self.resume_spotify_playlist(playlist_authorized);
         if update.application_command {
             self.finish_remote_handoff();
         }

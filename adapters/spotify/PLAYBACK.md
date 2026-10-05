@@ -19,7 +19,10 @@ http://127.0.0.1:43821/callback
 Keep `SPOTIFY_CLIENT_ID` configured. Playback does **not** read
 `SPOTIFY_CLIENT_SECRET` or `SPOTIFY_MARKET`. Those remain catalog configuration.
 The [PKCE S256 flow](https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow)
-requests only `user-read-playback-state user-modify-playback-state`. A cryptographic
+requests `user-read-playback-state user-modify-playback-state` plus the read-only
+`playlist-read-private playlist-read-collaborative` scopes for playlist snapshots.
+Granted scopes are persisted; older grants remain usable for playback and request
+reconnection for playlist import. No playlist modification scopes are requested. A cryptographic
 random verifier and state exist only during the ten-minute authorization attempt.
 The callback binds only IPv4 loopback, validates state and path, and exchanges the
 code without a client secret. It does not log requests, codes, verifiers or tokens.
@@ -240,3 +243,9 @@ changes Spotify repeat/shuffle nor guesses EOS from elapsed time.
 
 Queue synchronization/takeover, source preferences, moved-file discovery and
 cross-provider identity reconciliation remain deferred.
+
+## Playlist snapshots
+
+Playlists → Import from Spotify uses this same connected user authorization.
+See [Spotify playlist import](../../docs/spotify-playlist-import.md) for pagination,
+access restrictions, membership separation and opt-in validation.

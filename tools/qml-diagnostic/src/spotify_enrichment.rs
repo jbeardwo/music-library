@@ -11,6 +11,11 @@ enum Event {
     Album(Box<MatchReply>),
     Programs(Box<album_program::Reply>),
     Retry(u64),
+    Incoming(
+        String,
+        music_library::domain::ReleaseId,
+        Result<album_program::Programs, music_library::catalog::CatalogError>,
+    ),
 }
 fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'static {
     qmetaobject::queued_callback(move |event| {
@@ -18,6 +23,29 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
             return;
         };
         let mut bridge = pinned.borrow_mut();
+        if let Event::Incoming(playlist, release, result) = event {
+            match result.and_then(|programs| {
+                bridge
+                    .session
+                    .library
+                    .reconcile_playlist_album_program(&playlist, &release, &programs)
+                    .map_err(|e| music_library::catalog::CatalogError::Other(e.to_string()))
+            }) {
+                Ok(changed) => {
+                    bridge.spotify_resolution_message =
+                        format!("Reconciled {changed} playlist entries with local Tracks");
+                    if changed > 0 {
+                        bridge.browse_action_impl("playlist-revision-check", 0, String::new());
+                    }
+                }
+                Err(error) => {
+                    bridge.spotify_resolution_message = format!("Playlist reconciliation: {error}")
+                }
+            }
+            bridge.spotify_playback_changed();
+            bridge.changed();
+            return;
+        }
         let Some(mut matcher) = bridge.spotify_album_matcher.take() else {
             return;
         };
@@ -32,6 +60,7 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
                 matcher.complete_programs(&mut bridge.session.library, *reply);
                 Some(album)
             }
+            Event::Incoming(..) => unreachable!(),
             Event::Retry(token) => {
                 if let Err(error) = matcher.cooldown_elapsed(&bridge.session.library, token) {
                     bridge.session.error = error.to_string();
@@ -75,12 +104,128 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
                 bridge.spotify_resolution_message = message;
             }
         }
+        let playlists: Vec<_> = bridge.spotify_reconcile_playlists.iter().cloned().collect();
+        for playlist in playlists {
+            match bridge.session.library.reconcile_playlist_tracks(&playlist) {
+                Ok(changed) if changed > 0 => {
+                    bridge.browse_action_impl("playlist-revision-check", 0, String::new())
+                }
+                Err(error) => bridge.session.error = error.to_string(),
+                _ => {}
+            }
+        }
+        if matcher.pending_count() == 0 {
+            let playlists: Vec<_> = bridge.spotify_reconcile_playlists.drain().collect();
+            for playlist in playlists {
+                bridge.reconcile_incoming_programs(&playlist);
+            }
+        }
         bridge.spotify_album_matcher = Some(matcher);
         bridge.spotify_playback_changed();
         bridge.changed();
     })
 }
 impl Bridge {
+    fn reconcile_incoming_programs(&mut self, playlist: &str) {
+        let requests = match self
+            .session
+            .library
+            .playlist_reconciliation_programs(playlist)
+        {
+            Ok(requests) => requests,
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
+        };
+        if requests.is_empty() {
+            return;
+        }
+        let Ok(mut provider) = music_library_spotify::Spotify::from_env() else {
+            self.spotify_resolution_message =
+                "Spotify catalog configuration is needed to reconcile local Tracks".into();
+            return;
+        };
+        let finish = callback(qmetaobject::QPointer::from(&*self));
+        let playlist = playlist.to_owned();
+        std::thread::spawn(move || {
+            use music_library::catalog::CatalogProvider;
+            let mut cache = std::collections::HashMap::<String, album_program::Programs>::new();
+            for (release, identity) in requests {
+                let key = format!(
+                    "{}:{}:{}",
+                    identity.provider, identity.kind, identity.external_id
+                );
+                let result = if let Some(programs) = cache.get(&key) {
+                    Ok(programs.clone())
+                } else {
+                    provider.album_programs(&identity)
+                };
+                if let Ok(programs) = &result {
+                    cache.insert(key, programs.clone());
+                }
+                let failed = result.is_err();
+                finish(Event::Incoming(playlist.clone(), release, result));
+                if failed {
+                    break;
+                }
+            }
+        });
+    }
+    pub(crate) fn reconcile_spotify_playlist(&mut self, playlist: &str) {
+        match self.session.library.reconcile_playlist_tracks(playlist) {
+            Ok(changed) if changed > 0 => {
+                self.browse_action_impl("playlist-revision-check", 0, String::new())
+            }
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
+            _ => {}
+        }
+        let requests = match self
+            .session
+            .library
+            .playlist_reconciliation_programs(playlist)
+        {
+            Ok(requests) => requests,
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
+        };
+        if requests.is_empty() {
+            return;
+        }
+        let needed: std::collections::HashSet<_> = requests.iter().map(|r| r.0.clone()).collect();
+        let candidates = match self
+            .session
+            .library
+            .playlist_local_match_candidates(playlist)
+        {
+            Ok(candidates) => candidates,
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
+        };
+        self.spotify_reconcile_playlists.insert(playlist.to_owned());
+        for candidate in candidates
+            .into_iter()
+            .filter(|c| needed.contains(&c.release_id))
+        {
+            self.enrich_catalog_spotify(&candidate);
+        }
+        if self
+            .spotify_album_matcher
+            .as_ref()
+            .is_some_and(|m| m.pending_count() == 0)
+        {
+            self.spotify_reconcile_playlists.remove(playlist);
+            self.reconcile_incoming_programs(playlist);
+        }
+    }
+
     pub(crate) fn enrich_catalog_spotify(&mut self, imported: &ImportedRelease) {
         if !self.auto_match {
             return;

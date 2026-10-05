@@ -591,7 +591,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
     db.execute_batch(
-        "DROP TABLE local_root_source; DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=18;",
+        "DROP TABLE local_root_source; DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_source; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=18;",
     )
     .unwrap();
     drop(db);
@@ -619,7 +619,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        22
+        25
     );
     assert_eq!(
         run(&mut l, Request::ConfiguredLocations, &mut Tags::default()).imported,
@@ -650,7 +650,7 @@ fn failed_location_migration_rolls_back_sources_and_exclusions() {
     let db = Connection::open(&path).unwrap();
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
-    db.execute_batch("DROP TABLE local_root_source; CREATE TABLE local_root_source(sentinel TEXT); DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=18;").unwrap();
+    db.execute_batch("DROP TABLE local_root_source; CREATE TABLE local_root_source(sentinel TEXT); DROP INDEX local_file_path; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_source; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=18;").unwrap();
     assert!(Library::open(&path).is_err());
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
@@ -1171,7 +1171,7 @@ fn local_genres_survive_migration_missing_sources_and_membership_removal() {
     let db = Connection::open(&path).unwrap();
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
-    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=19;").unwrap();
+    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_source; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=19;").unwrap();
     drop(db);
     let mut l = Library::open(&path).unwrap();
     let scan = l
@@ -1235,7 +1235,7 @@ fn genre_migration_failure_rolls_back_marker_and_schema_version() {
     let db = Connection::open(&path).unwrap();
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
-    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=19; CREATE TABLE file_genre_observation(sentinel TEXT);").unwrap();
+    db.execute_batch("DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_source; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=19; CREATE TABLE file_genre_observation(sentinel TEXT);").unwrap();
     assert!(Library::open(&path).is_err());
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))

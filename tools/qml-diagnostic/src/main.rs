@@ -13,6 +13,7 @@ mod session;
 use music_library_spotify::playback_completion as spotify_completion;
 mod spotify_enrichment;
 mod spotify_playback;
+mod spotify_playlist;
 mod spotify_resolution;
 
 use qmetaobject::prelude::*;
@@ -22,6 +23,14 @@ use session::Session;
 #[derive(QObject)]
 struct Bridge {
     base: qt_base_class!(trait QObject),
+    spotify_playlist_state: spotify_playlist::State,
+    spotify_playlist_snapshot: qt_property!(QVariantMap; READ spotify_playlist_value NOTIFY spotify_playlist_changed),
+    spotify_playlist_changed: qt_signal!(),
+    spotify_playlist_action: qt_method!(
+        fn spotify_playlist_action(&mut self, action: String, input: String) {
+            self.spotify_playlist_action_impl(action, input);
+        }
+    ),
     active_backend: music_library::playback_resolver::ActiveBackend,
     route_pending: Option<playback_route::Pending>,
     automatic_song_search: bool,
@@ -30,6 +39,7 @@ struct Bridge {
     playback_generation: u64,
     route_message: String,
     resolver_dialog_requested: qt_signal!(),
+    spotify_reconcile_playlists: std::collections::HashSet<String>,
     spotify_album_matcher: Option<music_library::album_matching::AlbumMatcher>,
     spotify_resolution_worker: Option<spotify_resolution::Worker>,
     spotify_resolution_generation: u64,
@@ -738,7 +748,12 @@ impl Bridge {
             playback_generation: 0,
             route_message: String::new(),
             resolver_dialog_requested: Default::default(),
+            spotify_reconcile_playlists: Default::default(),
             spotify_album_matcher: None,
+            spotify_playlist_state: Default::default(),
+            spotify_playlist_action: Default::default(),
+            spotify_playlist_changed: Default::default(),
+            spotify_playlist_snapshot: Default::default(),
             spotify_resolution_worker: None,
             spotify_resolution_generation: 0,
             spotify_resolution_selection: None,
@@ -4822,6 +4837,552 @@ mod library_ui_tests {
                 .to_string(),
             "ok"
         );
+    }
+
+    #[test]
+    fn playlist_nonstructural_updates_preserve_model_delegates_viewport_and_selection() {
+        let (temp, mut library) = sample::create().unwrap();
+        let track = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "02 Available")
+            .unwrap()
+            .track_id;
+        let playlist = library.create_playlist("Stability").unwrap();
+        let db = rusqlite::Connection::open(temp.path().join("diagnostic.sqlite")).unwrap();
+        db.execute("WITH RECURSIVE n(x) AS (SELECT 0 UNION ALL SELECT x+1 FROM n WHERE x<999) INSERT INTO playlist_entry(id,playlist_id,track_id,position) SELECT 'stability-'||x,?1,?2,x FROM n",rusqlite::params![playlist,track.as_ref()]).unwrap();
+        let mut session = Session::new(library);
+        session.play_row(track.as_ref());
+        let bridge = QObjectBox::new(Bridge::new(session));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../PlaylistStabilityTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        let check = |engine: &mut QmlEngine, name: &str| {
+            assert_eq!(
+                engine
+                    .invoke_method(name.into(), &[])
+                    .to_qstring()
+                    .to_string(),
+                "ok"
+            )
+        };
+        check(&mut engine, "preparePlaylistStability");
+        for phase in 0..6 {
+            {
+                let pin = bridge.pinned();
+                let mut b = pin.borrow_mut();
+                match phase {
+                    0 => {
+                        for _ in 0..20 {
+                            b.changed();
+                        }
+                    }
+                    1 => {
+                        let snapshot = b.spotify_playback_state.clone();
+                        b.apply_player_update(crate::spotify_playback::Update {
+                            snapshot,
+                            generation: 0,
+                            volume_ack: None,
+                            application_command: false,
+                            completion: None,
+                        });
+                    }
+                    2 => {
+                        b.session.command("pause");
+                        b.changed();
+                    }
+                    3 => {
+                        b.player_seek(60000.);
+                        b.changed();
+                    }
+                    4 => {
+                        db.execute("UPDATE effective_track_metadata SET duration_ms=180000 WHERE track_id=?1",[track.as_ref()]).unwrap();
+                        b.browse_action_impl("refresh", 0, String::new());
+                    }
+                    _ => {
+                        db.execute("UPDATE effective_track_metadata SET title='Enriched title' WHERE track_id=?1",[track.as_ref()]).unwrap();
+                        b.browse_action_impl("refresh", 0, String::new());
+                    }
+                }
+            }
+            check(&mut engine, "checkPlaylistStability");
+        }
+        check(&mut engine, "checkPlaylistEnrichmentDisplayed");
+        // Repoint the selected stable entry twice: true absent credit, then a
+        // canonical local-style Track using the Songs Album-credit fallback.
+        {
+            use music_library::domain::{
+                ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput,
+            };
+            let pin = bridge.pinned();
+            let mut b = pin.borrow_mut();
+            for (album, artists, artist, genre, duration) in [
+                ("Uncredited", vec![], "Unknown artist", "", 180000),
+                (
+                    "Canonical Album",
+                    vec![ArtistCreditInput {
+                        name: "Hop Along".into(),
+                        role: None,
+                    }],
+                    "Hop Along",
+                    "Indie Rock",
+                    123456,
+                ),
+            ] {
+                let canonical = b
+                    .session
+                    .library
+                    .create_catalog_release(&CatalogReleaseInput {
+                        title: album.into(),
+                        year: None,
+                        artists,
+                        tracks: vec![CatalogTrackInput {
+                            title: "Enriched title".into(),
+                            artists: vec![],
+                            disc_number: Some(1),
+                            track_number: Some(1),
+                        }],
+                    })
+                    .unwrap();
+                db.execute("UPDATE effective_track_metadata SET genre_names=?2,duration_ms=?3 WHERE track_id=?1",rusqlite::params![canonical.track_ids[0].as_ref(),genre,duration]).unwrap();
+                db.execute(
+                    "UPDATE playlist_entry SET track_id=?2 WHERE id='stability-80'",
+                    rusqlite::params![playlist, canonical.track_ids[0].as_ref()],
+                )
+                .unwrap();
+                b.browse_action_impl("playlist-revision-check", 0, String::new());
+                // Drain the bounded worker through Qt after releasing the QObject borrow.
+                drop(b);
+                check(&mut engine, "checkPlaylistStability");
+                assert_eq!(
+                    engine
+                        .invoke_method(
+                            "checkPlaylistCanonicalMetadata".into(),
+                            &[
+                                string(artist),
+                                string(album),
+                                string(genre),
+                                string(if duration == 123456 { "02:03" } else { "03:00" })
+                            ]
+                        )
+                        .to_qstring()
+                        .to_string(),
+                    "ok"
+                );
+                b = pin.borrow_mut();
+            }
+        }
+        db.execute("DELETE FROM playlist_entry WHERE id='stability-20'", [])
+            .unwrap();
+        bridge
+            .pinned()
+            .borrow_mut()
+            .browse_action_impl("refresh", 0, String::new());
+        check(&mut engine, "checkPlaylistStructuralUpdate");
+    }
+
+    #[test]
+    fn hidden_selected_playlist_refreshes_after_context_append_remove_reorder_catalog_and_overwrite()
+     {
+        let (_temp, mut library) = sample::create().unwrap();
+        let tracks = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap();
+        let playlist = library.create_playlist("A revision").unwrap();
+        let other = library.create_playlist("Unrelated").unwrap();
+        for _ in 0..100 {
+            library
+                .append_playlist_track(&playlist, &tracks[0].track_id)
+                .unwrap();
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../PlaylistRevisionTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let call = |engine: &mut QmlEngine, name: &str, args: &[QVariant]| {
+            assert_eq!(
+                engine
+                    .invoke_method(name.into(), args)
+                    .to_qstring()
+                    .to_string(),
+                "ok",
+                "{name}"
+            )
+        };
+        call(&mut engine, "revisionOpen", &[string(&playlist)]);
+        call(
+            &mut engine,
+            "revisionAddFromSongs",
+            &[string(tracks[1].track_id.as_ref())],
+        );
+        call(&mut engine, "revisionReturn", &[101.into()]);
+        call(&mut engine, "revisionNoReload", &[]);
+        // A different playlist's revision must not invalidate the selected one.
+        bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .append_playlist_track(&other, &tracks[0].track_id)
+            .unwrap();
+        call(&mut engine, "revisionNoReload", &[]);
+        call(&mut engine, "revisionHide", &[]);
+        let entries = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .playlist_entries(&playlist, None, 200)
+            .unwrap();
+        bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .remove_playlist_entry(&playlist, &entries[10].id)
+            .unwrap();
+        call(&mut engine, "revisionReturn", &[100.into()]);
+        call(&mut engine, "revisionHide", &[]);
+        bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .move_playlist_entry(&playlist, &entries[99].id, false)
+            .unwrap();
+        call(&mut engine, "revisionReturn", &[100.into()]);
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .playlist_entries(&playlist, None, 200)
+                .unwrap()[97]
+                .id,
+            entries[99].id
+        );
+        call(&mut engine, "revisionHide", &[]);
+        // Catalog and Spotify persistence share the same trigger boundary.
+        {
+            use music_library::catalog::{Album, Medium, Release, Track};
+            let identity = music_library::domain::ExternalIdentity {
+                provider: "spotify".into(),
+                kind: "album".into(),
+                external_id: "1234567890123456789010".into(),
+            };
+            let release = Release {
+                album: Album {
+                    identity: identity.clone(),
+                    title: "Catalog album".into(),
+                    date: String::new(),
+                    credits: vec![],
+                },
+                identity: identity.clone(),
+                identities: vec![identity],
+                title: "Catalog album".into(),
+                date: String::new(),
+                credits: vec![],
+                media: vec![Medium {
+                    position: 1,
+                    tracks: vec![Track {
+                        duration: None,
+                        position: 1,
+                        title: "Catalog song".into(),
+                        credits: vec![],
+                        identities: vec![music_library::domain::ExternalIdentity {
+                            provider: "spotify".into(),
+                            kind: "track".into(),
+                            external_id: "1234567890123456789011".into(),
+                        }],
+                    }],
+                }],
+            };
+            let pin = bridge.pinned();
+            let mut bridge = pin.borrow_mut();
+            let plan = bridge
+                .session
+                .library
+                .prepare_catalog_playlist_append(&playlist, &release, &[(1, 1)])
+                .unwrap();
+            bridge
+                .session
+                .library
+                .apply_playlist_append(&plan, true)
+                .unwrap();
+        }
+        call(&mut engine, "revisionReturn", &[101.into()]);
+        bridge
+            .pinned()
+            .borrow_mut()
+            .browse_action_impl("playlist-rename", 0, "Renamed A".into());
+        call(&mut engine, "revisionNoReload", &[]);
+        call(&mut engine, "revisionHide", &[]);
+        let plan = music_library::playlist_import::Plan {
+            provider: "spotify".into(),
+            external_id: "3cEYpjA9oz9GiPac4AsH4n".into(),
+            source_url: "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n".into(),
+            version: Some("snapshot".into()),
+            owner: "Owner".into(),
+            name: "Renamed A".into(),
+            items: vec![],
+            unsupported: 0,
+            unavailable: 0,
+        };
+        bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .resolve_playlist_import(
+                &plan,
+                &music_library::playlist_import::Decision::Overwrite(playlist),
+            )
+            .unwrap();
+        call(&mut engine, "revisionReturn", &[0.into()]);
+        call(&mut engine, "revisionNoReload", &[]);
+    }
+
+    #[test]
+    fn spotify_imported_playlist_uses_local_backend_and_missing_file_spotify_fallback_without_queue_changes()
+     {
+        use music_library::{
+            domain::ExternalIdentity,
+            playback_resolver::ActiveBackend,
+            playlist_import::{Item, Outcome, Plan},
+        };
+        let (_temp, mut library) = sample::create().unwrap();
+        let track = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .find(|t| t.title == "02 Available")
+            .unwrap()
+            .track_id;
+        let source = library.available_playback_source(&track).unwrap().unwrap();
+        let music_library::domain::SourceLocation::LocalFile(path) = source.location else {
+            unreachable!()
+        };
+        std::fs::write(&path, b"safe diagnostic input").unwrap();
+        let identity = ExternalIdentity {
+            provider: "spotify".into(),
+            kind: "track".into(),
+            external_id: "1234567890123456789012".into(),
+        };
+        library
+            .attach_track_external_identity(&track, &identity)
+            .unwrap();
+        library.remove_from_library(&track).unwrap();
+        let item = Item {
+            identity: identity.clone(),
+            title: "Different provider title".into(),
+            credits: vec![],
+            release_identity: ExternalIdentity {
+                kind: "album".into(),
+                ..identity
+            },
+            release_title: "Provider edition".into(),
+            release_credits: vec![],
+            year: None,
+            disc: Some(1),
+            number: Some(1),
+            duration: None,
+        };
+        let plan = Plan {
+            provider: "spotify".into(),
+            external_id: "3cEYpjA9oz9GiPac4AsH4n".into(),
+            source_url: "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n".into(),
+            version: Some("v1".into()),
+            owner: "Other owner".into(),
+            name: "Source policy".into(),
+            items: vec![item.clone(), item],
+            unsupported: 0,
+            unavailable: 0,
+        };
+        let Outcome::Imported { playlist_id, .. } =
+            library.import_playlist_snapshot(&plan).unwrap()
+        else {
+            panic!()
+        };
+        let rows = library
+            .library_queue_reader()
+            .unwrap()
+            .read_playlist(&playlist_id, None)
+            .unwrap()
+            .0;
+        assert_eq!(
+            rows.iter().map(|t| t.track_id.clone()).collect::<Vec<_>>(),
+            vec![track.clone(), track.clone()]
+        );
+        let mut bridge = Bridge::new(Session::new(library));
+        bridge.real_audio = true;
+        bridge.spotify_playback_state.authorization =
+            music_library_spotify::playback::AuthorizationState::Connected;
+        bridge.spotify_playback_state.selected_device = Some("desktop".into());
+        bridge.spotify_playback_state.devices = vec![music_library_spotify::playback::Device {
+            id: Some("desktop".into()),
+            name: "Desktop".into(),
+            kind: "Computer".into(),
+            is_active: true,
+            is_restricted: false,
+            supports_volume: false,
+            volume_percent: None,
+        }];
+        let (worker, commands) = crate::spotify_playback::Worker::fake();
+        bridge.spotify_playback_worker = Some(worker);
+        let bridge = QObjectBox::new(bridge);
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        engine.load_data("import QtQuick; Item {}".into());
+        bridge
+            .pinned()
+            .borrow_mut()
+            .replace_library_program(rows, 0);
+        assert_eq!(
+            bridge.pinned().borrow().active_backend,
+            ActiveBackend::Local
+        );
+        assert!(commands.try_recv().is_err());
+        let queue = bridge
+            .pinned()
+            .borrow()
+            .session
+            .playback
+            .state()
+            .queue
+            .clone();
+        std::fs::remove_file(&path).unwrap();
+        bridge.pinned().borrow_mut().navigate_queue(false);
+        assert!(matches!(
+            commands.try_recv().unwrap(),
+            crate::spotify_playback::Command::ApplicationPlay(..)
+        ));
+        bridge.pinned().borrow_mut().finish_remote_handoff();
+        assert_eq!(
+            bridge.pinned().borrow().active_backend,
+            ActiveBackend::Remote("spotify".into())
+        );
+        assert_eq!(
+            bridge.pinned().borrow().session.playback.state().queue,
+            queue
+        );
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .imported_playlist("spotify", &plan.external_id)
+                .unwrap(),
+            Some(playlist_id)
+        );
+        assert!(
+            !bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .browse(&music_library::browse::Request {
+                    limit: 200,
+                    ..Default::default()
+                })
+                .unwrap()
+                .iter()
+                .any(|row| row.id == track.as_ref())
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "gstreamer")]
+    #[ignore = "real Hop Along library copy and GStreamer device required"]
+    fn live_hop_along_playlist_local_playback_paths() {
+        let path = std::env::var("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE").unwrap();
+        let playlist = std::env::var("MUSIC_LIBRARY_HOP_PLAYLIST").unwrap();
+        let library = music_library::Library::open(path).unwrap();
+        // Compare real persisted playlist rows with the unchanged Songs projection.
+        for row in library.playlist_entries(&playlist, None, 200).unwrap() {
+            let track = row.track.as_ref().unwrap();
+            let song = library
+                .browse(&music_library::browse::Request {
+                    pane: music_library::browse::Pane::Songs,
+                    tracks: vec![track.track_id.as_ref().to_owned()],
+                    limit: 1,
+                    ..Default::default()
+                })
+                .unwrap()
+                .remove(0);
+            assert_eq!(row.subtitle, "Hop Along");
+            assert_eq!(row.subtitle, song.subtitle);
+            assert_eq!(
+                track.release_title,
+                song.track.as_ref().unwrap().release_title
+            );
+            assert_eq!(row.genres, song.genres);
+            assert!(row.duration_ms.is_some());
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        let audio = music_library_gstreamer::GStreamerEngine::new(engine_callback(bridge.pinned()))
+            .unwrap();
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.auto_match = false;
+            b.real_audio = true;
+            b.session.playback =
+                music_library::playback::Playback::new(session::Engine::GStreamer(audio));
+            b.session.set_volume(0.0);
+        }
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../HopAlongPlaybackTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let result = engine
+            .invoke_method("hopLivePlayback".into(), &[string(playlist)])
+            .to_qstring()
+            .to_string();
+        bridge.pinned().borrow_mut().session.shutdown_audio();
+        assert_eq!(result, "ok");
     }
 
     #[test]

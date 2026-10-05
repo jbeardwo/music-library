@@ -1101,3 +1101,42 @@ fn output_trims_default_to_zero_and_persist_without_master_volume() {
     drop(library);
     assert_eq!(Library::open(path).unwrap().output_trims().unwrap(), trims);
 }
+
+#[test]
+fn unreadable_local_candidate_falls_back_without_changing_sources_queue_or_membership() {
+    use music_library::{domain::ExternalIdentity, playback_resolver::Route};
+    let mut f = Fixture::new();
+    let source = f.source("unreadable", 0, true);
+    let SourceLocation::LocalFile(path) = &source.location else {
+        unreachable!()
+    };
+    // A cyclic symlink reliably fails opening even under root, unlike chmod(000).
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(path, path).unwrap();
+    #[cfg(not(unix))]
+    std::fs::create_dir(path).unwrap();
+    let identity = ExternalIdentity {
+        provider: "remote".into(),
+        kind: "song".into(),
+        external_id: "trusted".into(),
+    };
+    f.library
+        .attach_track_external_identity(&f.tracks[0], &identity)
+        .unwrap();
+    let before = f.durable_state();
+    let queue = vec![
+        f.tracks[0].clone(),
+        f.tracks[1].clone(),
+        f.tracks[0].clone(),
+    ];
+    let mut playback = Playback::new(FakeEngine(Rc::new(RefCell::new(EngineState::default()))));
+    playback.set_queue(queue.clone()).unwrap();
+    assert_eq!(
+        f.library
+            .playback_route(&f.tracks[0], &remote_capability())
+            .unwrap(),
+        Route::Remote(identity)
+    );
+    assert_eq!(playback.state().queue, queue);
+    assert_eq!(f.durable_state(), before);
+}

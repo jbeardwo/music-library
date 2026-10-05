@@ -30,51 +30,17 @@ pub enum Route {
 
 impl Store {
     /// Indexed, Track-scoped lookup; filesystem probes are outside transactions.
-    /// Missing sources remain untouched. Unexpected access errors do not masquerade
-    /// as absence and do not cause a remote fallback.
+    /// Local files are preferred whenever readable, independent of Library or
+    /// Playlist provenance. Unusable sources remain associated for future recovery.
     pub fn playback_route(&self, track: &TrackId, remote: &RemoteCapability<'_>) -> Result<Route> {
         for source in self.playback_sources(track)? {
             let SourceLocation::LocalFile(path) = &source.location;
-            match std::fs::metadata(path) {
-                Ok(metadata) if metadata.is_file() => {}
-                Ok(_) => continue,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    continue;
-                }
-                Err(error) => {
-                    return Ok(Route::Unavailable(format!(
-                        "Local source check failed: {error}"
-                    )));
-                }
-            }
-            match std::fs::File::open(path) {
-                Ok(file) => match file.metadata() {
-                    Ok(metadata) if metadata.is_file() => return Ok(Route::Local(source)),
-                    Ok(_) => continue,
-                    Err(error) => {
-                        return Ok(Route::Unavailable(format!(
-                            "Local source check failed: {error}"
-                        )));
-                    }
-                },
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    continue;
-                }
-                Err(error) => {
-                    return Ok(Route::Unavailable(format!(
-                        "Local source cannot be opened: {error}"
-                    )));
-                }
+            // Probe only associated candidates, never scan folders or match names.
+            if std::fs::File::open(path)
+                .and_then(|file| file.metadata())
+                .is_ok_and(|metadata| metadata.is_file())
+            {
+                return Ok(Route::Local(source));
             }
         }
         if let Some(reason) = &remote.unavailable {

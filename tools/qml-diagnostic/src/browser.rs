@@ -18,13 +18,20 @@ pub struct Page {
     epoch: u32,
     scroll_id: String,
     scroll_pixel: f64,
+    playlist_revisions: Vec<(String, i64)>,
+    loaded: bool,
 }
+type PlaylistViewResult = Result<(Vec<Row>, Vec<String>), String>;
+
 struct PlaylistViewRequest {
     generation: u64,
     playlists: Vec<String>,
     sort: music_library::playlist::ViewSort,
     cursor: Option<Cursor>,
     reverse: Option<bool>,
+    refresh: Option<(Cursor, usize, bool)>,
+    revisions: Vec<(String, i64)>,
+    selection: Vec<String>,
 }
 #[derive(Default)]
 pub struct Browser {
@@ -203,6 +210,19 @@ impl Bridge {
             self.browse_changed();
             return;
         }
+        if action == "playlist-revision-check" {
+            self.refresh_changed_playlist();
+            self.browse_changed();
+            return;
+        }
+        if action == "playlist-reconcile" {
+            let automatic = self.auto_match;
+            self.auto_match = true;
+            self.reconcile_spotify_playlist(&id);
+            self.auto_match = automatic;
+            self.changed();
+            return;
+        }
         if action.starts_with("playlist-") {
             if matches!(action, "playlist-up" | "playlist-down")
                 && !self.browser.playlist_sort.allows_reordering()
@@ -243,8 +263,13 @@ impl Bridge {
                         self.browser.selections[0].single("");
                         self.selection_changed(0);
                     }
-                    for i in 0..3 {
-                        self.load_pane(i, true);
+                    if action == "playlist-rename" {
+                        self.load_pane(0, false);
+                    } else {
+                        self.refresh_selection_with_details(!matches!(
+                            action,
+                            "playlist-up" | "playlist-down"
+                        ));
                     }
                     if action == "playlist-remove" {
                         self.browser.selections[2].single("");
@@ -294,9 +319,14 @@ impl Bridge {
                     return;
                 };
                 self.browser.switch_view(view);
+                self.refresh_changed_playlist();
                 self.refresh_playlist_details(false);
                 for i in 0..3 {
-                    if self.browser.pages[i].rows.is_empty() {
+                    if if view == 4 && i == 2 {
+                        !self.browser.pages[i].loaded
+                    } else {
+                        self.browser.pages[i].rows.is_empty()
+                    } {
                         self.load_pane(i, false);
                     }
                 }
@@ -691,6 +721,9 @@ impl Bridge {
             sort: self.browser.playlist_sort,
             cursor,
             reverse,
+            refresh: None,
+            revisions: self.current_playlist_revisions(),
+            selection: self.browser.selections[2].ids.iter().cloned().collect(),
         });
         self.start_playlist_view();
     }
@@ -716,12 +749,15 @@ impl Bridge {
         };
         let generation = request.generation;
         let reverse = request.reverse;
+        let revisions = request.revisions.clone();
+        let selection = request.selection.clone();
+        let page_limit = request
+            .refresh
+            .as_ref()
+            .map_or(PAGE, |(_, count, _)| *count);
         let pointer = QPointer::from(&*self);
         let deliver = qmetaobject::queued_callback(
-            move |(reader, result): (
-                music_library::browse::QueueReader,
-                Result<Vec<Row>, String>,
-            )| {
+            move |(reader, result): (music_library::browse::QueueReader, PlaylistViewResult)| {
                 if let Some(object) = pointer.as_pinned() {
                     let mut b = object.borrow_mut();
                     if let Some(worker) = b.browser.playlist_view_worker.take() {
@@ -730,10 +766,22 @@ impl Bridge {
                     b.browser.playlist_view_reader = Some(reader);
                     if b.browser.view == 4 && generation == b.browser.playlist_view_generation {
                         match result {
-                            Ok(mut rows) => {
-                                let more = rows.len() > PAGE;
-                                rows.truncate(PAGE);
+                            Ok((mut rows, valid)) => {
+                                let valid: std::collections::HashSet<_> =
+                                    valid.into_iter().collect();
+                                let mut retained = b.browser.selections[2].ids.clone();
+                                for id in &selection {
+                                    if !valid.contains(id) {
+                                        retained.remove(id);
+                                    }
+                                }
+                                b.browser.selections[2].retain(&retained);
+                                b.browser.sync_selection_focus();
+                                let more = rows.len() > page_limit;
+                                rows.truncate(page_limit);
                                 let page = &mut b.browser.pages[2];
+                                page.playlist_revisions = revisions.clone();
+                                page.loaded = true;
                                 match reverse {
                                     None => {
                                         page.rows = rows;
@@ -770,15 +818,58 @@ impl Bridge {
             },
         );
         self.browser.playlist_view_worker = Some(std::thread::spawn(move || {
-            let result = reader
-                .playlist_view(
-                    &request.playlists,
-                    request.sort,
-                    request.cursor.as_ref(),
-                    201,
-                    request.reverse.unwrap_or(false),
-                )
-                .map_err(|e| e.to_string());
+            let result = if let Some((first, count, from_start)) = request.refresh {
+                (|| {
+                    let first = reader
+                        .playlist_view_cursor(&request.playlists, request.sort, &first.id)?
+                        .unwrap_or(first);
+                    let previous = reader.playlist_view(
+                        &request.playlists,
+                        request.sort,
+                        Some(&first),
+                        1,
+                        true,
+                    )?;
+                    let mut cursor = if from_start {
+                        None
+                    } else {
+                        previous.first().map(|r| r.cursor.clone())
+                    };
+                    let mut all = Vec::new();
+                    while all.len() <= count {
+                        let mut rows = reader.playlist_view(
+                            &request.playlists,
+                            request.sort,
+                            cursor.as_ref(),
+                            ((count + 1 - all.len()).min(201)) as u32,
+                            false,
+                        )?;
+                        if rows.is_empty() {
+                            break;
+                        }
+                        cursor = rows.last().map(|r| r.cursor.clone());
+                        all.append(&mut rows);
+                    }
+                    Ok(all)
+                })()
+                .map_err(|e: music_library::storage::Error| e.to_string())
+            } else {
+                reader
+                    .playlist_view(
+                        &request.playlists,
+                        request.sort,
+                        request.cursor.as_ref(),
+                        201,
+                        request.reverse.unwrap_or(false),
+                    )
+                    .map_err(|e| e.to_string())
+            };
+            let result = result.and_then(|rows| {
+                reader
+                    .visible_playlist_entry_ids(&request.playlists, &request.selection)
+                    .map(|valid| (rows, valid))
+                    .map_err(|e| e.to_string())
+            });
             deliver((reader, result));
         }));
     }
@@ -836,6 +927,7 @@ impl Bridge {
                 let more = rows.len() > PAGE;
                 rows.truncate(PAGE);
                 let page = &mut self.browser.pages[pane];
+                page.loaded = true;
                 if reverse {
                     rows.reverse();
                     rows.append(&mut page.rows);
@@ -874,12 +966,16 @@ impl Bridge {
         }
         let page = &mut self.browser.pages[pane];
         if reset || page.cursors.is_empty() {
+            page.loaded = false;
             page.cursors = vec![None];
             page.seek = None;
             page.before = false;
             page.epoch = page.epoch.wrapping_add(1);
             page.scroll_id.clear();
             page.scroll_pixel = 0.0;
+        }
+        if self.browser.view == 4 && pane == 2 {
+            self.browser.pages[2].playlist_revisions = self.current_playlist_revisions();
         }
         let mut request = self.browser.pane_request(pane);
         request.after = self.browser.pages[pane].cursors.last().cloned().flatten();
@@ -936,6 +1032,7 @@ impl Bridge {
                 page.more = rows.len() > PAGE;
                 rows.truncate(PAGE);
                 page.rows = rows;
+                page.loaded = true;
                 self.browser.error.clear();
             }
             Err(e) => {
@@ -1565,8 +1662,33 @@ impl Browser {
     }
 }
 impl Bridge {
+    fn current_playlist_revisions(&self) -> Vec<(String, i64)> {
+        self.session
+            .library
+            .playlist_content_revisions(
+                &self.browser.selections[0]
+                    .ids
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default()
+    }
+    fn refresh_changed_playlist(&mut self) {
+        if self.browser.view == 4
+            && self.browser.pages[2].loaded
+            && self.browser.pages[2].playlist_revisions != self.current_playlist_revisions()
+        {
+            self.refresh_selection();
+        }
+    }
     fn refresh_selection(&mut self) {
-        self.refresh_playlist_details(true);
+        self.refresh_selection_with_details(true);
+    }
+    fn refresh_selection_with_details(&mut self, refresh_details: bool) {
+        if refresh_details {
+            self.refresh_playlist_details(true);
+        }
         // Durable edits/import/removal can change inactive views too. Retain an
         // identity anchor, but never return to a stale materialized window.
         for state in &mut self.browser.views {
@@ -1577,11 +1699,37 @@ impl Bridge {
                     Some(page.scroll_id.clone())
                 };
                 page.rows.clear();
+                page.loaded = false;
                 page.cursors = vec![None];
                 page.seek = target;
                 page.before = page.seek.is_some();
                 page.epoch = page.epoch.wrapping_add(1);
             }
+        }
+        if self.browser.view == 4 && !self.browser.pages[2].rows.is_empty() {
+            // Enrichment invalidates metadata, not the selected playlist or window.
+            // Keep the old rows displayed until the bounded replacement is ready.
+            let page = &self.browser.pages[2];
+            let refresh = (
+                page.rows[0].cursor.clone(),
+                page.rows.len().max(PAGE),
+                page.cursors.last().is_none_or(Option::is_none) && page.seek.is_none(),
+            );
+            self.browser.playlist_view_generation =
+                self.browser.playlist_view_generation.wrapping_add(1);
+            self.browser.playlist_view_pending = Some(PlaylistViewRequest {
+                generation: self.browser.playlist_view_generation,
+                playlists: self.browser.selections[0].ids.iter().cloned().collect(),
+                sort: self.browser.playlist_sort,
+                cursor: None,
+                reverse: None,
+                refresh: Some(refresh),
+                revisions: self.current_playlist_revisions(),
+                selection: self.browser.selections[2].ids.iter().cloned().collect(),
+            });
+            self.start_playlist_view();
+            self.load_pane(0, false);
+            return;
         }
         if self.browser.view < 2 {
             match self
@@ -1901,10 +2049,7 @@ impl Bridge {
                     match result {
                         Ok(Some(plan)) => b.browser.duplicate_plan = Some(plan),
                         Ok(None) => {
-                            if b.browser.view == 4 {
-                                b.load_pane(2, true);
-                                b.refresh_playlist_details(true);
-                            }
+                            b.refresh_changed_playlist();
                         }
                         Err(e) => b.browser.error = e,
                     }
@@ -1959,10 +2104,7 @@ impl Bridge {
                 }
                 match result {
                     Ok(_) => {
-                        if b.browser.view == 4 {
-                            b.load_pane(2, true);
-                            b.refresh_playlist_details(true);
-                        }
+                        b.refresh_changed_playlist();
                     }
                     Err(e) => b.browser.error = e,
                 }

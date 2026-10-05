@@ -2,6 +2,7 @@
 //! and credentials stay here; catalog Client Credentials never authorize playback.
 pub mod playback;
 pub mod playback_completion;
+pub mod playlists;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use music_library::{
     album_program::{Program, Programs},

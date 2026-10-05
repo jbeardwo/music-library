@@ -24,6 +24,7 @@ pub mod output;
 pub mod playback;
 pub mod playback_resolver;
 pub mod playlist;
+pub mod playlist_import;
 pub mod provenance;
 pub mod provenance_acceptance;
 mod provenance_storage;

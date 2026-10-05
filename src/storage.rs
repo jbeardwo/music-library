@@ -213,7 +213,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 22 {
+        } else if version > 25 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -348,6 +348,21 @@ impl Store {
         if version < 22 {
             connection.execute_batch(include_str!(
                 "../migrations/0022_duration_and_song_details.sql"
+            ))?;
+        }
+
+        if version < 23 {
+            connection.execute_batch(include_str!("../migrations/0023_playlist_import.sql"))?;
+        }
+        if version < 24 {
+            connection.execute_batch(include_str!(
+                "../migrations/0024_playlist_import_copies.sql"
+            ))?;
+        }
+
+        if version < 25 {
+            connection.execute_batch(include_str!(
+                "../migrations/0025_playlist_content_revision.sql"
             ))?;
         }
 
@@ -1652,7 +1667,7 @@ fn local_album_credit(
     )
 }
 
-fn refresh_album_match_key(tx: &Transaction<'_>, album_id: &str) -> Result<()> {
+pub(crate) fn refresh_album_match_key(tx: &Transaction<'_>, album_id: &str) -> Result<()> {
     refresh_album_match_key_impl(tx, album_id, true)
 }
 fn refresh_album_match_key_impl(
@@ -1689,7 +1704,7 @@ fn refresh_album_match_key_impl(
     Ok(())
 }
 
-fn create_album_tx(
+pub(crate) fn create_album_tx(
     tx: &Transaction<'_>,
     title: &str,
     year: Option<i32>,
@@ -1918,7 +1933,7 @@ fn refresh_associated_effective_track(tx: &Transaction<'_>, source_id: &SourceId
     Ok(())
 }
 
-fn refresh_effective_track_tx(tx: &Transaction<'_>, track_id: &TrackId) -> Result<()> {
+pub(crate) fn refresh_effective_track_tx(tx: &Transaction<'_>, track_id: &TrackId) -> Result<()> {
     refresh_effective_track_impl(tx, track_id)
 }
 
@@ -2175,7 +2190,7 @@ fn canonical_external_artist(
     Ok(canonical)
 }
 
-fn insert_catalog_credits(
+pub(crate) fn insert_catalog_credits(
     tx: &Transaction<'_>,
     table: &str,
     entity: &str,

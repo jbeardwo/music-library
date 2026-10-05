@@ -5,7 +5,7 @@ use crate::{
     domain::*,
     storage::Error,
 };
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Playlist occurrences contribute individually, independently of saved membership.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,6 +46,15 @@ impl crate::browse::QueueReader {
 impl Library {
     pub fn playlist_details(&self, playlist: &str) -> Result<Option<Details>> {
         read_details(&self.store.connection, playlist)
+    }
+    /// Cheap content invalidation by stable local ID; titles and metadata do not change it.
+    pub fn playlist_content_revisions(&self, playlists: &[String]) -> Result<Vec<(String, i64)>> {
+        let mut query=self.store.connection.prepare("SELECT id,content_revision FROM playlist WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id")?;
+        Ok(query
+            .query_map([serde_json::to_string(playlists).expect("IDs")], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn create_playlist(&mut self, name: &str) -> Result<String> {
@@ -261,11 +270,12 @@ fn read_selected_entries_direction(
     // Page contents and its prefix rank must observe the same persisted order.
     let read_tx = connection.unchecked_transaction()?;
     let connection = &*read_tx;
-    let sql = "SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5";
+    let sql = "SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5";
+    let sql = sql.replace("e.artist_names", &crate::browse::song_artist_credit_sql());
     // Full queue snapshots need Track metadata and entry order, not display positions.
     let sql = if limit.is_none() {
         sql.replace(
-            "pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate",
+            "pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names",
             "pl.name",
         )
     } else {
@@ -340,7 +350,11 @@ fn read_selected_entries_direction(
                         None
                     },
                     duration_approximate: if limit.is_some() { r.get(14)? } else { false },
-                    genres: String::new(),
+                    genres: if limit.is_some() {
+                        r.get(15)?
+                    } else {
+                        String::new()
+                    },
                     track_number: if limit.is_some() { r.get(11)? } else { None },
                     disc_number: if limit.is_some() { r.get(12)? } else { None },
                     multi_disc: false,
@@ -728,14 +742,17 @@ impl ViewSort {
     pub fn allows_reordering(self) -> bool {
         self == Self::default()
     }
-    fn key(self) -> &'static str {
-        match self.column {
+    fn key(self) -> String {
+        let key = match self.column {
             Column::Position => "p.position",
             Column::Title => "e.title COLLATE NOCASE",
-            Column::Artist => "e.artist_names COLLATE NOCASE",
+            Column::Artist => {
+                return format!("{} COLLATE NOCASE", crate::browse::song_artist_credit_sql());
+            }
             Column::Album => "a.title COLLATE NOCASE",
             Column::Length => "COALESCE(CASE WHEN e.duration_ms>=0 THEN e.duration_ms END,-1)",
-        }
+        };
+        key.into()
     }
 }
 // Reconstructible connection-local projection. Only the selected playlists are
@@ -769,7 +786,7 @@ fn ensure_view_cache(connection: &Connection, playlists: &[String], sort: ViewSo
         return Ok(());
     }
     connection.execute_batch("DROP TABLE IF EXISTS temp.playlist_view_cache; CREATE TEMP TABLE playlist_view_cache(id TEXT PRIMARY KEY,playlist_id TEXT,position INTEGER,ordinal INTEGER,sort_key COLLATE NOCASE); DELETE FROM playlist_view_cache_state;")?;
-    let album_join = if sort.column == Column::Album {
+    let album_join = if matches!(sort.column, Column::Album | Column::Artist) {
         "JOIN track t ON t.id=p.track_id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
     } else {
         ""
@@ -880,7 +897,9 @@ fn read_view(
         return Ok(Vec::new());
     }
     // Fetch canonical metadata in the same read snapshot.
-    let mut query = tx.prepare("SELECT p.id,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate FROM playlist_entry p JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.id IN (SELECT value FROM json_each(?1))")?;
+    let sql = "SELECT p.id,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.id IN (SELECT value FROM json_each(?1))";
+    let sql = sql.replace("e.artist_names", &crate::browse::song_artist_credit_sql());
+    let mut query = tx.prepare(&sql)?;
     let mut metadata = query
         .query_map([serde_json::to_string(&ids).expect("IDs")], |r| {
             let track = TrackSearchResult {
@@ -907,7 +926,7 @@ fn read_view(
                     .filter(|v| *v >= 0)
                     .map(|v| v as u64),
                 duration_approximate: r.get(12)?,
-                genres: String::new(),
+                genres: r.get(13)?,
                 track_number: r.get(9)?,
                 disc_number: r.get(10)?,
                 multi_disc: false,
@@ -983,6 +1002,41 @@ impl crate::browse::QueueReader {
 }
 
 impl crate::browse::QueueReader {
+    /// Resolve a stable entry to its current presentation cursor after enrichment.
+    pub fn playlist_view_cursor(
+        &self,
+        playlists: &[String],
+        sort: ViewSort,
+        id: &str,
+    ) -> Result<Option<Cursor>> {
+        if sort.column == Column::Position {
+            return Ok(self.0.query_row("SELECT playlist_id,position FROM playlist_entry WHERE id=?1 AND playlist_id IN (SELECT value FROM json_each(?2))",params![id,serde_json::to_string(playlists).expect("IDs")], |r| Ok(Cursor {id:id.into(),release:r.get(0)?,position:r.get(1)?,..Default::default()})).optional()?);
+        }
+        let tx = self.0.unchecked_transaction()?;
+        ensure_view_cache(&tx, playlists, sort)?;
+        let cursor = tx
+            .query_row(
+                "SELECT playlist_id,position,sort_key FROM playlist_view_cache WHERE id=?1",
+                [id],
+                |r| {
+                    let mut cursor = Cursor {
+                        id: id.into(),
+                        release: r.get(0)?,
+                        position: r.get(1)?,
+                        ..Default::default()
+                    };
+                    if sort.column == Column::Length {
+                        cursor.disc = r.get(2)?;
+                    } else {
+                        cursor.title = r.get(2)?;
+                    }
+                    Ok(cursor)
+                },
+            )
+            .optional()?;
+        tx.commit()?;
+        Ok(cursor)
+    }
     pub fn playlist_view(
         &self,
         playlists: &[String],

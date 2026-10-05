@@ -17,7 +17,9 @@ use std::{
 use url::Url;
 
 pub const REDIRECT: &str = "http://127.0.0.1:43821/callback";
-pub const SCOPES: &str = "user-read-playback-state user-modify-playback-state";
+pub const PLAYBACK_SCOPES: &str = "user-read-playback-state user-modify-playback-state";
+pub const PLAYLIST_SCOPES: &str = "playlist-read-private playlist-read-collaborative";
+pub const SCOPES: &str = "user-read-playback-state user-modify-playback-state playlist-read-private playlist-read-collaborative";
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -140,6 +142,8 @@ struct Tokens {
     refresh_token: String,
     access_expires_at: u64,
     authorized_at: u64,
+    #[serde(default)]
+    scopes: String,
 }
 pub struct Authorization {
     verifier: String,
@@ -437,7 +441,7 @@ impl Playback {
             return Err(Error::InvalidResponse);
         }
         if let Some(scope) = value["scope"].as_str()
-            && !SCOPES
+            && !(if initial { SCOPES } else { PLAYBACK_SCOPES })
                 .split_whitespace()
                 .all(|s| scope.split_whitespace().any(|v| v == s))
         {
@@ -468,6 +472,19 @@ impl Playback {
             refresh_token: refresh,
             access_expires_at: now() + expires.saturating_sub(30.min(expires / 10)),
             authorized_at,
+            scopes: value["scope"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    if initial {
+                        String::new()
+                    } else {
+                        self.tokens
+                            .as_ref()
+                            .map(|t| t.scopes.clone())
+                            .unwrap_or_default()
+                    }
+                }),
         });
         self.save()?;
         self.snapshot.authorization = AuthorizationState::Connected;
@@ -488,6 +505,17 @@ impl Playback {
             return Err(self.invalidate());
         }
         result
+    }
+    pub fn require_playlist_scopes(&self) -> Result<()> {
+        let tokens = self.tokens.as_ref().ok_or(Error::AuthorizationRequired)?;
+        if PLAYLIST_SCOPES
+            .split_whitespace()
+            .all(|s| tokens.scopes.split_whitespace().any(|v| v == s))
+        {
+            Ok(())
+        } else {
+            Err(Error::InsufficientScope)
+        }
     }
     fn ready(&self) -> Result<()> {
         if self.not_before > Instant::now() {
@@ -561,7 +589,7 @@ impl Playback {
             _ => Err(Error::ApiRejected(status)),
         }
     }
-    fn request(&mut self, path: &str, body: Option<Value>) -> Result<Value> {
+    pub(crate) fn request(&mut self, path: &str, body: Option<Value>) -> Result<Value> {
         self.ready()?;
         if self.snapshot.authorization == AuthorizationState::ReauthorizationRequired {
             return Err(Error::ReauthorizationRequired);
@@ -950,6 +978,408 @@ mod tests {
             true,
         )
         .unwrap();
+    }
+    fn playlist_json(value: Value) -> &'static str {
+        Box::leak(value.to_string().into_boxed_str())
+    }
+    fn playlist_token() -> &'static str {
+        playlist_json(
+            json!({"access_token":"private-access","refresh_token":"private-refresh","token_type":"Bearer","expires_in":3600,"scope":SCOPES}),
+        )
+    }
+    fn playlist_metadata() -> Value {
+        json!({"id":"3cEYpjA9oz9GiPac4AsH4n","name":"Recommendations","owner":{"display_name":"Owner"},"snapshot_id":"version1","items":{"total":7}})
+    }
+    fn playlist_track(id: &str) -> Value {
+        json!({"item":{"type":"track","id":id,"name":"Song","duration_ms":180000,"disc_number":1,"track_number":2,"artists":[{"id":"1234567890123456789010","name":"Artist"}],"album":{"id":"1234567890123456789011","name":"Album","artists":[{"id":"1234567890123456789010","name":"Artist"}]}}})
+    }
+    #[test]
+    fn playlist_scopes_upgrade_legacy_auth_without_breaking_playback() {
+        assert!(SCOPES.contains("playlist-read-private"));
+        assert!(SCOPES.contains("playlist-read-collaborative"));
+        assert!(!SCOPES.contains("playlist-modify"));
+        let server = Server::new(vec![
+            (200, "", TOKEN),
+            (200, "", DEVICES),
+            (200, "", REFRESH),
+            (200, "", DEVICES),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        assert_eq!(p.require_playlist_scopes(), Err(Error::InsufficientScope));
+        assert!(matches!(
+            p.account_playlists(),
+            Err(crate::playlists::Error::Authorization(
+                Error::InsufficientScope
+            ))
+        ));
+        assert_eq!(p.snapshot.api_requests, 0);
+        p.devices().unwrap();
+        p.tokens.as_mut().unwrap().access_expires_at = 0;
+        p.devices().unwrap();
+        assert_eq!(p.require_playlist_scopes(), Err(Error::InsufficientScope));
+        let mut v: Value = serde_json::from_slice(&fs::read(&p.file).unwrap()).unwrap();
+        v.as_object_mut().unwrap().remove("scopes");
+        fs::write(&p.file, v.to_string()).unwrap();
+        assert_eq!(
+            Playback::new("test-client".into(), p.file.clone())
+                .unwrap()
+                .require_playlist_scopes(),
+            Err(Error::InsufficientScope)
+        );
+        server.finish();
+    }
+    #[test]
+    fn playlist_account_and_item_pages_keep_order_and_skip_bad_items_without_track_requests() {
+        let metadata = playlist_metadata();
+        let a = playlist_track("1234567890123456789012");
+        let b = playlist_track("1234567890123456789013");
+        let c = playlist_track("1234567890123456789014");
+        let server = Server::new(vec![
+            (200, "", playlist_token()),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[metadata],"total":2,"next":"https://api.spotify.com/v1/me/playlists?offset=1&limit=50"}),
+                ),
+            ),
+            (
+                200,
+                "",
+                playlist_json(json!({"items":[playlist_metadata()],"total":2,"next":null})),
+            ),
+            (200, "", playlist_json(playlist_metadata())),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[a,b,a],"next":"https://api.spotify.com/v1/playlists/3cEYpjA9oz9GiPac4AsH4n/items?offset=3&limit=50","total":7}),
+                ),
+            ),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[{"item":{"type":"episode"}},{"item":null},{"item":{"type":"track","id":null}},c],"next":null,"total":7}),
+                ),
+            ),
+            (200, "", r#"{"snapshot_id":"version1"}"#),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        let rows = p.account_playlists().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].owner, "Owner");
+        assert_eq!(rows[0].count, Some(7));
+        let mut progress = vec![];
+        let plan = p
+            .fetch_playlist("spotify:playlist:3cEYpjA9oz9GiPac4AsH4n", &mut |n| {
+                progress.push(n)
+            })
+            .unwrap();
+        assert_eq!(
+            plan.items
+                .iter()
+                .map(|t| t.identity.external_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "1234567890123456789012",
+                "1234567890123456789013",
+                "1234567890123456789012",
+                "1234567890123456789014"
+            ]
+        );
+        assert_eq!(plan.unsupported, 1);
+        assert_eq!(plan.unavailable, 2);
+        assert_eq!(progress, [3, 7]);
+        assert_eq!(plan.items[0].duration.unwrap().milliseconds, 180000);
+        let mut library = music_library::Library::open(dir.path().join("library.sqlite")).unwrap();
+        let music_library::playlist_import::Outcome::Imported { playlist_id, .. } =
+            library.import_playlist_snapshot(&plan).unwrap()
+        else {
+            panic!()
+        };
+        let entries = library.playlist_entries(&playlist_id, None, 20).unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries[0].track.as_ref().unwrap().track_id,
+            entries[2].track.as_ref().unwrap().track_id
+        );
+        library.rename_playlist(&playlist_id, "Edited").unwrap();
+        library
+            .remove_playlist_entry(&playlist_id, &entries[0].id)
+            .unwrap();
+        assert!(matches!(
+            library.import_playlist_snapshot(&plan).unwrap(),
+            music_library::playlist_import::Outcome::AlreadyImported { .. }
+        ));
+        let requests = server.finish();
+        assert_eq!(requests.len(), 7);
+        assert!(requests.iter().skip(1).all(|r| r.starts_with("GET ")));
+        assert!(requests.iter().all(|r| !r.contains("/tracks")));
+        assert!(requests[2].contains("offset=1"));
+        assert!(requests[5].contains("offset=3"));
+    }
+    #[test]
+    fn playlist_access_uses_api_response_for_owned_followed_collaborative_and_pasted_sources() {
+        for (owner, collaborative) in [
+            ("connected-user", false),
+            ("other-owner", false),
+            ("other-owner", true),
+        ] {
+            let mut metadata = playlist_metadata();
+            metadata["owner"] = json!({"id":owner,"display_name":owner});
+            metadata["collaborative"] = json!(collaborative);
+            let server = Server::new(vec![
+                (200, "", playlist_token()),
+                (
+                    200,
+                    "",
+                    playlist_json(json!({"items":[metadata.clone()],"next":null,"total":1})),
+                ),
+                (200, "", playlist_json(metadata)),
+                (
+                    200,
+                    "",
+                    playlist_json(
+                        json!({"items":[playlist_track("1234567890123456789012")],"next":null,"total":1}),
+                    ),
+                ),
+                (200, "", r#"{"snapshot_id":"version1"}"#),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = client(&server, &dir);
+            authorize(&mut p);
+            assert_eq!(p.account_playlists().unwrap()[0].owner, owner);
+            let plan = p
+                .fetch_playlist(
+                    "https://open.spotify.com/playlist/3cEYpjA9oz9GiPac4AsH4n",
+                    &mut |_| {},
+                )
+                .unwrap();
+            assert_eq!(plan.items.len(), 1);
+            assert_eq!(p.snapshot.api_requests, 4);
+            server.finish();
+        }
+    }
+    #[test]
+    fn playlist_scoped_403_does_not_reauthorize_but_401_does() {
+        let server = Server::new(vec![
+            (200, "", playlist_token()),
+            (403, "", r#"{"error":{"message":"Insufficient scope"}}"#),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        assert!(matches!(
+            p.fetch_playlist("3cEYpjA9oz9GiPac4AsH4n", &mut |_| {}),
+            Err(crate::playlists::Error::AccessDenied)
+        ));
+        assert_eq!(p.snapshot.authorization, AuthorizationState::Connected);
+        assert!(p.require_playlist_scopes().is_ok());
+        server.finish();
+        let server = Server::new(vec![
+            (200, "", playlist_token()),
+            (401, "", "{}"),
+            (200, "", playlist_token()),
+            (401, "", "{}"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        assert!(matches!(
+            p.fetch_playlist("3cEYpjA9oz9GiPac4AsH4n", &mut |_| {}),
+            Err(crate::playlists::Error::Authorization(
+                Error::ReauthorizationRequired
+            ))
+        ));
+        server.finish();
+    }
+    #[test]
+    #[ignore = "real connected Spotify account: official read-only access observations"]
+    fn live_playlist_access_observations() {
+        let mut p = Playback::from_env().unwrap();
+        p.require_playlist_scopes().unwrap();
+        let me = p.request("me", None).unwrap();
+        let user = me["id"].as_str().unwrap();
+        let account = p.account_playlists().unwrap();
+        println!("Account browser returned {} playlists", account.len());
+        let mut seen_owned = false;
+        let mut seen_followed = false;
+        for playlist in &account {
+            let metadata = p.request(
+                &format!("playlists/{}?fields=owner(id),collaborative", playlist.id),
+                None,
+            );
+            let Ok(metadata) = metadata else {
+                continue;
+            };
+            let owned = metadata["owner"]["id"].as_str() == Some(user);
+            if (owned && seen_owned) || (!owned && seen_followed) {
+                continue;
+            }
+            match p.fetch_playlist(&playlist.id, &mut |_| {}) {
+                Ok(plan) => {
+                    println!(
+                        "{} {:?}: {} tracks, API accepted",
+                        if owned { "Owned" } else { "Followed non-owned" },
+                        plan.name,
+                        plan.items.len()
+                    );
+                    if owned {
+                        seen_owned = true;
+                    } else {
+                        seen_followed = true;
+                    }
+                }
+                Err(error) => println!("Account playlist {:?}: {error}", playlist.name),
+            }
+            if seen_owned && seen_followed {
+                break;
+            }
+        }
+        let pasted = "37i9dQZF1DXcBWIGoYBM5M";
+        assert!(
+            !account.iter().any(|playlist| playlist.id == pasted),
+            "Choose another unfollowed paste fixture"
+        );
+        let result = p.fetch_playlist(
+            &format!("https://open.spotify.com/playlist/{pasted}"),
+            &mut |_| {},
+        );
+        println!(
+            "Pasted source absent from account list: HTTP {:?}, {}",
+            p.snapshot.last_http_status,
+            match result {
+                Ok(plan) => format!("accepted {} tracks", plan.items.len()),
+                Err(error) => error.to_string(),
+            }
+        );
+        assert_eq!(p.snapshot.authorization, AuthorizationState::Connected);
+        assert!(
+            seen_followed,
+            "No followed non-owned playlist could be validated"
+        );
+    }
+    #[test]
+    fn playlist_remote_failure_stages_nothing_and_access_errors_are_distinct() {
+        for (status, expected) in [
+            (403, crate::playlists::Error::AccessDenied),
+            (404, crate::playlists::Error::NotFound),
+        ] {
+            let server = Server::new(vec![
+                (200, "", playlist_token()),
+                (status, "", r#"{"error":{"message":"Unavailable"}}"#),
+            ]);
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = client(&server, &dir);
+            authorize(&mut p);
+            assert_eq!(
+                p.fetch_playlist("3cEYpjA9oz9GiPac4AsH4n", &mut |_| {})
+                    .unwrap_err(),
+                expected
+            );
+            server.finish();
+        }
+        let server = Server::new(vec![
+            (200, "", playlist_token()),
+            (200, "", playlist_json(playlist_metadata())),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[playlist_track("1234567890123456789012")],"next":"https://api.spotify.com/v1/playlists/3cEYpjA9oz9GiPac4AsH4n/items?offset=1","total":7}),
+                ),
+            ),
+            (429, "Retry-After: 2\r\n", "{}"),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        let library = music_library::Library::open(dir.path().join("library.sqlite")).unwrap();
+        assert!(matches!(
+            p.fetch_playlist("3cEYpjA9oz9GiPac4AsH4n", &mut |_| {}),
+            Err(crate::playlists::Error::Authorization(Error::RateLimited(
+                2
+            )))
+        ));
+        assert!(library.playlists(None, 200).unwrap().is_empty());
+        assert_eq!(p.snapshot.api_requests, 3);
+        server.finish();
+    }
+    #[test]
+    fn playlist_changed_or_incomplete_remote_snapshot_never_returns_a_plan() {
+        for (total, final_version, expected) in [
+            (1, "version2", crate::playlists::Error::Changed),
+            (2, "version1", crate::playlists::Error::InvalidResponse),
+        ] {
+            let mut responses = vec![
+                (200, "", playlist_token()),
+                (200, "", playlist_json(playlist_metadata())),
+                (
+                    200,
+                    "",
+                    playlist_json(
+                        json!({"items":[playlist_track("1234567890123456789012")],"next":null,"total":total}),
+                    ),
+                ),
+            ];
+            if total == 1 {
+                responses.push((200, "", playlist_json(json!({"snapshot_id":final_version}))));
+            }
+            let server = Server::new(responses);
+            let dir = tempfile::tempdir().unwrap();
+            let mut p = client(&server, &dir);
+            authorize(&mut p);
+            assert_eq!(
+                Playback::new("test-client".into(), p.file.clone())
+                    .unwrap()
+                    .require_playlist_scopes(),
+                Ok(())
+            );
+            assert_eq!(
+                p.fetch_playlist("3cEYpjA9oz9GiPac4AsH4n", &mut |_| {})
+                    .unwrap_err(),
+                expected
+            );
+            server.finish();
+        }
+    }
+    #[test]
+    fn account_playlist_pages_allow_filtered_totals_offsets_and_empty_pages() {
+        let server = Server::new(vec![
+            (200, "", playlist_token()),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[playlist_metadata()],"total":4,"next":"https://api.spotify.com/v1/me/playlists?offset=2"}),
+                ),
+            ),
+            (
+                200,
+                "",
+                playlist_json(
+                    json!({"items":[],"total":4,"next":"https://api.spotify.com/v1/me/playlists?offset=3"}),
+                ),
+            ),
+            (
+                200,
+                "",
+                playlist_json(json!({"items":[playlist_metadata()],"total":4,"next":null})),
+            ),
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = client(&server, &dir);
+        authorize(&mut p);
+        assert_eq!(p.account_playlists().unwrap().len(), 2);
+        let requests = server.finish();
+        assert_eq!(requests.len(), 4);
+        assert!(requests[2].contains("offset=2"));
+        assert!(requests[3].contains("offset=3"));
     }
     fn song() -> Song {
         Song::from_associations(&[music_library::domain::ExternalIdentity {

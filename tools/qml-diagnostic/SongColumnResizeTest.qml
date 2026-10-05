@@ -49,22 +49,35 @@
     }
     function exerciseCurrentTableResize() {
         resizeTableDone();
+        const corrupt=songsPane.columnMinimums.map((w,i) => [-100,NaN,Infinity,0,1e12][i]);
+        if(songsPane.songsTable) window.songsColumnWidths=corrupt; else window.playlistColumnWidths=corrupt;
+        columnResizeTest.wait(40);
+        for(let i=0;i<songsPane.tableColumns.length;i++) resizeTableCheck(Number.isFinite(songsPane.tableColumns[i]) && songsPane.tableColumns[i]>=songsPane.columnMinimums[i] && songsPane.tableColumns[i]<=songsPane.columnMaximums[i],"invalid session width clamped "+i);
+        if(songsPane.songsTable) window.songsColumnWidths=[]; else window.playlistColumnWidths=[];
+        columnResizeTest.wait(40);
         const list=columnResizeTest.findChild(songsPane,"libraryPane2");
         list.positionViewAtBeginning();columnResizeTest.wait(80);
         const epoch=library.panes[2].epoch,ids=library.panes[2].rows.map(r=>r.id).join();
         const sort=songsPane.songsTable?library.songsColumn+library.songsDescending:library.playlistSort+library.playlistDescending;
         const queue=JSON.stringify(view.queue),position=view.position,status=view.status;
         columnResizeWatching=true;columnResizeNotifications=0;
-        for(let index=0;index<songsPane.tableColumns.length-1;index++) {
+        for(let index=0;index<songsPane.tableColumns.length;index++) {
             let old=songsPane.tableColumns.slice();
             // Exercise both clamp edges with actual pointer drags.
             resizeTableDrag(index,songsPane.columnMinimums[index]-old[index]-15);
             resizeTableCheck(Math.abs(songsPane.tableColumns[index]-songsPane.columnMinimums[index])<0.1,"left minimum clamp "+index);
             old=songsPane.tableColumns.slice();
-            resizeTableDrag(index,old[index+1]-songsPane.columnMinimums[index+1]+15);
-            resizeTableCheck(Math.abs(songsPane.tableColumns[index+1]-songsPane.columnMinimums[index+1])<0.1,"right minimum clamp "+index);
+            const total=songsPane.columnsWidth;
+            const growth=Math.min(50,songsPane.columnMaximums[index]-old[index]-8);
+            resizeTableDrag(index,growth);
+            resizeTableCheck(Math.abs(songsPane.tableColumns[index]-old[index]-growth)<0.1,"independent growth "+index);
+            resizeTableCheck(Math.abs(songsPane.columnsWidth-total-growth)<0.1,"content width grows "+index);
+            for(let other=0;other<old.length;other++) if(other!==index)
+                resizeTableCheck(songsPane.tableColumns[other]===old[other],"other column unchanged "+other);
             old=songsPane.tableColumns.slice();resizeTableDrag(index,-12);
-            resizeTableCheck(Math.abs(songsPane.tableColumns[index]-old[index]+12)<0.1,"responsive drag "+index);
+            resizeTableCheck(Math.abs(songsPane.tableColumns[index]-old[index]+12)<0.1,"responsive shrink "+index);
+            for(let other=0;other<old.length;other++) if(other!==index)
+                resizeTableCheck(songsPane.tableColumns[other]===old[other],"shrink does not redistribute "+other);
             for(const fraction of [0.1,0.5,0.9]) {
                 old=songsPane.tableColumns.slice();resizeTableDrag(index,6,fraction);
                 resizeTableCheck(Math.abs(songsPane.tableColumns[index]-old[index]-6)<0.1,"body divider grows at "+fraction+" / "+index);
@@ -73,11 +86,29 @@
                 resizeTableAlignment();
             }
         }
+        // Oversized drags remain finite and the last divider stays in the
+        // horizontal Flickable's range, including after shrinking at the end.
+        for(let index=0;index<songsPane.tableColumns.length;index++) {
+            const initial=songsPane.tableColumns.slice();
+            songsPane.resizeColumns(index,initial,1e12);
+            columnResizeTest.wait(20);
+            resizeTableCheck(songsPane.tableColumns[index]===songsPane.columnMaximums[index],"practical maximum "+index);
+            const tail=list.ScrollBar.horizontal;
+            tail.position=1-tail.size;columnResizeTest.wait(30);
+            resizeTableCheck(list.contentWidth>=songsPane.columnsWidth,"scroll content encompasses columns");
+            resizeTableCheck(Math.abs(list.contentX-(list.contentWidth-list.width))<1,"scrollbar reaches last column");
+            songsPane.resizeColumns(index,songsPane.tableColumns.slice(),-1e12);columnResizeTest.wait(30);
+            resizeTableCheck(list.contentX>=0 && list.contentX<=Math.max(0,list.contentWidth-list.width)+0.1,"horizontal offset clamped after shrink");
+            tail.position=0;columnResizeTest.wait(30);
+            resizeTableCheck(Math.abs(list.contentX)<1,"leftmost column recoverable");
+            resizeTableAlignment();
+        }
         columnResizeWatching=false;
         resizeTableCheck(columnResizeNotifications===0,"resize performs no browse/catalog notifications");
         resizeTableCheck(library.panes[2].epoch===epoch && library.panes[2].rows.map(r=>r.id).join()===ids,"resize does not reload/reorder model");
         resizeTableCheck((songsPane.songsTable?library.songsColumn+library.songsDescending:library.playlistSort+library.playlistDescending)===sort,"drag does not sort");
         resizeTableCheck(JSON.stringify(view.queue)===queue && view.position===position && view.status===status,"queue/playback unchanged");
+        resizeTableDrag(0,400);
         const oldWidth=window.width;window.width=800;columnResizeTest.wait(100);
         resizeTableCheck(list.contentWidth>list.width,"narrow pane scrolls horizontally instead of crushing columns");
         resizeTableReveal(songsPane.columnsWidth);resizeTableAlignment();

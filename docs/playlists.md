@@ -37,7 +37,7 @@ then deletes its test playlist. On the existing 200k-Track fixture, first plus
 585ms. The plan used `playlist_entry_order (playlist_id=? AND position>?)`.
 These are local measurements, not cross-machine budgets.
 
-Playlist search, provider import/export, cross-service migration, synchronization,
+Playlist search, provider export and imports beyond Spotify snapshots, cross-service migration, synchronization,
 collaboration, folders, smart playlists and persistent UI navigation remain deferred.
 
 Final checks passed: core suite and focused playlist/migration regressions,
@@ -279,3 +279,46 @@ sorting semantics are retained. The position header has sufficient content space
 to show `#` instead of an elided label. Narrow panes scroll horizontally with
 headers and cells aligned; position and entry identity remain independent of
 widths. See [resizable details columns](songs-details-and-duration.md#resizable-details-columns).
+
+### Spotify import
+
+**+ → From Spotify** creates an app-owned snapshot with source provenance,
+complete remote order and distinct duplicate entries. It supports account browsing
+and links/URIs, read-only user PKCE authorization, scope reconnection/resume and
+transactional persistence. Newly imported Tracks remain unsaved; existing trusted
+Spotify identities reuse canonical Tracks. See [Spotify playlist snapshots](spotify-playlist-import.md).
+
+
+The Playlist **+** menu chooses the existing **New** or **From Spotify** flow.
+Spotify title/source collisions offer explicit Rename, Overwrite and Cancel;
+overwrite retains the local Playlist ID and transactionally replaces a fully
+fetched snapshot. Ambiguous targets require Rename. Ownership never pre-filters
+Spotify access. Songs detail dividers change only their own column width, with
+horizontal overflow and separate session width state. Non-structural playlist
+metadata updates patch existing rows rather than resetting the model and viewport.
+Outer browsing pane splitters retain their existing behavior.
+
+### Content revisions and detail-column bounds
+
+Migration 25 records a per-playlist content revision. SQLite triggers increment it
+for every PlaylistEntry insertion, deletion, move, or Track replacement, including
+worker writes and Spotify overwrite. Rollback also rolls back revisions. Title
+and Track-metadata edits do not increment the content revision. The diagnostic
+browser compares revisions for selected local IDs when returning to Playlists;
+unchanged windows remain cached, while changed windows refresh asynchronously
+with stable entry selection and a bounded identity anchor. No timer detects edits.
+
+Song detail widths are sanitized against usable schema-specific minimums and
+bounded maximums, including invalid session state. Each divider changes only its
+own width. Horizontal content encompasses the entire column sum plus end padding;
+the scrollbar remains usable during overflow, and shrinking clamps horizontal
+position into the new range. Outer SplitView pane behavior is unchanged.
+
+Playback uses readable associated local files first, then persisted Spotify, then
+the existing bounded provider resolution where permitted. Playlist provenance does
+not influence that policy. Import immediately reuses trusted Spotify Track identity;
+unassociated local and imported canonical Tracks are not merged by display names.
+Existing enrichment establishes provider associations. Explicit playlist reconciliation
+can repoint Spotify-only staging entries after the existing full-program matcher
+establishes a unique trusted occurrence on a local canonical Track. See
+[Hop Along reconciliation audit](hop-along-reconciliation-audit.md).

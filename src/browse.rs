@@ -341,8 +341,8 @@ fn query_projection(
     }
     // Display fallback only: some imported files have Album credits but no
     // Track credits. Preserve the effective Track value whenever present.
-    let album_credit = "COALESCE((SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')";
-    let track_credit = format!("COALESCE(NULLIF(e.artist_names, ''), {album_credit})");
+    let album_credit = album_artist_credit_sql();
+    let track_credit = song_artist_credit_sql();
     let saved = "JOIN library_membership lm ON lm.track_id=t.id";
 
     let album_order =
@@ -681,4 +681,16 @@ impl QueueReader {
             request.after = rows.last().map(|r| r.cursor.clone());
         }
     }
+}
+
+/// Shared display-only fallback. SQL aliases e/a are canonical Track/Album metadata.
+/// Explicit Track display credit wins; ordered Album credits are used only if absent.
+pub(crate) fn album_artist_credit_sql() -> &'static str {
+    "COALESCE((SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')"
+}
+pub(crate) fn song_artist_credit_sql() -> String {
+    format!(
+        "COALESCE(NULLIF(e.artist_names, ''), {})",
+        album_artist_credit_sql()
+    )
 }

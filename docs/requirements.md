@@ -938,3 +938,22 @@ session-local logical position on return. Browsing must stay bounded and efficie
 at 200k Tracks rather than materializing the whole result set in QML. See
 [continuous scrolling](continuous-scrolling.md) for the current window sizes and
 validation. Restart-persistent navigation remains deferred.
+
+## Spotify playlist import
+
+Spotify playlist import creates a persistent app playlist snapshot, with complete
+order and duplicate occurrences, independent of Library membership. New provider
+Tracks remain unsaved and use normal playback resolution. Read-only connected-user
+authorization, account/link browsing, safe access errors and atomic persistence
+are required. Source provenance prevents silent duplicate import or overwriting
+local edits. Write-back and synchronization remain deferred. See
+[Spotify playlist snapshots](spotify-playlist-import.md).
+
+
+Spotify snapshot re-import resolves title/source collisions explicitly with
+Rename incoming, Overwrite existing or Cancel. Overwrite preserves the app Playlist
+ID, fetches before replacing entries, and changes neither Library membership nor
+Spotify contents. Ambiguous overwrite targets require renaming. Playlist access is
+determined by the official API response, including followed playlists; owner
+metadata does not gate access. Playlist metadata/playback updates preserve the
+Songs viewport, entry selection, sort and independent detail-column widths.

@@ -156,8 +156,8 @@ NeedsEnrichment, or Unavailable(reason). An adapter supplies current capability 
 identity validation; core selection does not branch on provider name. Local-first
 selection probes only the Track's indexed available sources, in stable order. It
 checks a regular file exists and opens, with no durable availability mutation.
-Missing paths are skipped; unexpected access or engine failures are not hidden by
-Spotify playback. No filesystem or network work enters a write transaction.
+Missing or unreadable local candidates are skipped so a persisted Spotify source
+can provide fallback. Local decoding/engine failures remain explicit playback errors. No filesystem or network work enters a write transaction.
 
 The existing song search gains optional duration/disc/position input. Automatic
 acceptance is exact normalized Artist/title/Album plus compatible supplied positions

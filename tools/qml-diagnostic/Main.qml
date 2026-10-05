@@ -970,6 +970,60 @@ ApplicationWindow {
     property int contextPane: 0
     property string contextId: ""
     Dialog {
+        id: spotifyPlaylistDialog
+        objectName: "spotifyPlaylistDialog"
+        title: "Import from Spotify"
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(640, window.width - 40)
+        height: Math.min(600, window.height - 40)
+        standardButtons: Dialog.Close
+        readonly property var state: window.bridge.spotify_playlist_snapshot
+        onOpened: window.bridge.spotify_playlist_action("browse", "")
+        ColumnLayout {
+            anchors.fill: parent
+            RowLayout {
+                Layout.fillWidth: true
+                TextField { id: spotifyPlaylistLink; objectName: "spotifyPlaylistLink"; Layout.fillWidth: true; placeholderText: "Spotify playlist link, URI or ID"; enabled: !spotifyPlaylistDialog.state.busy }
+                Button { text: "Import"; enabled: !spotifyPlaylistDialog.state.busy && spotifyPlaylistLink.text.trim().length > 0; onClicked: window.bridge.spotify_playlist_action("import", spotifyPlaylistLink.text) }
+            }
+            RowLayout {
+                Button { text: "Browse account playlists"; enabled: !spotifyPlaylistDialog.state.busy; onClicked: window.bridge.spotify_playlist_action("browse", "") }
+                Button { text: "Reconnect Spotify"; visible: spotifyPlaylistDialog.state.needsAuth; enabled: window.spotifyPlayback.status !== "Authorizing"; onClicked: window.bridge.spotify_playlist_action("connect", "") }
+                BusyIndicator { running: spotifyPlaylistDialog.state.busy || window.spotifyPlayback.status === "Authorizing"; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+            }
+            Label { Layout.fillWidth: true; text: spotifyPlaylistDialog.state.message; textFormat: Text.PlainText; wrapMode: Text.Wrap }
+            RowLayout {
+                visible: spotifyPlaylistDialog.state.conflict
+                Button { text: "Rename incoming"; enabled: !spotifyPlaylistDialog.state.busy; onClicked: { spotifyIncomingTitle.text=spotifyPlaylistDialog.state.incomingName; spotifyRenameDialog.open(); } }
+                Button { text: "Overwrite existing"; enabled: !spotifyPlaylistDialog.state.busy && spotifyPlaylistDialog.state.canOverwrite; onClicked: window.bridge.spotify_playlist_action("overwrite","") }
+                Button { text: "Cancel"; enabled: !spotifyPlaylistDialog.state.busy; onClicked: window.bridge.spotify_playlist_action("cancel","") }
+            }
+            TextField { id: spotifyPlaylistFilter; Layout.fillWidth: true; placeholderText: "Filter playlists by name or owner" }
+            ListView {
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                clip: true
+                model: spotifyPlaylistDialog.state.playlists.filter(p => (p.name + " " + p.owner).toLowerCase().indexOf(spotifyPlaylistFilter.text.toLowerCase()) >= 0)
+                ScrollBar.vertical: ScrollBar {}
+                delegate: ItemDelegate {
+                    required property var modelData
+                    width: ListView.view.width
+                    text: modelData.name + (modelData.owner ? " — " + modelData.owner : "") + (modelData.count ? " · " + modelData.count : "")
+                    enabled: !spotifyPlaylistDialog.state.busy
+                    onClicked: window.bridge.spotify_playlist_action("import", modelData.id)
+                }
+            }
+        }
+    }
+    Dialog {
+        id: spotifyRenameDialog; objectName: "spotifyRenameDialog"
+        title: "Rename incoming playlist"; anchors.centerIn: parent; modal: true
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        TextField { id: spotifyIncomingTitle; objectName: "spotifyIncomingTitle"; width: 320; placeholderText: "New local playlist title" }
+        onAccepted: window.bridge.spotify_playlist_action("rename",spotifyIncomingTitle.text)
+    }
+    Dialog {
         id: playlistNameDialog
         property bool rename: false
         title: rename ? "Rename playlist" : "Create playlist"
@@ -1020,6 +1074,7 @@ ApplicationWindow {
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
         MenuItem { text: "Add to Playlist…"; enabled: !window.library.pending; onTriggered: { window.bridge.browse_action("picker-open",window.contextPane,window.contextId); addPlaylistDialog.open(); } }
         MenuItem { text: "Rename playlist…"; visible: window.library.view === "Playlists" && window.contextPane === 0; enabled: !window.library.pending && window.library.panes[0].selectionCount === 1; onTriggered: { playlistNameDialog.rename = true; playlistName.text = (window.library.panes[0].rows.find(r => r.id === window.contextId) || {}).title || ""; playlistNameDialog.open(); } }
+        MenuItem { text: "Resolve local Tracks"; visible: window.library.view === "Playlists" && window.contextPane === 0; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("playlist-reconcile", 0, window.contextId) }
         MenuItem { text: "Delete playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 0; onTriggered: window.bridge.browse_action("playlist-delete", 0, window.contextId) }
         MenuItem { text: "Save to Library"; visible: window.library.view === "Playlists" && window.contextPane === 2; enabled: !window.library.pending && window.library.panes[2].selectionCount === 1; onTriggered: window.bridge.browse_action("save-playlist-track", 2, window.contextId) }
         MenuItem { text: "Remove entry from playlist"; enabled: !window.library.pending; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-remove", 2, window.contextId) }
@@ -1159,14 +1214,20 @@ ApplicationWindow {
         readonly property var columnMinimums: songsTable ? [180,120,120,100] : [32,160,120,120,64]
         readonly property var defaultColumns: songsTable ? [Math.max(220,tableWidth*0.36),Math.max(150,tableWidth*0.24),Math.max(150,tableWidth*0.24),Math.max(120,tableWidth*0.16)] : [40,Math.max(180,(tableWidth-104)*0.44),Math.max(120,(tableWidth-104)*0.28),Math.max(120,(tableWidth-104)*0.28),64]
         readonly property var adjustedColumns: songsTable ? window.songsColumnWidths : window.playlistColumnWidths
-        readonly property var tableColumns: adjustedColumns.length === columnMinimums.length ? adjustedColumns : defaultColumns.map((w,i) => Math.max(columnMinimums[i],w))
+        readonly property var columnMaximums: songsTable ? [800,480,640,320] : [80,800,480,640,100]
+        function boundedColumnWidth(value,index) {
+            const number=Number(value);
+            return Math.min(columnMaximums[index],Math.max(columnMinimums[index],Number.isFinite(number) ? number : defaultColumns[index]));
+        }
+        readonly property var tableColumns: columnMinimums.map((minimum,i) => boundedColumnWidth(Array.isArray(adjustedColumns) && adjustedColumns.length===columnMinimums.length ? adjustedColumns[i] : defaultColumns[i],i))
+        onColumnsWidthChanged: Qt.callLater(function() {
+            list.contentX=Math.max(0,Math.min(list.contentX,Math.max(0,list.contentWidth-list.width)));
+        })
         readonly property real columnsWidth: tableColumns.reduce((sum,w) => sum+w,0)
         function columnEdge(index) { return tableColumns.slice(0,index+1).reduce((sum,w) => sum+w,0); }
         function resizeColumns(index, initialWidths, delta) {
-            const widths=initialWidths.slice();
-            const total=widths[index]+widths[index+1];
-            widths[index]=Math.max(columnMinimums[index],Math.min(total-columnMinimums[index+1],widths[index]+delta));
-            widths[index+1]=total-widths[index];
+            const widths=initialWidths.map((w,i) => boundedColumnWidth(w,i));
+            widths[index]=boundedColumnWidth(widths[index]+delta,index);
             if(songsTable) window.songsColumnWidths=widths;
             else window.playlistColumnWidths=widths;
         }
@@ -1289,6 +1350,29 @@ ApplicationWindow {
             const key = window.library.view + ":" + pageData.epoch;
             const signature = JSON.stringify([key, pageData.rows, pageData.sort, paneIndex === 1 ? !!window.library.artist : false]);
             if (signature === rowsSignature) return;
+            // Metadata and selection changes keep the actual ListModel and delegates.
+            // PlaylistEntry IDs, rather than Track IDs, distinguish repeated occurrences.
+            const sameRows = paneIndex !== 1 && pageData.rows.length === renderedRows.length
+                && pageData.rows.every((row,i) => row.id === renderedRows[i].id);
+            if (sameRows && datasetKey.split(":")[0] === window.library.view) {
+                for (let i=0; i<pageData.rows.length; ++i) {
+                    const row=pageData.rows[i];
+                    if (JSON.stringify(row) !== JSON.stringify(renderedRows[i]))
+                        paneRows.setProperty(i,"rowData",row);
+                }
+                const names={};
+                for(let i=0;i<pageData.rows.length;i++) {
+                    const row=pageData.rows[i];
+                    const albumKey=paneIndex===2 && pageData.sort==="Album" ? row.albumId : "";
+                    if(albumKey) names[albumKey]=row.track.release;
+                    if(paneRows.get(i).albumKey!==albumKey) paneRows.setProperty(i,"albumKey",albumKey);
+                }
+                albumNames=names;
+                renderedRows=pageData.rows;
+                rowsSignature=signature;
+                datasetKey=key;
+                return;
+            }
             const sameDataset = key === datasetKey;
             const anchor = sameDataset ? viewportAnchor() : (pageData.scrollId ? {id: pageData.scrollId, pixel: pageData.scrollPixel} : null);
             const focused = logicalIndex >= 0 && renderedRows[logicalIndex] ? renderedRows[logicalIndex].id : "";
@@ -1364,7 +1448,16 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.preferredHeight: 44
             Label { text: pane.heading; elide: Text.ElideRight; font.pixelSize: 13; font.bold: true; font.letterSpacing: 1.5; Layout.fillWidth: true; Layout.minimumWidth: 0 }
-            ToolButton { text: "+"; Accessible.name: "Create playlist"; visible: window.library.view === "Playlists" && pane.paneIndex === 0; onClicked: { playlistNameDialog.rename = false; playlistName.text = ""; playlistNameDialog.open(); } }
+            ToolButton {
+                text: "+"; objectName: "playlistAddButton"; Accessible.name: "Add playlist"
+                visible: window.library.view === "Playlists" && pane.paneIndex === 0
+                onClicked: playlistAddMenu.popup()
+                Menu {
+                    id: playlistAddMenu; objectName: "playlistAddMenu"
+                    MenuItem { text: "New"; objectName: "playlistNewAction"; onTriggered: { playlistNameDialog.rename=false; playlistName.text=""; playlistNameDialog.open(); } }
+                    MenuItem { text: "From Spotify"; objectName: "spotifyPlaylistImportButton"; onTriggered: spotifyPlaylistDialog.open() }
+                }
+            }
             ToolButton {
                 id: sortControl
                 objectName: "paneSortControl"
@@ -1472,7 +1565,7 @@ ApplicationWindow {
                 }
             }
             Repeater {
-                model: pane.tableColumns.length-1
+                model: pane.tableColumns.length
                 delegate: SongColumnDivider {
                     tablePane: pane
                     resizeViewport: tableHeaderViewport
@@ -1522,7 +1615,7 @@ ApplicationWindow {
             boundsBehavior: Flickable.StopAtBounds
             contentWidth: pane.detailsTable ? Math.max(width,pane.columnsWidth+16) : width
             flickableDirection: pane.detailsTable ? Flickable.HorizontalAndVerticalFlick : Flickable.VerticalFlick
-            ScrollBar.horizontal: ScrollBar { policy: pane.detailsTable ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+            ScrollBar.horizontal: ScrollBar { policy: pane.detailsTable ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff; active: pane.detailsTable && size<1; minimumSize: 0.04 }
             ScrollBar.vertical: ScrollBar {}
             // Viewport-level strips stay available over rows and empty space.
             // Keeping them outside contentItem also preserves vertical flicking.
@@ -1535,7 +1628,7 @@ ApplicationWindow {
                 clip: true
                 z: 3
                 Repeater {
-                    model: pane.tableColumns.length-1
+                    model: pane.tableColumns.length
                     delegate: SongColumnDivider {
                         tablePane: pane
                         resizeViewport: tableBodyDividers

@@ -2066,13 +2066,13 @@ The main QML panes use continuous 600-row windows of playlists or entries; the
 Add to Playlist chooser retains its separate 200-row paging. Songs context menus open that chooser, which also offers
 playlist creation. Playlist context menus rename/delete; entry menus remove or move
 up/down. Playlist selection, loaded windows and visible-row anchors are session-local view state. Songs remains
-blank until selection, and playlist sorting is omitted. Explicit Play reads the
+blank until selection; display sorting stays separate from canonical order. Explicit Play reads the
 complete persisted order on the existing background queue reader. Entry identity
 locates the exact starting occurrence of a duplicate Track. The existing player
 receives Track IDs and metadata in its usual queue snapshot. Editing a playlist,
 changing selection, or navigating never updates an existing queue.
 
-Provider synchronization/import/export, migration UI, collaboration, folders,
+Provider synchronization/export and imports beyond Spotify snapshots, migration UI, collaboration, folders,
 smart playlists, restart-persistent navigation and separate wishlists remain deferred.
 See `docs/playlists.md` for validation and measured paging performance.
 
@@ -2143,3 +2143,25 @@ and accepted matching enrich duration without playback or rendering-time provide
 requests. Playlist rows and occurrence-based aggregates consume the same effective
 values. See [Songs details and duration](songs-details-and-duration.md) for source
 precedence, existing-data backfill, data flow and validation.
+
+## Spotify playlist snapshots
+
+The Spotify adapter uses the existing PKCE user client for playlist reads and
+translates complete remote pages into `playlist_import::Plan`. Core persistence
+resolves trusted identities in a batch and transactionally creates unsaved Track
+entities and independent ordered playlist occurrences. Migration 23 stores
+provider playlist provenance separately from the app playlist. UI workers fetch
+first, persist second and publish the result once; no network calls enter write
+transactions. Queue, membership and ordinary provider/local resolution stay
+independent. See [Spotify playlist snapshots](spotify-playlist-import.md).
+
+
+Playlist import conflict decisions are provider-neutral and transactional. Migration
+24 permits explicitly renamed local snapshots to share indexed Spotify source
+provenance while each retains an independent app Playlist ID. Overwrite retains
+that ID and local title, replacing entries and provenance only after the full
+remote snapshot is staged and an unambiguous target is explicitly chosen.
+Playlist enrichment refreshes a bounded existing window by stable entry identity;
+QML patches rows with unchanged ordered IDs instead of clearing the ListModel.
+Detail-column widths change independently and survive view navigation in window
+state. Outer pane splitting and queue snapshot ownership are unchanged.

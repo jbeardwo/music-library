@@ -13,6 +13,7 @@ use std::{
 };
 
 pub enum Command {
+    Playlist(Box<crate::spotify_playlist::Job>),
     Connect,
     Cancel,
     Refresh,
@@ -83,7 +84,7 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
         Err(error) => {
             notify(Update {
                 snapshot: Snapshot {
-                    error: Some(error),
+                    error: Some(error.clone()),
                     ..Default::default()
                 },
                 application_command: false,
@@ -91,6 +92,13 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
                 generation: 0,
                 volume_ack: None,
             });
+            while !stopped.load(Ordering::Acquire) {
+                match receiver.recv_timeout(Duration::from_millis(200)) {
+                    Ok(Command::Playlist(job)) => (job.finish)(Err((error.to_string(), false))),
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
             return;
         }
     };
@@ -127,6 +135,10 @@ fn run(receiver: Receiver<Command>, stopped: Arc<AtomicBool>, notify: impl Fn(Up
         let mut changed = command.is_some();
         if let Some(command) = command {
             result = match command {
+                Command::Playlist(job) => {
+                    job.run(&mut playback);
+                    Ok(())
+                }
                 Command::Connect => {
                     auth = None;
                     playback.begin_authorization().map(|a| {

@@ -97,7 +97,7 @@ fn failed_playlist_migration_is_atomic() {
     let path = temp.path().join("library.sqlite");
     drop(Library::open(&path).unwrap());
     let db = rusqlite::Connection::open(&path).unwrap();
-    db.execute_batch("DROP TABLE playlist_entry; DROP TABLE playlist; PRAGMA user_version=20; CREATE TABLE playlist_entry(sentinel TEXT);").unwrap();
+    db.execute_batch("DROP TABLE IF EXISTS playlist_source; DROP TABLE playlist_entry; DROP TABLE playlist; PRAGMA user_version=20; CREATE TABLE playlist_entry(sentinel TEXT);").unwrap();
     assert!(Library::open(&path).is_err());
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
@@ -715,4 +715,206 @@ fn playlist_display_cache_uses_canonical_metadata_and_invalidates_after_edits() 
     assert_eq!(read(&l, Column::Title).len(), 3);
     l.remove_from_library(&tracks[0]).unwrap();
     assert_eq!(read(&l, Column::Title).len(), 3);
+}
+
+#[test]
+fn playlist_content_revisions_cover_all_entry_writers_and_ignore_titles_metadata_and_other_playlists()
+ {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("library.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let tracks = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Edition".into(),
+            year: None,
+            artists: vec![],
+            tracks: ["A", "B"]
+                .into_iter()
+                .map(|title| CatalogTrackInput {
+                    title: title.into(),
+                    disc_number: None,
+                    track_number: None,
+                    artists: vec![],
+                })
+                .collect(),
+        })
+        .unwrap()
+        .track_ids;
+    let a = library.create_playlist("A").unwrap();
+    let b = library.create_playlist("B").unwrap();
+    let revision = |library: &Library, id: &str| {
+        library.playlist_content_revisions(&[id.into()]).unwrap()[0].1
+    };
+    assert_eq!(revision(&library, &a), 0);
+    let first = library.append_playlist_track(&a, &tracks[0]).unwrap();
+    let initial = revision(&library, &a);
+    assert!(initial > 0);
+    assert_eq!(revision(&library, &b), 0);
+    library.rename_playlist(&a, "Renamed").unwrap();
+    library
+        .set_track_title_override(&tracks[0], "Title override")
+        .unwrap();
+    assert_eq!(revision(&library, &a), initial);
+    let mut worker = library.playlist_append_worker().unwrap();
+    let plan = worker.prepare(&a, vec![tracks[1].clone()]).unwrap();
+    worker.apply(&plan, true).unwrap();
+    let appended = revision(&library, &a);
+    assert!(appended > initial);
+    library.move_playlist_entry(&a, &first, true).unwrap();
+    let moved = revision(&library, &a);
+    assert!(moved > appended);
+    library.append_playlist_track(&b, &tracks[0]).unwrap();
+    assert_eq!(revision(&library, &a), moved);
+    library
+        .remove_playlist_entries(std::slice::from_ref(&first))
+        .unwrap();
+    let removed = revision(&library, &a);
+    assert!(removed > moved);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    db.execute_batch("BEGIN; DELETE FROM playlist_entry; ROLLBACK;")
+        .unwrap();
+    assert_eq!(revision(&library, &a), removed);
+    assert_eq!(
+        Library::open(&path)
+            .unwrap()
+            .playlist_content_revisions(&[a])
+            .unwrap()[0]
+            .1,
+        removed
+    );
+}
+
+#[test]
+fn playlist_repoint_reads_canonical_song_projection_with_album_credit_fallback() {
+    use music_library::{
+        browse::Pane,
+        playlist::{Column, ViewSort},
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("library.sqlite");
+    let mut l = Library::open(&path).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let create = |l: &mut Library, title: &str, album: &str, artists: Vec<ArtistCreditInput>| {
+        l.create_catalog_release(&CatalogReleaseInput {
+            title: album.into(),
+            year: None,
+            artists,
+            tracks: vec![CatalogTrackInput {
+                title: title.into(),
+                artists: vec![],
+                disc_number: Some(1),
+                track_number: Some(1),
+            }],
+        })
+        .unwrap()
+    };
+    let old = create(
+        &mut l,
+        "Spotify title",
+        "Spotify Album",
+        vec![ArtistCreditInput {
+            name: "Spotify singer".into(),
+            role: None,
+        }],
+    );
+    let canonical = create(
+        &mut l,
+        "Canonical title",
+        "Canonical Album",
+        vec![
+            ArtistCreditInput {
+                name: "Canonical Alpha".into(),
+                role: None,
+            },
+            ArtistCreditInput {
+                name: "Canonical Beta".into(),
+                role: None,
+            },
+        ],
+    );
+    let unknown = create(&mut l, "No artist", "Uncredited", vec![]);
+    let track = &canonical.track_ids[0];
+    l.add_to_library(track).unwrap();
+    let album = l.album_for_release(&canonical.release_id).unwrap();
+    db.execute("UPDATE album_artist_credit SET credited_name='Singer credit',join_phrase=' feat. ' WHERE album_id=?1 AND position=0",[album.album_id.as_ref()]).unwrap();
+    db.execute("UPDATE effective_track_metadata SET artist_names='',genre_names='Jazz / Rock',duration_ms=123456 WHERE track_id=?1",[track.as_ref()]).unwrap();
+    let playlist = l.create_playlist("Metadata projection").unwrap();
+    let entry = l
+        .append_playlist_track(&playlist, &old.track_ids[0])
+        .unwrap();
+    let sort = ViewSort {
+        column: Column::Artist,
+        descending: false,
+    };
+    let reader = l.library_queue_reader().unwrap();
+    assert_eq!(
+        reader
+            .playlist_view(std::slice::from_ref(&playlist), sort, None, 200, false)
+            .unwrap()[0]
+            .subtitle,
+        "Spotify singer"
+    );
+    let before = l
+        .playlist_content_revisions(std::slice::from_ref(&playlist))
+        .unwrap();
+    db.execute(
+        "UPDATE playlist_entry SET track_id=?2 WHERE id=?1",
+        rusqlite::params![entry, track.as_ref()],
+    )
+    .unwrap();
+    assert_ne!(
+        before,
+        l.playlist_content_revisions(std::slice::from_ref(&playlist))
+            .unwrap()
+    );
+    let row = reader
+        .playlist_view(std::slice::from_ref(&playlist), sort, None, 200, false)
+        .unwrap()
+        .remove(0);
+    let song = l
+        .browse(&Request {
+            pane: Pane::Songs,
+            tracks: vec![track.as_ref().to_owned()],
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap()
+        .remove(0);
+    assert_eq!(row.id, entry);
+    assert_eq!(row.title, "Canonical title");
+    assert_eq!(row.subtitle, "Singer credit feat. Canonical Beta");
+    assert_eq!(row.subtitle, song.subtitle);
+    assert_eq!(
+        row.track.as_ref().unwrap().release_title,
+        song.track.as_ref().unwrap().release_title
+    );
+    assert_eq!(row.genres, "Jazz / Rock");
+    assert_eq!(row.genres, song.genres);
+    assert_eq!(row.duration_ms, Some(123456));
+    let canonical_row = l.playlist_entries(&playlist, None, 200).unwrap().remove(0);
+    assert_eq!(canonical_row.subtitle, row.subtitle);
+    assert_eq!(canonical_row.genres, row.genres);
+    // Explicit effective Track display credit must win over Album identity names.
+    db.execute("UPDATE effective_track_metadata SET artist_names='Track singer with guest' WHERE track_id=?1",[track.as_ref()]).unwrap();
+    assert_eq!(
+        reader
+            .playlist_view(std::slice::from_ref(&playlist), sort, None, 200, false)
+            .unwrap()[0]
+            .subtitle,
+        "Track singer with guest"
+    );
+    l.append_playlist_track(&playlist, &unknown.track_ids[0])
+        .unwrap();
+    assert!(
+        l.playlist_entries(&playlist, None, 200).unwrap()[1]
+            .subtitle
+            .is_empty()
+    );
+    drop(reader);
+    drop(l);
+    let l = Library::open(&path).unwrap();
+    assert_eq!(
+        l.playlist_entries(&playlist, None, 200).unwrap()[0].subtitle,
+        "Track singer with guest"
+    );
 }

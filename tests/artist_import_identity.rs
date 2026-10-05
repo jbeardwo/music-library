@@ -195,7 +195,7 @@ DROP TRIGGER IF EXISTS album_lookup_update;
 DROP TRIGGER IF EXISTS album_lookup_delete;
 DROP TABLE IF EXISTS artist_lookup;
 DROP TABLE IF EXISTS album_lookup;
-DROP TABLE local_root_source; DROP TABLE local_source_suppression; DROP TABLE output_calibration; DROP TABLE local_artist_context; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=13;",
+DROP TABLE local_root_source; DROP TABLE local_source_suppression; DROP TABLE output_calibration; DROP TABLE local_artist_context; DROP TABLE file_genre_observation; ALTER TABLE file_metadata_observation DROP COLUMN genres_observed; DROP TABLE IF EXISTS playlist_source; DROP TABLE IF EXISTS playlist_entry; DROP TABLE IF EXISTS playlist; PRAGMA user_version=13;",
     )
     .unwrap();
     drop(db);

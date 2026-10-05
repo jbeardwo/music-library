@@ -331,7 +331,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        22
+        25
     );
 }
 
@@ -1045,7 +1045,10 @@ fn duration_migration_backfills_persisted_evidence_without_library_membership() 
     .unwrap();
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
-    db.execute_batch("PRAGMA user_version=21").unwrap();
+    db.execute_batch(include_str!("support/drop_playlist_revision.sql"))
+        .unwrap();
+    db.execute_batch("DROP TABLE playlist_source; PRAGMA user_version=21")
+        .unwrap();
     drop(db);
     let library = Library::open(&path).unwrap();
     let evidence = library.edition_evidence(&imported.release_id).unwrap();
