@@ -161,6 +161,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let started = Instant::now();
             let outcome = library.complete_album_match_for(
                 MatchReply {
+                    diagnostic: None,
                     input,
                     artist: Some(identity),
                     outcome,

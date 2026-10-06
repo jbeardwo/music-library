@@ -297,6 +297,10 @@ impl Library {
         self.store.resolve_albums_external_identity(identity)
     }
 
+    pub fn album_id_for_track(&self, track: &TrackId) -> Result<AlbumId> {
+        self.store.album_id_for_track(track)
+    }
+
     pub fn album_for_release(&self, release_id: &ReleaseId) -> Result<crate::domain::Album> {
         self.store.album_for_release(release_id)
     }

@@ -1759,6 +1759,7 @@ mod artist_first {
             .unwrap();
         let reply = |input| MatchReply {
             matched_album: None,
+            diagnostic: None,
             input,
             artist: Some(identity.clone()),
             outcome: MatchOutcome::NoConfidentMatch,

@@ -107,6 +107,7 @@ impl Store {
                 Preparation::Done(outcome) => return Ok(outcome),
             };
             if current.title != reply.input.title
+                || current.raw_title != reply.input.raw_title
                 || current.artist != reply.input.artist
                 || current.date != reply.input.date
             {
@@ -130,6 +131,7 @@ impl Store {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(current)
                 if current.title != reply.input.title
+                    || current.raw_title != reply.input.raw_title
                     || current.artist != reply.input.artist
                     || current.date != reply.input.date
                     || current.artist_id != canonical =>
@@ -555,6 +557,16 @@ impl Store {
                 |row| row.get::<_, String>(0).map(crate::domain::AlbumId),
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn album_id_for_track(&self, track: &TrackId) -> Result<crate::domain::AlbumId> {
+        self.connection
+            .query_row(
+                "SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id WHERE t.id=?1",
+                [track.as_ref()],
+                |r| r.get::<_, String>(0).map(crate::domain::AlbumId),
+            )
+            .map_err(Into::into)
     }
 
     pub fn album_for_release(&self, release_id: &ReleaseId) -> Result<crate::domain::Album> {
@@ -2036,10 +2048,10 @@ fn prepare_album_match(
     scope: &crate::catalog::MatchingScope,
 ) -> Result<crate::album_matching::Preparation> {
     use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
-    let (title, artist, year): (String, String, Option<i32>) = db.query_row(
-        "SELECT match_title,match_artist_credit,year FROM album_application_metadata WHERE album_id=?1",
+    let (title, artist, year, raw_title): (String, String, Option<i32>, String) = db.query_row(
+        "SELECT match_title,match_artist_credit,year,title FROM album_application_metadata WHERE album_id=?1",
         [id.as_ref()],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3)", params![id.as_ref(),scope.provider,scope.album_kind], |r|r.get::<_,bool>(0))? {
         return Ok(Preparation::Done(MatchOutcome::AlreadyMatched));
@@ -2089,6 +2101,7 @@ fn prepare_album_match(
             date: year.and_then(|y| crate::catalog_date::Date::parse(&y.to_string())),
             album_id: id.clone(),
             title,
+            raw_title,
             artist,
             artist_id,
             known_artist,

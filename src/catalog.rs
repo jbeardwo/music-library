@@ -199,6 +199,11 @@ pub trait CatalogProvider: Send {
     fn album_candidate_track_count(&self, _album: &ExternalIdentity) -> Option<u32> {
         None
     }
+    /// Diagnostic observations rejected by the adapter's Artist boundary.
+    /// Bounded to the same search page; no network work or acceptance authority.
+    fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
+        vec![]
+    }
     /// Supported accepted Album identity namespaces. No fabricated external hierarchy.
     fn album_program_namespaces(&self) -> Vec<(String, String)> {
         vec![]

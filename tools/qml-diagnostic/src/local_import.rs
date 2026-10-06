@@ -102,7 +102,10 @@ impl Bridge {
                             ));
                         }
                         if report.unavailable > 0 {
-                            summary.push(format!("{} local sources became unavailable; saved music retained", report.unavailable));
+                            summary.push(format!(
+                                "{} local sources became unavailable; saved music retained",
+                                report.unavailable
+                            ));
                         }
                         if report.unresolved > 0 {
                             summary.push(format!("{} files had no confident existing match and were imported separately", report.unresolved));

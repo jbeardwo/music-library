@@ -95,6 +95,7 @@ pub struct Spotify {
     token: Option<Token>,
     artist_names: HashMap<String, String>,
     programs: Vec<Programs>,
+    rejected_albums: Vec<ArtistAlbumCandidate>,
     configuration_error: Option<CatalogError>,
     candidate_counts: HashMap<String, u32>,
     request_counts: (u64, u64),
@@ -126,6 +127,7 @@ impl Spotify {
             token: None,
             artist_names: HashMap::new(),
             programs: vec![],
+            rejected_albums: vec![],
             configuration_error: None,
             candidate_counts: HashMap::new(),
             request_counts: (0, 0),
@@ -331,11 +333,12 @@ impl Spotify {
         }
         let mut names = vec![];
         for artist in artists {
-            let name = self.artist_name(artist)?;
-            if !names.contains(&name) {
-                names.push(name);
-            }
+            names.push(self.artist_name(artist)?);
         }
+        names.sort_by_key(|name| (music_library::matching::normalize(name), name.clone()));
+        names.dedup_by(|a, b| {
+            music_library::matching::normalize(a) == music_library::matching::normalize(b)
+        });
         // Spotify has no arid search field. Search with a name only when all
         // plausible Artists share it, then enforce membership using returned IDs.
         let base = music_library::album_matching::album_title_variants(title)
@@ -406,15 +409,11 @@ impl Spotify {
                     .any(|a| artists.contains(&id("artist", &a.id)))
             ));
         }
-        let items = response
+        self.rejected_albums.clear();
+        let all = response
             .albums
             .items
             .into_iter()
-            .filter(|a| {
-                a.artists
-                    .iter()
-                    .any(|a| artists.contains(&id("artist", &a.id)))
-            })
             .map(|a| ArtistAlbumCandidate {
                 identity: id("album", &a.id),
                 title: a.name,
@@ -430,7 +429,11 @@ impl Spotify {
                 .into(),
                 comment: String::new(),
             })
-            .collect();
+            .collect::<Vec<_>>();
+        let (items, rejected): (Vec<_>, Vec<_>) = all
+            .into_iter()
+            .partition(|a| a.artist_ids.iter().any(|a| artists.contains(a)));
+        self.rejected_albums = rejected;
         Ok(Page {
             items,
             next_offset: more.then_some(10),
@@ -734,6 +737,9 @@ impl CatalogProvider for Spotify {
                 })
                 .collect(),
         })
+    }
+    fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
+        self.rejected_albums.clone()
     }
     fn album_candidate_programs(&self) -> bool {
         true

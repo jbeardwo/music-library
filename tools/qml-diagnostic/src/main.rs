@@ -187,9 +187,18 @@ struct Bridge {
     ),
     spotify_playback_worker: Option<spotify_playback::Worker>,
     spotify_playback_state: music_library_spotify::playback::Snapshot,
+    // Diagnostic selection must not become the active remote clock identity.
+    spotify_active_song: Option<music_library_spotify::playback::Song>,
     spotify_playback_song: Option<music_library_spotify::playback::Song>,
     spotify_playback_track: Option<music_library::domain::TrackId>,
     spotify_playback_title: String,
+    spotify_album_id: Option<music_library::domain::AlbumId>,
+    spotify_album_explanation: String,
+    spotify_album_retry: qt_method!(
+        fn spotify_album_retry(&mut self) {
+            self.retry_selected_spotify_album();
+        }
+    ),
     spotify_playback_snapshot: qt_property!(QVariantMap; READ spotify_playback_value NOTIFY spotify_playback_changed),
     spotify_playback_changed: qt_signal!(),
     spotify_playback_action: qt_method!(
@@ -212,10 +221,10 @@ struct Bridge {
                 self.spotify_playback_track = Some(music_library::domain::TrackId(value.clone()));
                 self.spotify_playback_title = self
                     .session
-                    .rows
-                    .iter()
-                    .find(|r| r.track_id.as_ref() == value)
-                    .map(|r| format!("{} — {} [{}]", r.artist_names, r.title, r.release_title))
+                    .library
+                    .song_resolution_input(&music_library::domain::TrackId(value.clone()))
+                    .ok()
+                    .map(|r| format!("{} — {} [{}]", r.artist, r.title, r.album))
                     .unwrap_or_else(|| value.clone());
                 self.spotify_playback_song = self
                     .session
@@ -225,14 +234,7 @@ struct Bridge {
                     .and_then(|ids| {
                         music_library_spotify::playback::Song::from_associations(&ids).ok()
                     });
-                if self.spotify_playback_state.error.as_ref().is_none_or(|e| {
-                    matches!(e, music_library_spotify::playback::Error::NoAssociation)
-                }) {
-                    self.spotify_playback_state.error = self
-                        .spotify_playback_song
-                        .is_none()
-                        .then_some(music_library_spotify::playback::Error::NoAssociation);
-                }
+                self.refresh_spotify_album_diagnostic();
                 self.spotify_playback_changed();
                 return;
             }
@@ -763,9 +765,13 @@ impl Bridge {
             spotify_resolve: Default::default(),
             spotify_playback_worker: None,
             spotify_playback_state: Default::default(),
+            spotify_active_song: None,
             spotify_playback_song: None,
             spotify_playback_track: None,
             spotify_playback_title: String::new(),
+            spotify_album_id: None,
+            spotify_album_explanation: String::new(),
+            spotify_album_retry: Default::default(),
             spotify_playback_snapshot: Default::default(),
             spotify_playback_changed: Default::default(),
             spotify_playback_action: Default::default(),
@@ -951,8 +957,19 @@ impl Bridge {
                 string(
                     s.error
                         .as_ref()
+                        .filter(|e| {
+                            !matches!(e, music_library_spotify::playback::Error::NoAssociation)
+                        })
                         .map(ToString::to_string)
-                        .unwrap_or_default(),
+                        .unwrap_or_else(|| {
+                            if self.spotify_playback_track.is_some()
+                                && self.spotify_playback_song.is_none()
+                            {
+                                music_library_spotify::playback::Error::NoAssociation.to_string()
+                            } else {
+                                String::new()
+                            }
+                        }),
                 ),
             ),
             (
@@ -963,6 +980,32 @@ impl Bridge {
             (
                 "selected",
                 string(s.selected_device.as_deref().unwrap_or_default()),
+            ),
+            (
+                "trackId",
+                string(
+                    self.spotify_playback_track
+                        .as_ref()
+                        .map_or("", |id| id.as_ref()),
+                ),
+            ),
+            ("albumExplanation", string(&self.spotify_album_explanation)),
+            (
+                "albumPending",
+                self.spotify_album_id
+                    .as_ref()
+                    .is_some_and(|id| {
+                        self.spotify_album_matcher.as_ref().is_some_and(|m| {
+                            matches!(
+                                m.outcome(id),
+                                Some(music_library::album_matching::MatchOutcome::Pending)
+                            ) || matches!(
+                                m.program_outcome(id),
+                                Some(music_library::album_program::Outcome::Pending)
+                            )
+                        })
+                    })
+                    .into(),
             ),
             ("title", string(&self.spotify_playback_title)),
             ("available", self.spotify_playback_song.is_some().into()),
@@ -3666,16 +3709,25 @@ mod event_delivery_tests {
         let selection = {
             let pinned = bridge.pinned();
             let mut b = pinned.borrow_mut();
+            let other = b.session.playback.state().current_track().unwrap().clone();
             let row = b
                 .session
                 .library
                 .search(&SearchRequest {
-                    limit: 1,
+                    limit: 2,
                     ..Default::default()
                 })
                 .unwrap()
-                .remove(0);
+                .into_iter()
+                .find(|r| r.track_id != other)
+                .unwrap();
+            // Selection is independent from Now Playing and the loaded Songs page.
+            let loaded_rows = std::mem::take(&mut b.session.rows);
             b.spotify_playback_action("track".into(), row.track_id.as_ref().into());
+            assert_eq!(b.session.playback.state().current_track(), Some(&other));
+            assert_eq!(b.spotify_playback_track.as_ref(), Some(&row.track_id));
+            assert!(b.spotify_playback_title.contains(&row.title));
+            b.session.rows = loaded_rows;
             let input = b
                 .session
                 .library
@@ -3785,6 +3837,19 @@ mod event_delivery_tests {
                 .track_provider_occurrences(&selection.input().track_id, "spotify")
                 .unwrap(),
             vec![selection.candidates()[1].identity.clone()]
+        );
+        let playing = b.session.playback.state().current_track().unwrap();
+        assert_ne!(playing, &selection.input().track_id);
+        assert!(
+            b.session
+                .library
+                .track_provider_occurrences(playing, "spotify")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            b.spotify_playback_track.as_ref(),
+            Some(&selection.input().track_id)
         );
         assert!(b.spotify_resolution_worker.is_none());
         assert!(b.spotify_playback_worker.is_none());
@@ -4257,6 +4322,109 @@ mod library_ui_tests {
             .to_string();
         eprintln!("{result}");
         assert!(result.starts_with("ok:"), "{result}");
+    }
+
+    #[test]
+    fn song_connection_uses_reconciled_track_and_supports_spotify_only_entries() {
+        use music_library::domain::{CatalogReleaseInput, CatalogTrackInput, ExternalIdentity};
+        let (temp, mut library) = sample::create().unwrap();
+        let canonical = library
+            .search(&music_library::domain::SearchRequest {
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .find(|row| row.title == "02 Available")
+            .unwrap()
+            .track_id;
+        let staging = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Spotify edition".into(),
+                year: None,
+                artists: vec![],
+                tracks: vec![CatalogTrackInput {
+                    title: "Spotify-only Song".into(),
+                    disc_number: Some(1),
+                    track_number: Some(1),
+                    artists: vec![],
+                }],
+            })
+            .unwrap()
+            .track_ids
+            .remove(0);
+        library
+            .attach_track_external_identity(
+                &staging,
+                &ExternalIdentity {
+                    provider: "spotify".into(),
+                    kind: "track".into(),
+                    external_id: "1234567890123456789012".into(),
+                },
+            )
+            .unwrap();
+        let playlist = library.create_playlist("Reconciled diagnostic").unwrap();
+        let entry = library.append_playlist_track(&playlist, &staging).unwrap();
+        library.append_playlist_track(&playlist, &staging).unwrap();
+        // Model the persisted outcome of reconciliation, leaving staging alive.
+        rusqlite::Connection::open(temp.path().join("diagnostic.sqlite"))
+            .unwrap()
+            .execute(
+                "UPDATE playlist_entry SET track_id=?1 WHERE id=?2",
+                rusqlite::params![canonical.as_ref(), entry],
+            )
+            .unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml").replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen("    function ready() {", r#"
+    TestCase { id: connectionTest; when: false }
+    function checkPlaylistConnections(playlist, canonical, staging) {
+        function check(value, message) { if (!value) throw new Error(message); }
+        function wait() { connectionTest.wait(30); }
+        try {
+            bridge.browse_action("view", 0, "Playlists");
+            bridge.browse_action("select", 0, playlist);
+            for (let n = 0; n < 200 && library.pending; ++n) wait();
+            wait();
+            const list = connectionTest.findChild(songsPane, "libraryPane2"); list.forceLayout();
+            check(library.panes[2].rows[0].track.trackId === canonical, "persisted canonical relationship");
+            check(library.panes[2].rows[1].track.trackId === staging, "Spotify-only relationship");
+            const before = JSON.stringify([view.currentId, view.queue, view.status]);
+            for (let i = 0; i < 2; ++i) {
+                connectionTest.mouseClick(list.itemAtIndex(i), 20, 20, Qt.RightButton); wait();
+                const action = connectionTest.findChild(libraryMenu, "songSpotifyConnection");
+                check(action && action.visible && action.enabled, "Spotify-only and unconnected menus available");
+                action.triggered(); libraryMenu.close(); wait();
+                check(spotifyPlayback.trackId === (i === 0 ? canonical : staging), "canonical Track, never obsolete staging");
+                check(spotifyPlayback.available === (i === 1), "selected persisted association state");
+                if (i === 1) check(spotifyPlayback.songUri === "spotify:track:1234567890123456789012", "existing association shown");
+                else check(connectionTest.findChild(spotifyPlaybackDialog, "spotifyConnectionSearch").enabled, "unconnected canonical search available");
+                check(JSON.stringify([view.currentId, view.queue, view.status]) === before, "inspection does not start playback");
+                spotifyPlaybackDialog.close(); wait();
+            }
+            return "ok";
+        } catch (e) { return String(e); }
+    }
+    function ready() {
+"#, 1);
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "checkPlaylistConnections".into(),
+                    &[
+                        string(playlist),
+                        string(canonical.as_ref()),
+                        string(staging.as_ref())
+                    ]
+                )
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
     }
 
     #[test]
@@ -5351,6 +5519,45 @@ mod library_ui_tests {
             assert_eq!(row.genres, song.genres);
             assert!(row.duration_ms.is_some());
         }
+        let associations = QVariantMap::from_iter(
+            library
+                .playlist_entries(&playlist, None, 200)
+                .unwrap()
+                .into_iter()
+                .map(|row| {
+                    let track = row.track.unwrap().track_id;
+                    assert!(
+                        library.available_playback_source(&track).unwrap().is_some(),
+                        "reconciled Track has its local source"
+                    );
+                    let ids = library
+                        .track_provider_occurrences(&track, "spotify")
+                        .unwrap();
+                    let uri = music_library_spotify::playback::Song::from_associations(&ids)
+                        .map(|s| s.uri())
+                        .unwrap_or_default();
+                    (QString::from(track.as_ref()), string(uri))
+                }),
+        );
+        let unconnected = library
+            .browse(&music_library::browse::Request {
+                pane: music_library::browse::Pane::Songs,
+                sort: music_library::browse::Sort::Title,
+                limit: 200,
+                ..Default::default()
+            })
+            .unwrap()
+            .into_iter()
+            .find(|row| {
+                let id = music_library::domain::TrackId(row.id.clone());
+                library.available_playback_source(&id).unwrap().is_some()
+                    && library
+                        .track_provider_occurrences(&id, "spotify")
+                        .unwrap()
+                        .is_empty()
+            })
+            .expect("real unconnected local Track in first Songs page")
+            .id;
         let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
         let mut engine = QmlEngine::new();
         let audio = music_library_gstreamer::GStreamerEngine::new(engine_callback(bridge.pinned()))
@@ -5364,6 +5571,8 @@ mod library_ui_tests {
                 music_library::playback::Playback::new(session::Engine::GStreamer(audio));
             b.session.set_volume(0.0);
         }
+        engine.set_property("hopAssociations".into(), associations.into());
+        engine.set_property("hopUnconnected".into(), string(unconnected));
         engine.set_object_property("diagnostic".into(), bridge.pinned());
         let qml = include_str!("../Main.qml")
             .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)

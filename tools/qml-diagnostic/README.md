@@ -464,6 +464,22 @@ An Artist identity survives later Album errors. Retry does not repeat that Artis
 search. Existing 503 retries may add HTTP attempts. Closing cancels queued work but
 may wait for the in-flight bounded request/retry operation.
 
+### Spotify Album reconciliation evidence
+
+Right-click any Song or Playlist Song and choose **Spotify connection…**. The
+existing diagnostic targets that row's canonical Track, independently of Now
+Playing. **Re-evaluate Album matching** explicitly retries only its unresolved
+Album using the existing matcher, including with `--no-auto-match`; opening the
+dialog does not issue matching requests. Confirmed Track associations disable
+retry and retain their IDs. Candidate evidence shows the last evaluation in this
+session, with raw/normalized titles, trusted Artist IDs, release type/date,
+counts, selected positions, program anchors, and specific decision reasons.
+Manual Spotify search/selection remains available for unresolved cases.
+
+See [the real reconciliation audit](../../docs/spotify-reconciliation-quality-audit.md)
+for exact failures, bounded retry/probe usage, negative cases and deferred
+Drugs / Complex semantics.
+
 ### Hella / Acoustic diagnostic
 
 Launch against a local folder tagged Artist `Hella`, Album `Acoustic` using the
@@ -570,6 +586,14 @@ export SPOTIFY_CLIENT_SECRET='your-client-secret'
 export SPOTIFY_MARKET='US'
 MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/music-library-spotify.sqlite cargo run --offline --manifest-path tools/qml-diagnostic/Cargo.toml --features gstreamer -- --catalog-provider spotify --gstreamer /mnt/f/music
 ```
+
+Right-click a Song in Songs, Artist, Genre, Album, or Playlist details and choose
+**Spotify connection…** to inspect that Track without starting playback. Playlist
+entries use their canonical Track relationship, including after local reconciliation.
+The shared diagnostic displays the Track ID, persisted metadata and Spotify association;
+its existing search and confirmation controls act on that selected Track. **Playback
+connection…** in settings opens the same diagnostic for Now Playing. Merely opening
+it does not search Spotify or change the queue, playback source, or current Track.
 
 Relaunch with the same database to inspect durable automatic/manual song associations.
 The provider name appears in **Local Album matches…**. A Spotify song match is

@@ -7,6 +7,14 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 
+#[path = "album_program/diagnostics.rs"]
+mod diagnostics;
+// These public exports are also included privately by the benchmark harness.
+#[allow(unused_imports)]
+pub use diagnostics::{
+    PositionDecision, PositionedProgram, PositionedTrack, inspect_positioned_program,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
     /// Diagnostic provenance only; never accepted as the local edition identity.
@@ -205,8 +213,9 @@ pub fn inspect_candidate(
     let exact = title_relation(l, c) == TitleRelation::Agrees;
     let trusted = shared(&l.recording.identities, &c.recording.identities);
     let position = l.number.is_some()
-        && (l.number == c.number && l.disc.unwrap_or(1) == c.disc.unwrap_or(1)
-            || l.disc.unwrap_or(1) == 1 && l.number == Some(index as u32 + 1));
+        && (l.number == c.number
+            && l.disc.filter(|n| *n > 0).unwrap_or(1) == c.disc.filter(|n| *n > 0).unwrap_or(1)
+            || l.disc.filter(|n| *n > 0).unwrap_or(1) == 1 && l.number == Some(index as u32 + 1));
     let mut check = CandidateCheck {
         exact_title: exact,
         position,
@@ -317,7 +326,10 @@ pub fn title_relation(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelat
 }
 
 fn position(t: &TrackEvidence) -> Option<(u32, u32)> {
-    Some((t.disc.unwrap_or(1), t.number.filter(|n| *n > 0)?))
+    Some((
+        t.disc.filter(|n| *n > 0).unwrap_or(1),
+        t.number.filter(|n| *n > 0)?,
+    ))
 }
 
 fn occurrence_identity_conflict(a: &TrackEvidence, b: &TrackEvidence) -> bool {
@@ -344,62 +356,38 @@ fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) ->
     }
     let mut agreed: Vec<Option<Vec<ExternalIdentity>>> = vec![None; local.len()];
     for program in &programs.programs {
-        let mut positions = std::collections::HashMap::new();
-        for c in &program.tracks {
-            if let Some(pos) = position(c)
-                && positions.insert(pos, c).is_some()
-            {
-                return empty(); // conflicting placements are not a usable program
-            }
-        }
         if !crate::album_candidates::can_accommodate(
             crate::album_candidates::required_tracks(local),
             Some(program.tracks.len() as u32),
         ) {
             return empty();
         }
-        let mut anchors = std::collections::HashSet::new();
-        for t in local {
-            let Some(pos) = position(&t.evidence) else {
-                continue;
-            };
-            let Some(c) = positions.get(&pos) else {
-                return empty();
-            };
-            // A known title occurring elsewhere contradicts this ordering. Do not
-            // hide a shifted/reordered program behind position-only association.
-            if title_relation(&t.evidence, c) != TitleRelation::Agrees
-                && program.tracks.iter().any(|other| {
-                    position(other) != Some(pos)
-                        && title_relation(&t.evidence, other) == TitleRelation::Agrees
-                })
-            {
-                return empty();
-            }
-            if title_relation(&t.evidence, c) == TitleRelation::Agrees
-                && !occurrence_identity_conflict(&t.evidence, c)
-            {
-                anchors.insert(pos);
-            }
+        let evidence = inspect_positioned_program(local, program);
+        if evidence.duplicate_positions > 0
+            || evidence.tracks.iter().any(|t| {
+                matches!(
+                    t.decision,
+                    PositionDecision::PositionMismatch | PositionDecision::ShiftedProgram
+                )
+            })
+        {
+            return empty();
         }
-        for (i, t) in local.iter().enumerate() {
-            let ids = position(&t.evidence)
-                .and_then(|pos| positions.get(&pos))
-                .map(|c| {
-                    let relation = title_relation(&t.evidence, c);
-                    if occurrence_identity_conflict(&t.evidence, c)
-                        || relation == TitleRelation::Contradictory
-                        || (relation == TitleRelation::Uncorroborated && anchors.len() < 3)
-                    {
-                        return vec![];
-                    }
-                    c.identities
-                        .iter()
-                        .filter(|id| id.provider == programs.album.provider && id.kind == "track")
-                        .cloned()
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+        for (i, t) in evidence.tracks.iter().enumerate() {
+            let ids = if matches!(
+                t.decision,
+                PositionDecision::ExactAnchor | PositionDecision::CorroboratedPosition
+            ) {
+                t.provider
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|c| &c.identities)
+                    .filter(|id| id.provider == programs.album.provider && id.kind == "track")
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                vec![]
+            };
             if let Some(agreed) = &mut agreed[i] {
                 agreed.retain(|id| ids.contains(id));
             } else {
@@ -470,7 +458,10 @@ pub fn program_fit(local: &[LocalTrackEvidence], program: &Program) -> ProgramFi
         fit.identity_conflicts += usize::from(c.identity_conflict);
         fit.duration_mismatches += usize::from(c.duration_mismatch && !c.trusted_identity);
         if c.exact_title && c.position {
-            exact_positions.insert((track.evidence.disc.unwrap_or(1), track.evidence.number));
+            exact_positions.insert((
+                track.evidence.disc.filter(|n| *n > 0).unwrap_or(1),
+                track.evidence.number,
+            ));
         }
         fit.tolerant_positions += usize::from(!c.exact_title && c.position);
         fit.agreements.push(if c.identity_conflict {

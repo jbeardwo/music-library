@@ -347,6 +347,10 @@ fn album_search_identity_filter_and_paginated_occurrence_program_are_cached() {
         .unwrap();
     assert_eq!(page.items.len(), 1);
     assert_eq!(page.items[0].identity, id("album", "album1"));
+    let rejected = mock.client.rejected_album_candidates();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(rejected[0].identity, id("album", "wrong"));
+    assert_eq!(rejected[0].artist_ids, vec![id("artist", "other")]);
     let p = mock.client.album_programs(&page.items[0].identity).unwrap();
     assert_eq!(p.programs.len(), 1);
     assert!(p.programs[0].identity.is_none());
@@ -689,5 +693,49 @@ fn artwork_uses_established_album_and_nearest_sufficient_image() {
         !requests
             .iter()
             .any(|r| r.contains("/search") || r.contains("me/player"))
+    );
+}
+
+#[test]
+fn case_equivalent_artist_search_names_share_query_without_merging_identities() {
+    let artists = json!({"artists":{"items":[
+        {"id":"first","name":"Bygones"},
+        {"id":"middle","name":"Other"},
+        {"id":"second","name":"BYGONES"}
+    ],"total":3}});
+    let albums = json!({"albums":{"items":[
+        {"id":"album","name":"Spiritual Bankruptcy","artists":[{"id":"second","name":"BYGONES"}],"album_type":"single","total_tracks":5},
+        {"id":"wrong","name":"Spiritual Bankruptcy","artists":[{"id":"third","name":"Bygones"}],"album_type":"single","total_tracks":5}
+    ],"total":2}});
+    let mut mock = Mock::new(vec![token(), (200, artists, None), (200, albums, None)]);
+    mock.client.search_artists("Bygones").unwrap();
+    let page = mock
+        .client
+        .scoped_albums(
+            &[id("artist", "first"), id("artist", "second")],
+            "Spiritual Bankruptcy",
+        )
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].artist_ids, vec![id("artist", "second")]);
+    assert_eq!(
+        mock.client.rejected_album_candidates()[0].identity,
+        id("album", "wrong")
+    );
+    let requests = mock.finish();
+    let url = Url::parse(&format!(
+        "http://host{}",
+        requests[2].split_whitespace().nth(1).unwrap()
+    ))
+    .unwrap();
+    let query = url
+        .query_pairs()
+        .find(|(k, _)| k == "q")
+        .unwrap()
+        .1
+        .into_owned();
+    assert!(
+        query.contains(" artist:"),
+        "case variants retain Artist-scoped discovery: {query}"
     );
 }

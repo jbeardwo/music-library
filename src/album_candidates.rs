@@ -6,6 +6,15 @@ use crate::{
     domain::ExternalIdentity,
     edition::LocalTrackEvidence,
 };
+#[path = "album_candidates/evidence.rs"]
+mod evidence;
+// These public exports are also included privately by the benchmark harness.
+#[allow(unused_imports)]
+pub use evidence::{
+    CandidateEvidence, Reason, Report, Resolution, TitleComparison, TitleEvidence,
+    explain_positioned_program, initial_report, title_evidence,
+};
+
 pub const MAX_PROGRAM_CANDIDATES: usize = 3;
 
 /// Lower bound only. Duplicate placements in multiple local editions do not add
@@ -88,6 +97,35 @@ pub fn fit(local: &[LocalTrackEvidence], p: &Programs) -> Fit {
 /// Fetched programs are returned to the worker for reuse. No storage, provider
 /// identifiers as primary IDs, exact-edition claims or per-Track HTTP calls.
 pub fn resolve(
+    provider: &mut impl CatalogProvider,
+    context: (&str, Option<crate::catalog_date::Date>),
+    artist: &ExternalIdentity,
+    page: &Page<ArtistAlbumCandidate>,
+    manual: bool,
+    local: &[LocalTrackEvidence],
+    cache: &mut Vec<Programs>,
+) -> Result<MatchOutcome, CatalogError> {
+    resolve_with_report(provider, context, artist, page, manual, local, cache).map(|r| r.outcome)
+}
+
+pub fn resolve_with_report(
+    provider: &mut impl CatalogProvider,
+    context: (&str, Option<crate::catalog_date::Date>),
+    artist: &ExternalIdentity,
+    page: &Page<ArtistAlbumCandidate>,
+    manual: bool,
+    local: &[LocalTrackEvidence],
+    cache: &mut Vec<Programs>,
+) -> Result<Resolution, CatalogError> {
+    if provider.album_candidate_programs() && artist.provider == "spotify" {
+        return evidence::resolve_spotify(provider, context, artist, page, local, cache);
+    }
+    let report = initial_report(provider, context, Some(artist), page, local);
+    let outcome = resolve_legacy(provider, context, artist, page, manual, local, cache)?;
+    Ok(Resolution { outcome, report })
+}
+
+fn resolve_legacy(
     provider: &mut impl CatalogProvider,
     context: (&str, Option<crate::catalog_date::Date>),
     artist: &ExternalIdentity,

@@ -1994,6 +1994,21 @@ See [established-program occurrence audit](spotify-established-program-audit.md)
 toe/tricot evidence, the query discrepancy, safeguards and live request counts.
 
 
+Spotify candidate evaluation exposes a structured report from the actual decision
+path. A bounded page retains Artist-rejected objects for diagnostics without making
+them eligible. At most three candidate programs are fetched; a four-program worker
+cache reuses the selected program for occurrence enrichment. Comparison treats an
+unspecified local disc (including zero) as disc one without rewriting metadata.
+Equivalent objects must share complete ordered Spotify Track IDs; unresolved or
+incomplete competitors veto uniqueness. Reports are sorted by provider identity
+and retained for at most sixteen Albums in the matcher session. Qt renders the
+selected Track's evidence on demand; it does not evaluate during playback or row
+rendering. The diagnostic's explicit retry uses the existing Album matcher and
+skips Tracks with trusted occurrences. See
+[reconciliation quality audit](spotify-reconciliation-quality-audit.md) for real
+candidate evidence, conservative failures, and deferred compilation semantics.
+
+
 ## Desktop library/player prototype
 
 The QML shell now uses provider-neutral bounded library browsing (`browse`) for

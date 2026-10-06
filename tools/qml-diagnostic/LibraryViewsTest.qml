@@ -30,6 +30,28 @@
                 check(numberPosition.y === titlePosition.y && numberPosition.x + label.width < titlePosition.x, "track number immediately left of title");
             }
         }
+        function connection(index) {
+            const list = viewsTest.findChild(window.contentItem, "libraryPane2");
+            list.positionViewAtIndex(index, ListView.Center); wait(); list.forceLayout();
+            const rowData = library.panes[2].rows[index];
+            const id = rowData.track ? rowData.track.trackId : rowData.id;
+            const before = JSON.stringify([view.currentId, view.queue, view.status, view.position]);
+            viewsTest.mouseClick(list.itemAtIndex(index), 20, 20, Qt.RightButton); wait();
+            check(libraryMenu.visible, "Song right-click menu opens");
+            const action = viewsTest.findChild(libraryMenu, "songSpotifyConnection");
+            check(action && action.visible && action.enabled, "Spotify action in " + library.view);
+            check(contextTrackId === id, "clicked canonical Track captured");
+            action.triggered(); libraryMenu.close(); wait();
+            check(spotifyPlaybackDialog.visible && spotifyPlayback.trackId === id, "diagnostic targets clicked Track in " + library.view);
+            check(JSON.stringify([view.currentId, view.queue, view.status, view.position]) === before, "inspection preserves playback");
+            check(spotifyPlayback.title.indexOf(rowData.title) >= 0, "persisted selected metadata");
+            if (!spotifyPlayback.available) {
+                check(viewsTest.findChild(spotifyPlaybackDialog, "spotifyConnectionSearch").enabled, "unconnected Track permits existing search workflow");
+                check(!spotifyPlayback.resolutionPending, "opening does not initiate catalog lookup");
+            }
+            spotifyPlaybackDialog.close(); wait();
+            list.positionViewAtBeginning(); wait(); list.forceLayout();
+        }
         try {
             wait();
             check(library.view === "Artists", "Artists default"); headings(true,true);
@@ -39,19 +61,19 @@
             const navRight=lastNav.mapToItem(window.contentItem,lastNav.width,0).x;
             check(navRight <= query.mapToItem(window.contentItem,0,0).x, "navigation and search fit minimum window");
             window.width=1180; page("Artists");
-            select(0,0);
+            select(0,0); connection(0);
             const artist = library.artist, artistSort = library.panes[1].sort;
             page("Genres"); headings(true,true);
             check(library.panes.every(p=>p.page===1), "new view starts on page one");
             check(artistsPane.heading === "GENRES", "Genres heading");
             const rockIndex = library.panes[0].rows.findIndex(r => r.title === "Rock");
-            check(rockIndex >= 0, "persisted genre present"); select(0,rockIndex);
+            check(rockIndex >= 0, "persisted genre present"); select(0,rockIndex); connection(0);
             check(library.genre === "Rock", "genre selection");
             check(library.panes[1].rows.length === 2 && library.panes[2].rows.length === 3, "genre membership and deduplication");
             const additional = library.panes[1].rows.findIndex(r => r.title === "Additional");
             select(1,additional);
             check(library.panes[2].rows.length === 1 && library.panes[2].rows[0].title === "Alpha", "Album within Genre excludes Jazz and unsaved Rock");
-            numbers(true);
+            numbers(true); connection(0);
             check(library.panes[2].rows[0].number === "1.02", "multi-disc numbers disambiguate disc one too");
             window.bridge.browse_action("play",2,library.panes[2].rows[0].id);
             page("Songs"); page("Genres");
@@ -85,7 +107,7 @@
             const ascending = library.panes[2].rows.map(r => r.id);
             numbers(false); sort(2); numbers(false);
             check(JSON.stringify(library.panes[2].rows.map(r => r.id)) === JSON.stringify(ascending.slice().reverse()), "Z-A reverses titles and ID ties");
-            select(2,3); const selectedSong=library.song;
+            connection(0); select(2,3); const selectedSong=library.song;
             page("Playlists"); headings(true,true);
             check(albumsPane.heading === "DETAILS", "playlist Details pane");
             check(artistsPane.heading === "PLAYLISTS", "Playlists heading");
@@ -130,7 +152,7 @@
             window.bridge.browse_action("sort",2,""); wait();
             check(library.panes[2].rows[0].id===entries[1] && library.panes[2].sort==="","no playlist sorting");
             page("Artists"); page("Playlists");
-            check(library.artist===playlist.id && library.panes[2].rows.length===2,"playlist session selection retained");
+            check(library.artist===playlist.id && library.panes[2].rows.length===2,"playlist session selection retained"); connection(0);
             window.bridge.browse_action("playlist-rename",0,"Renamed playlist"); wait();
             check(library.panes[0].rows.some(p=>p.title==="Renamed playlist"),"renamed playlist displayed");
             window.bridge.browse_action("play",2,entries[0]);

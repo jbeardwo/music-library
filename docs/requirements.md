@@ -882,6 +882,24 @@ representation, infer contributor aliases, Recording identity or exact edition,
 or overwrite a manual association.
 
 
+Bounded Spotify Album evaluation may normalize Unicode, case, punctuation and
+corroborated release-type presentation. Spotify's Single category is compatible
+with an EP title hint, but does not itself prove EP identity. Relaxed titles require
+at least three independent positioned program anchors and all but at most one
+required position. A one-edit title discrepancy is supporting evidence only, with
+no duration contradiction or comparably supported competitor. Version qualifiers,
+Artist identity conflicts and structural conflicts remain protective evidence.
+Provider duplicates collapse only when complete ordered Spotify Track identities,
+Artist, title, release type and compatible date context agree; preference is stable
+and does not assert exact-edition identity.
+
+The shared Song context menu opens the existing Spotify connection diagnostic for
+the row's canonical Track ID, including reconciled Playlist entries. Inspection and
+explicit bounded Album re-evaluation do not change playback. The diagnostic shows
+raw and normalized candidate evidence separately from structured decision reasons;
+existing confirmed associations and manual connection controls remain stable.
+
+
 ## Initial desktop library/player
 
 The initial interface uses lightweight top-level Artists / Genres / Albums / Songs /

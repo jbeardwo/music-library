@@ -100,7 +100,7 @@ impl Bridge {
     pub fn player_clock(&self) -> (u64, Option<u64>, bool) {
         if self.remote_controls() {
             let state = &self.spotify_playback_state.state;
-            let same = self.spotify_playback_song.as_ref().is_some_and(|song| {
+            let same = self.spotify_active_song.as_ref().is_some_and(|song| {
                 Some(song.uri())
                     == state
                         .track_id
@@ -271,7 +271,7 @@ pub(crate) fn test_controls(
         b.real_audio = true;
         b.active_backend = ActiveBackend::Remote("spotify".into());
         b.spotify_playback_worker = Some(worker);
-        b.spotify_playback_song = Some(
+        b.spotify_active_song = Some(
             Song::from_associations(&[music_library::domain::ExternalIdentity {
                 provider: "spotify".into(),
                 kind: "track".into(),
@@ -293,6 +293,28 @@ pub(crate) fn test_controls(
         b.spotify_playback_state.state.track_id = Some("1234567890123456789012".into());
         b.spotify_playback_state.state.duration_ms = Some(120000);
         b.changed();
+        let clock = b.player_clock();
+        let playing = b.session.playback.state().current_track().cloned();
+        let selected = b
+            .session
+            .rows
+            .iter()
+            .find(|r| Some(&r.track_id) != playing.as_ref())
+            .unwrap()
+            .track_id
+            .clone();
+        b.spotify_playback_action("track".into(), selected.as_ref().into());
+        assert_eq!(b.spotify_playback_track.as_ref(), Some(&selected));
+        assert_eq!(
+            b.player_clock(),
+            clock,
+            "diagnostic selection preserves remote clock and seek"
+        );
+        assert_eq!(b.session.playback.state().current_track(), playing.as_ref());
+        assert!(
+            commands.try_recv().is_err(),
+            "inspection sends no playback commands"
+        );
     }
     assert_eq!(
         engine

@@ -349,6 +349,7 @@ fn persist_candidates(
             artist: Some(id("artist", "artist")),
             outcome,
             matched_album: None,
+            diagnostic: None,
         },
         &scope,
     )
@@ -547,7 +548,8 @@ fn stale_catalog_track_evidence_rejects_independent_persistence() {
                 input,
                 artist: Some(id("artist", "artist")),
                 outcome,
-                matched_album: None
+                matched_album: None,
+                diagnostic: None,
             },
             &scope
         )
@@ -618,6 +620,7 @@ fn independent_occurrence_persistence_timing() {
                 artist: Some(id("artist", "artist")),
                 outcome,
                 matched_album: None,
+                diagnostic: None,
             },
             &scope,
         )
@@ -904,6 +907,7 @@ fn preferred_catalog_program_persists_occurrences_without_exact_edition_claim() 
             artist: Some(id("artist", "artist")),
             outcome,
             matched_album: Some(page.items[0].clone()),
+            diagnostic: None,
         },
         &scope,
     )
@@ -1024,6 +1028,7 @@ fn changed_album_date_rejects_stale_representation_choice() {
                 artist: Some(id("artist", "artist")),
                 outcome: MatchOutcome::Matched(id("album", "a")),
                 matched_album: Some(candidate("a")),
+                diagnostic: None,
             },
             &scope,
         )
@@ -1435,6 +1440,468 @@ fn preferred_representation_survives_import_worker_completion_and_restart() {
             } else {
                 assert!(ids.is_empty());
             }
+        }
+    }
+}
+
+mod spotify_reconciliation {
+    use super::*;
+    fn sid(kind: &str, value: &str) -> ExternalIdentity {
+        ExternalIdentity {
+            provider: "spotify".into(),
+            kind: kind.into(),
+            external_id: value.into(),
+        }
+    }
+    fn album(value: &str, title: &str, kind: &str) -> ArtistAlbumCandidate {
+        ArtistAlbumCandidate {
+            identity: sid("album", value),
+            title: title.into(),
+            artist: "Artist".into(),
+            artist_ids: vec![sid("artist", "artist")],
+            primary_type: kind.into(),
+            date: "2020-09-03".into(),
+            comment: String::new(),
+        }
+    }
+    struct SpotifyPrograms {
+        provider: Provider,
+        rejected: Vec<ArtistAlbumCandidate>,
+    }
+    impl SpotifyPrograms {
+        fn new() -> Self {
+            let mut provider = Provider::new();
+            for p in provider.programs.values_mut() {
+                p.album.provider = "spotify".into();
+                p.programs[0].tracks.truncate(3);
+                for t in &mut p.programs[0].tracks {
+                    t.identities = vec![sid("track", &format!("{:022}", t.number.unwrap()))];
+                }
+            }
+            provider.counts = [("a".into(), 3), ("b".into(), 3)].into();
+            Self {
+                provider,
+                rejected: vec![],
+            }
+        }
+    }
+    impl CatalogProvider for SpotifyPrograms {
+        fn search_albums(&mut self, _: &str, _: u32) -> Result<Page<AlbumCandidate>, CatalogError> {
+            unreachable!()
+        }
+        fn releases(
+            &mut self,
+            _: &ExternalIdentity,
+            _: u32,
+        ) -> Result<Page<ReleaseCandidate>, CatalogError> {
+            unreachable!()
+        }
+        fn release(&mut self, _: &ExternalIdentity) -> Result<Release, CatalogError> {
+            unreachable!()
+        }
+        fn album_candidate_programs(&self) -> bool {
+            true
+        }
+        fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
+            self.rejected.clone()
+        }
+        fn album_candidate_track_count(&self, id: &ExternalIdentity) -> Option<u32> {
+            self.provider.counts.get(&id.external_id).copied()
+        }
+        fn album_programs(&mut self, id: &ExternalIdentity) -> Result<Programs, CatalogError> {
+            self.provider.calls.push(id.external_id.clone());
+            Ok(self.provider.programs[&id.external_id].clone())
+        }
+    }
+    fn evaluate(
+        p: &mut SpotifyPrograms,
+        title: &str,
+        items: Vec<ArtistAlbumCandidate>,
+        local: &[LocalTrackEvidence],
+    ) -> Resolution {
+        resolve_with_report(
+            p,
+            (title, None),
+            &sid("artist", "artist"),
+            &Page {
+                items,
+                next_offset: None,
+            },
+            false,
+            local,
+            &mut vec![],
+        )
+        .unwrap()
+    }
+    #[test]
+    fn release_type_suffix_and_unicode_typography_need_program_corroboration() {
+        for (local_title, provider_title) in [
+            ("Hugs EP", "Hugs"),
+            ("Hugs - EP", "Hugs"),
+            ("Hugs", "Hugs - EP"),
+            ("Hugs EP", "Hugs - EP"),
+            ("Café EP", "Cafe\u{301} - EP"),
+        ] {
+            let mut p = SpotifyPrograms::new();
+            let result = evaluate(
+                &mut p,
+                local_title,
+                vec![album("a", provider_title, "Single")],
+                &locals(&[1, 2, 3]),
+            );
+            assert_eq!(
+                result.outcome,
+                MatchOutcome::MatchedClose(sid("album", "a"))
+            );
+            assert!(
+                result
+                    .report
+                    .reasons
+                    .contains(&Reason::AcceptedReleaseTypeSuffix)
+            );
+            assert_eq!(result.report.candidates[0].programs[0].anchors, 3);
+        }
+        let mut p = SpotifyPrograms::new();
+        assert_eq!(
+            evaluate(
+                &mut p,
+                "Hugs EP",
+                vec![album("a", "Hugs", "EP")],
+                &locals(&[1, 2, 3])
+            )
+            .report
+            .reasons,
+            vec![Reason::AcceptedReleaseTypeSuffix]
+        );
+        for kind in ["Album", "Compilation", ""] {
+            let result = evaluate(
+                &mut p,
+                "Hugs EP",
+                vec![album("a", "Hugs", kind)],
+                &locals(&[1, 2, 3]),
+            );
+            assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch);
+        }
+        let result = evaluate(
+            &mut p,
+            "Hugs EP",
+            vec![album("a", "Hugs", "Single")],
+            &locals(&[1]),
+        );
+        assert_eq!(
+            result.report.reasons,
+            vec![Reason::InsufficientProgramAnchors]
+        );
+    }
+    #[test]
+    fn one_edit_album_typo_requires_strong_program_and_no_peer() {
+        let mut p = SpotifyPrograms::new();
+        let c = album("a", "The Second Floal - EP", "Single");
+        let result = evaluate(
+            &mut p,
+            "The Second Floral EP",
+            vec![c.clone()],
+            &locals(&[1, 2, 3]),
+        );
+        assert_eq!(
+            result.outcome,
+            MatchOutcome::MatchedClose(sid("album", "a"))
+        );
+        assert_eq!(result.report.reasons, vec![Reason::AcceptedMinorTypo]);
+        for weak in [vec![], locals(&[1]), locals(&[1, 2])] {
+            assert_eq!(
+                evaluate(&mut p, "The Second Floral EP", vec![c.clone()], &weak).outcome,
+                MatchOutcome::NoConfidentMatch
+            );
+        }
+        let result = evaluate(
+            &mut p,
+            "The Second Floral EP",
+            vec![c, album("b", "The Second Flora - EP", "Single")],
+            &locals(&[1, 2, 3]),
+        );
+        assert!(matches!(result.outcome, MatchOutcome::AlbumAmbiguous(_)));
+        assert_eq!(result.report.reasons, vec![Reason::CompetingCandidates]);
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].title =
+            Some("Unrelated program".into());
+        assert_eq!(
+            evaluate(
+                &mut p,
+                "The Second Floral EP",
+                vec![album("a", "The Second Floal - EP", "Single")],
+                &locals(&[1, 2, 3])
+            )
+            .outcome,
+            MatchOutcome::NoConfidentMatch
+        );
+    }
+    #[test]
+    fn live_and_other_version_qualifiers_survive_normalization() {
+        for title in [
+            "Songs EP (Live in Chicago)",
+            "Songs (Remastered)",
+            "Songs Deluxe Edition",
+            "Songs Acoustic",
+            "Songs (Demo)",
+            "Songs Instrumental",
+            "Songs Anniversary Edition",
+            "Songs Radio Edit",
+        ] {
+            let mut p = SpotifyPrograms::new();
+            let result = evaluate(
+                &mut p,
+                "Songs",
+                vec![album("a", title, "Single")],
+                &locals(&[1, 2, 3]),
+            );
+            assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch, "{title}");
+            assert!(
+                result.report.candidates[0].reasons.iter().any(|r| matches!(
+                    r,
+                    Reason::AlbumVersionMismatch | Reason::AlbumTitleMismatch
+                ))
+            );
+            assert!(
+                p.provider.calls.is_empty(),
+                "semantic conflict is rejected before program requests"
+            );
+        }
+    }
+    #[test]
+    fn duplicate_provider_objects_select_stable_locator_only_for_same_full_track_ids() {
+        let local = locals(&[1, 2, 3]);
+        let mut p = SpotifyPrograms::new();
+        let a = album("a", "Freshman Year", "Album");
+        let mut b = album("b", "Freshman Year", "Album");
+        b.date = "2020-09-04".into();
+        let first = evaluate(&mut p, "Freshman Year", vec![b.clone(), a.clone()], &local);
+        let second = evaluate(&mut p, "Freshman Year", vec![a.clone(), b.clone()], &local);
+        assert_eq!(first.outcome, MatchOutcome::Matched(sid("album", "a")));
+        assert_eq!(
+            first.report.reasons,
+            vec![Reason::EquivalentCandidatesCollapsed]
+        );
+        assert_eq!(
+            first.report.candidates[1].equivalent_to,
+            Some(sid("album", "a"))
+        );
+        assert_eq!(
+            serde_json::to_value(first.report).unwrap(),
+            serde_json::to_value(second.report).unwrap()
+        );
+        for t in &mut p.provider.programs.get_mut("b").unwrap().programs[0].tracks {
+            t.identities = vec![sid("track", &format!("alternate{}", t.number.unwrap()))];
+        }
+        let result = evaluate(&mut p, "Freshman Year", vec![a, b], &local);
+        assert!(!matches!(
+            result.outcome,
+            MatchOutcome::Matched(_) | MatchOutcome::MatchedClose(_)
+        ));
+        assert!(
+            result
+                .report
+                .candidates
+                .iter()
+                .all(|c| c.equivalent_to.is_none())
+        );
+    }
+    #[test]
+    fn structured_reasons_cover_each_real_rejection_axis() {
+        let local = locals(&[1, 2, 3]);
+        let cases = [
+            Reason::ArtistMismatch,
+            Reason::ReleaseTypeMismatch,
+            Reason::TrackCountMismatch,
+            Reason::PositionMismatch,
+            Reason::InsufficientProgramAnchors,
+            Reason::TrustedIdentityConflict,
+            Reason::IncompleteProgram,
+        ];
+        for reason in cases {
+            let mut p = SpotifyPrograms::new();
+            let mut c = album("a", "Album", "Album");
+            let mut tracks = local.clone();
+            let mut title = "Album";
+            match reason {
+                Reason::ArtistMismatch => c.artist_ids = vec![sid("artist", "other")],
+                Reason::ReleaseTypeMismatch => {
+                    title = "Album EP";
+                }
+                Reason::TrackCountMismatch => {
+                    p.provider.counts.insert("a".into(), 2);
+                }
+                Reason::PositionMismatch => {
+                    p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].number = Some(2)
+                }
+                Reason::InsufficientProgramAnchors => {
+                    title = "Album EP";
+                    c.primary_type = "Single".into();
+                    tracks.truncate(1);
+                }
+                Reason::TrustedIdentityConflict => {
+                    tracks[0].evidence.identities = vec![sid("track", "conflicting")];
+                }
+                Reason::IncompleteProgram => {
+                    p.provider.programs.get_mut("a").unwrap().programs[0].complete = false
+                }
+                _ => unreachable!(),
+            }
+            let result = evaluate(&mut p, title, vec![c], &tracks);
+            assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch, "{reason:?}");
+            assert!(
+                result.report.candidates[0].reasons.contains(&reason),
+                "{reason:?}: {:?}",
+                result.report
+            );
+            assert!(
+                result
+                    .report
+                    .explain_track(tracks[0].track_id.as_ref())
+                    .contains(reason.label())
+            );
+        }
+    }
+    #[test]
+    fn a_single_candidate_is_not_proof_and_zero_local_disc_is_unspecified() {
+        let mut p = SpotifyPrograms::new();
+        let mut local = locals(&[1, 2, 3]);
+        for t in &mut local {
+            t.evidence.disc = Some(0);
+        }
+        let result = evaluate(&mut p, "Album", vec![album("a", "Album", "Album")], &local);
+        assert_eq!(result.outcome, MatchOutcome::Matched(sid("album", "a")));
+        assert_eq!(result.report.candidates[0].programs[0].anchors, 3);
+        assert!(
+            result.report.candidates[0].programs[0]
+                .tracks
+                .iter()
+                .all(|t| t.local.disc == Some(0) && t.normalized_disc == 1)
+        );
+        p.provider.programs.get_mut("a").unwrap().programs[0]
+            .tracks
+            .swap(0, 1);
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].number = Some(1);
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[1].number = Some(2);
+        let result = evaluate(&mut p, "Album", vec![album("a", "Album", "Album")], &local);
+        assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch);
+        assert_eq!(result.report.reasons, vec![Reason::PositionMismatch]);
+    }
+    #[test]
+    fn incomplete_competitor_cannot_be_dismissed_to_manufacture_uniqueness() {
+        let mut p = SpotifyPrograms::new();
+        p.provider.programs.get_mut("b").unwrap().programs[0].complete = false;
+        let result = evaluate(
+            &mut p,
+            "Album",
+            vec![album("a", "Album", "Album"), album("b", "Album", "Album")],
+            &locals(&[1, 2, 3]),
+        );
+        assert!(matches!(result.outcome, MatchOutcome::AlbumAmbiguous(_)));
+        assert_eq!(result.report.reasons, vec![Reason::CompetingCandidates]);
+        assert_eq!(
+            result.report.candidates[1].reasons,
+            vec![Reason::IncompleteProgram]
+        );
+        assert_eq!(result.report.candidates[1].decision, "Withheld");
+    }
+    #[test]
+    fn normalized_zero_disc_occurrences_persist_without_changing_entities_or_membership() {
+        use music_library::album_matching::{MatchReply, Preparation};
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("db");
+        let (mut lib, imported, album_id) = catalog_fixture(&path);
+        let ids = imported.track_ids.clone();
+        lib.add_to_library(&ids[0]).unwrap();
+        let playlist = lib.create_playlist("Stable canonical entries").unwrap();
+        lib.append_playlist_track(&playlist, &ids[1]).unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute(
+                "UPDATE track SET disc_number=0 WHERE release_id=?1",
+                [imported.release_id.as_ref()],
+            )
+            .unwrap();
+        let scope = MatchingScope {
+            provider: "spotify".into(),
+            artist_kind: "artist".into(),
+            album_kind: "album".into(),
+        };
+        let Preparation::Ready(input) = lib.prepare_album_match_for(&album_id, &scope).unwrap()
+        else {
+            panic!()
+        };
+        let local = lib.local_album_tracks(&album_id).unwrap();
+        let mut p = SpotifyPrograms::new();
+        let mut full = program("a");
+        full.album = sid("album", "a");
+        for t in &mut full.programs[0].tracks {
+            t.identities = vec![sid("track", &format!("{:022}", t.number.unwrap()))];
+        }
+        p.provider.programs.insert("a".into(), full.clone());
+        p.provider.counts.insert("a".into(), 12);
+        let result = evaluate(&mut p, "Album", vec![album("a", "Album", "Album")], &local);
+        lib.complete_album_match_for(
+            MatchReply {
+                input,
+                artist: Some(sid("artist", "artist")),
+                outcome: result.outcome,
+                matched_album: Some(album("a", "Album", "Album")),
+                diagnostic: Some(result.report),
+            },
+            &scope,
+        )
+        .unwrap();
+        let input = lib
+            .prepare_album_program(&album_id, &full.album)
+            .unwrap()
+            .unwrap();
+        lib.complete_album_program(music_library::album_program::Reply {
+            input,
+            result: Ok(full),
+        })
+        .unwrap();
+        assert_eq!(
+            lib.local_album_tracks(&album_id)
+                .unwrap()
+                .iter()
+                .map(|t| t.track_id.clone())
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(
+            lib.playlist_entries(&playlist, None, 10).unwrap()[0]
+                .track
+                .as_ref()
+                .unwrap()
+                .track_id,
+            ids[1]
+        );
+        assert_eq!(
+            lib.browse(&music_library::browse::Request {
+                limit: 10,
+                ..Default::default()
+            })
+            .unwrap()
+            .len(),
+            1
+        );
+        for id in &ids {
+            assert_eq!(
+                lib.track_provider_occurrences(id, "spotify").unwrap().len(),
+                1
+            );
+        }
+        assert!(matches!(
+            lib.prepare_album_match_for(&album_id, &scope).unwrap(),
+            Preparation::Done(MatchOutcome::AlreadyMatched)
+        ));
+        drop(lib);
+        let lib = music_library::Library::open(&path).unwrap();
+        for id in &ids {
+            assert_eq!(
+                lib.track_provider_occurrences(id, "spotify").unwrap().len(),
+                1
+            );
         }
     }
 }

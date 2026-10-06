@@ -16,7 +16,6 @@ pub enum Pending {
     QueueAfterLocal(Option<usize>),
     QueueAfterRemote(Option<usize>),
     StopLocal {
-        track: TrackId,
         identity: ExternalIdentity,
     },
     PauseRemote {
@@ -71,6 +70,7 @@ pub(crate) fn test_handoffs() {
     b.spotify_playback_worker = Some(worker);
 
     b.spotify_playback_state.devices[0].supports_volume = true;
+    b.spotify_playback_action("track".into(), local.as_ref().into());
     for trim in [0., -6.] {
         b.set_output_trims(trim, trim);
         b.resolve_play(remote.as_ref());
@@ -79,6 +79,11 @@ pub(crate) fn test_handoffs() {
             Command::ApplicationPlay(..)
         ));
         b.finish_remote_handoff();
+        assert_eq!(
+            b.spotify_playback_track.as_ref(),
+            Some(&local),
+            "playback does not retarget an open diagnostic"
+        );
         b.player_volume(0.8);
         assert!(matches!(commands.try_recv().unwrap(), Command::Volume(..)));
         b.resolve_play(local.as_ref());
@@ -828,7 +833,7 @@ impl Bridge {
         if !self.select_application_track(track.clone()) {
             return;
         }
-        self.route_pending = Some(Pending::StopLocal { track, identity });
+        self.route_pending = Some(Pending::StopLocal { identity });
         self.continue_local_stop();
     }
 
@@ -854,12 +859,11 @@ impl Bridge {
             self.start_queue_target(target);
             return;
         }
-        if let Some(Pending::StopLocal { track, identity }) = self.route_pending.take() {
+        if let Some(Pending::StopLocal { identity }) = self.route_pending.take() {
             let Ok(song) = Song::from_associations(&[identity]) else {
                 return;
             };
-            self.spotify_playback_track = Some(track);
-            self.spotify_playback_song = Some(song.clone());
+            self.spotify_active_song = Some(song.clone());
             if !matches!(self.active_backend, ActiveBackend::Remote(_)) {
                 self.active_backend = ActiveBackend::None;
             }

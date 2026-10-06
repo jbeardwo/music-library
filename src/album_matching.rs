@@ -46,6 +46,7 @@ pub struct MatchInput {
     pub date: Option<crate::catalog_date::Date>,
     pub album_id: AlbumId,
     pub title: String,
+    pub raw_title: String,
     pub artist: String,
     pub artist_id: ArtistId,
     pub known_artist: Option<ExternalIdentity>,
@@ -64,6 +65,7 @@ pub struct MatchReply {
     pub outcome: MatchOutcome,
     /// Selected provider presentation; never written to library metadata.
     pub matched_album: Option<ArtistAlbumCandidate>,
+    pub diagnostic: Option<crate::album_candidates::Report>,
 }
 
 fn matched_album(
@@ -185,7 +187,7 @@ pub fn corroborate_artist_album(
 }
 
 /// Bounded Unicode Levenshtein comparison. No transposition or semantic normalization.
-fn edit_close(left: &str, right: &str, limit: usize, minimum: usize) -> bool {
+pub(crate) fn edit_close(left: &str, right: &str, limit: usize, minimum: usize) -> bool {
     let a: Vec<_> = normalize(left).chars().collect();
     let b: Vec<_> = normalize(right).chars().collect();
     if a.len() < minimum || b.len() < minimum || a.len().abs_diff(b.len()) > limit {
@@ -207,7 +209,7 @@ fn edit_close(left: &str, right: &str, limit: usize, minimum: usize) -> bool {
     }
     previous[b.len()] <= limit
 }
-fn qualifiers(title: &str) -> Vec<String> {
+pub(crate) fn qualifiers(title: &str) -> Vec<String> {
     let normalized = normalize(title);
     let words = normalized
         .split(|c: char| !c.is_alphanumeric())
@@ -231,6 +233,8 @@ fn qualifiers(title: &str) -> Vec<String> {
                     | "remastered"
                     | "demo"
                     | "edit"
+                    | "instrumental"
+                    | "anniversary"
             )
         })
         .map(str::to_owned)
@@ -498,6 +502,7 @@ pub struct AlbumMatcher {
     stop: Arc<AtomicBool>,
     outcomes: HashMap<AlbumId, MatchOutcome>,
     matched_albums: HashMap<AlbumId, ArtistAlbumCandidate>,
+    diagnostics: VecDeque<(AlbumId, crate::album_candidates::Report)>,
     queue: VecDeque<Work>,
     recording_enabled: bool,
     recording_outcomes: HashMap<AlbumId, crate::recording::Outcome>,
@@ -656,6 +661,7 @@ impl AlbumMatcher {
                             })
                     };
                     let mut selected_album = None;
+                    let mut diagnostic = None;
                     let (artist, outcome) = match resolved {
                         Err(MatchOutcome::ArtistAmbiguous(candidates))
                             if !candidates.is_empty() =>
@@ -666,12 +672,40 @@ impl AlbumMatcher {
                                 .collect::<Vec<_>>();
                             match provider.albums_for_artists(&identities, &input.title) {
                                 Ok(page) => {
-                                    let pair = corroborate_artist_album(
+                                    let mut pair = corroborate_artist_album(
                                         &input.artist,
                                         &input.title,
                                         &candidates,
                                         &page,
                                     );
+                                    if let Some(id) = &pair.0 {
+                                        match crate::album_candidates::resolve_with_report(
+                                            &mut provider,
+                                            (&input.raw_title, input.date),
+                                            id,
+                                            &page,
+                                            input.manual_artist,
+                                            &local,
+                                            &mut candidate_cache,
+                                        ) {
+                                            Ok(resolution) => {
+                                                diagnostic = Some(resolution.report);
+                                                pair.1 = resolution.outcome;
+                                            }
+                                            Err(error) => pair.1 = provider_outcome(error),
+                                        }
+                                    } else {
+                                        let mut report = crate::album_candidates::initial_report(
+                                            &provider,
+                                            (&input.raw_title, input.date),
+                                            None,
+                                            &page,
+                                            &local,
+                                        );
+                                        report.reasons =
+                                            vec![crate::album_candidates::Reason::ArtistUnresolved];
+                                        diagnostic = Some(report);
+                                    }
                                     selected_album = matched_album(&pair.1, &page);
                                     pair
                                 }
@@ -686,22 +720,29 @@ impl AlbumMatcher {
                             } else {
                                 provider.artist_albums(&id, &input.title)
                             };
-                            let outcome = response
-                                .map(|page| {
-                                    let outcome = crate::album_candidates::resolve(
-                                        &mut provider,
-                                        (&input.title, input.date),
-                                        &id,
-                                        &page,
-                                        input.manual_artist,
-                                        &local,
-                                        &mut candidate_cache,
-                                    )
+                            let outcome =
+                                response
+                                    .map(|page| {
+                                        let outcome =
+                                            match crate::album_candidates::resolve_with_report(
+                                                &mut provider,
+                                                (&input.raw_title, input.date),
+                                                &id,
+                                                &page,
+                                                input.manual_artist,
+                                                &local,
+                                                &mut candidate_cache,
+                                            ) {
+                                                Ok(resolution) => {
+                                                    diagnostic = Some(resolution.report);
+                                                    resolution.outcome
+                                                }
+                                                Err(error) => provider_outcome(error),
+                                            };
+                                        selected_album = matched_album(&outcome, &page);
+                                        outcome
+                                    })
                                     .unwrap_or_else(provider_outcome);
-                                    selected_album = matched_album(&outcome, &page);
-                                    outcome
-                                })
-                                .unwrap_or_else(provider_outcome);
                             (Some(id), outcome)
                         }
                     };
@@ -711,6 +752,7 @@ impl AlbumMatcher {
                             artist,
                             outcome,
                             matched_album: selected_album,
+                            diagnostic,
                         });
                     }
                 }
@@ -728,6 +770,7 @@ impl AlbumMatcher {
             scope: crate::catalog::MatchingScope::musicbrainz(),
             outcomes: HashMap::new(),
             matched_albums: HashMap::new(),
+            diagnostics: VecDeque::new(),
             queue: VecDeque::new(),
             recording_enabled,
             recording_outcomes: HashMap::new(),
@@ -829,6 +872,7 @@ impl AlbumMatcher {
                 artist: Some(candidate.identity.clone()),
                 outcome: MatchOutcome::NoConfidentMatch,
                 matched_album: None,
+                diagnostic: None,
             },
             &self.scope,
         )?;
@@ -855,6 +899,7 @@ impl AlbumMatcher {
         }
         let id = reply.input.album_id.clone();
         let presentation = reply.matched_album.clone();
+        let mut diagnostic = reply.diagnostic.clone();
         let unavailable = match &reply.outcome {
             MatchOutcome::Deferred(e) => Some(e.clone()),
             _ => None,
@@ -865,6 +910,38 @@ impl AlbumMatcher {
             .complete_album_match_for(reply, &self.scope)
             .unwrap_or_else(|e| MatchOutcome::Error(e.to_string()));
         self.active = false;
+        if let Some(mut report) = diagnostic.take() {
+            if !matches!(
+                outcome,
+                MatchOutcome::Matched(_)
+                    | MatchOutcome::MatchedClose(_)
+                    | MatchOutcome::AlbumEquivalent { .. }
+            ) && report.decision == "Accepted"
+            {
+                report.decision = "Withheld".into();
+                let reason = match outcome {
+                    MatchOutcome::AlreadyMatched => {
+                        crate::album_candidates::Reason::AlreadyAssociated
+                    }
+                    MatchOutcome::Error(_) | MatchOutcome::ConfigurationError(_) => {
+                        crate::album_candidates::Reason::CompletionFailed
+                    }
+                    _ => crate::album_candidates::Reason::EvidenceChanged,
+                };
+                report.reasons = vec![reason];
+                for candidate in &mut report.candidates {
+                    if candidate.decision == "Accepted" {
+                        candidate.decision = "Withheld".into();
+                        candidate.reasons = vec![reason];
+                    }
+                }
+            }
+            self.diagnostics.retain(|(key, _)| key != &id);
+            if self.diagnostics.len() == 16 {
+                self.diagnostics.pop_front();
+            }
+            self.diagnostics.push_back((id.clone(), report));
+        }
         self.matched_albums.remove(&id);
         if matches!(
             outcome,
@@ -1078,6 +1155,12 @@ impl AlbumMatcher {
     }
     pub fn probe_pending(&self) -> bool {
         self.active && matches!(self.circuit, CircuitState::Unavailable(_))
+    }
+    pub fn diagnostic(&self, id: &AlbumId) -> Option<&crate::album_candidates::Report> {
+        self.diagnostics
+            .iter()
+            .find(|(key, _)| key == id)
+            .map(|(_, report)| report)
     }
     pub fn outcome(&self, id: &AlbumId) -> Option<&MatchOutcome> {
         self.outcomes.get(id)

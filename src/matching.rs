@@ -60,6 +60,34 @@ pub fn tracks_support_album(local: &[TrackEvidence], edition: &[TrackEvidence]) 
     supported
 }
 
+/// Canonical Unicode and ordinary typography, for bounded Album comparison only.
+/// Words (including version qualifiers), ampersands and plus signs survive.
+pub fn album_representation_title(value: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let canonical: String = value
+        .nfc()
+        .flat_map(char::to_lowercase)
+        .map(|c| match c {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{2010}' | '\u{2011}' | '\u{2013}' | '\u{2014}' => '-',
+            _ => c,
+        })
+        .collect();
+    canonical
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '&' || c == '+' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
