@@ -30,6 +30,7 @@ fn catalog_release() -> catalog::Release {
     }];
     catalog::Release {
         album: catalog::Album {
+            release_type: None,
             identity: id("musicbrainz", "release_group", GROUP),
             title: "Album".into(),
             date: "2012".into(),

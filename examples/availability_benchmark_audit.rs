@@ -13,6 +13,9 @@ mod album_program;
 #[path = "../src/artist_credit.rs"]
 mod artist_credit;
 #[allow(dead_code)]
+#[path = "../src/artist_equivalence.rs"]
+mod artist_equivalence;
+#[allow(dead_code)]
 #[path = "../src/artist_identity.rs"]
 mod artist_identity;
 #[allow(dead_code)]
@@ -678,3 +681,10 @@ fn verify_trace(
         "production execution counters differ"
     );
 }
+
+#[path = "../src/canonical_evidence.rs"]
+mod canonical_evidence;
+
+#[allow(dead_code)]
+#[path = "../src/spotify_lifecycle.rs"]
+mod spotify_lifecycle;

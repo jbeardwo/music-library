@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 macro_rules! id_type {
     ($name:ident) => {
-        #[derive(Clone, Debug, Eq, Hash, PartialEq)]
+        #[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Serialize, serde::Deserialize)]
         pub struct $name(pub String);
 
         impl $name {

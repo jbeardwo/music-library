@@ -16,12 +16,12 @@ pub struct Reply {
     pub counts: (u64, u64),
 }
 pub struct Worker {
-    send: Option<mpsc::SyncSender<(u64, Input)>>,
+    send: Option<mpsc::SyncSender<(u64, Input, Option<String>)>>,
     join: Option<thread::JoinHandle<()>>,
 }
 impl Worker {
     #[cfg(test)]
-    pub fn fake() -> (Self, mpsc::Receiver<(u64, Input)>) {
+    pub fn fake() -> (Self, mpsc::Receiver<(u64, Input, Option<String>)>) {
         let (send, receive) = mpsc::sync_channel(1);
         (
             Self {
@@ -32,18 +32,29 @@ impl Worker {
         )
     }
     pub fn new(emit: impl Fn(Reply) + Send + 'static) -> Self {
-        let (send, recv) = mpsc::sync_channel::<(u64, Input)>(1);
+        let (send, recv) = mpsc::sync_channel::<(u64, Input, Option<String>)>(1);
         let join = thread::spawn(move || {
             let mut client = Spotify::from_env();
             let mut unavailable: Option<(Instant, CatalogError)> = None;
-            while let Ok((generation, input)) = recv.recv() {
+            while let Ok((generation, input, artist_query)) = recv.recv() {
                 let result = if let Some((until, error)) = &unavailable
                     && *until > Instant::now()
                 {
                     Err(error.clone())
                 } else {
                     match &mut client {
-                        Ok(client) => client.search_songs(&input),
+                        Ok(client) => {
+                            let mut lookup = input.clone();
+                            if let Some(name) = artist_query {
+                                if let Some(primary) = &mut lookup.primary_artist {
+                                    primary.name = name.clone();
+                                    // An explicit lookup name overrides discovery only.
+                                    primary.identities.clear();
+                                }
+                                lookup.artist = name;
+                            }
+                            client.search_songs(&lookup)
+                        }
                         Err(error) => Err(error.clone()),
                     }
                 };
@@ -87,10 +98,15 @@ impl Worker {
             join: Some(join),
         }
     }
-    pub fn search(&self, generation: u64, input: Input) -> bool {
+    pub fn search_with_artist(
+        &self,
+        generation: u64,
+        input: Input,
+        artist: Option<String>,
+    ) -> bool {
         self.send
             .as_ref()
-            .is_some_and(|s| s.try_send((generation, input)).is_ok())
+            .is_some_and(|s| s.try_send((generation, input, artist)).is_ok())
     }
 }
 impl Drop for Worker {

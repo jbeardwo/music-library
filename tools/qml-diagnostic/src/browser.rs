@@ -52,7 +52,24 @@ pub struct Browser {
     selections: [music_library::selection::Selection; 3],
     selection_revision: u64,
     view: usize,
-    views: [ViewState; 5],
+    views: [ViewState; 6],
+    unresolved_count: Option<u64>,
+    marked_count: Option<u64>,
+    review_marked: bool,
+    review_local_active: bool,
+    review_local_totals: [usize; 3],
+    review_progress_at: Option<std::time::Instant>,
+    review_message: String,
+    review_retry_message: String,
+    review_retry_after: Option<music_library::domain::AlbumId>,
+    review_retry_albums: Vec<music_library::domain::AlbumId>,
+    review_retry_track_after: Option<TrackId>,
+    review_retry_album_started: bool,
+    review_retry_tracks: std::collections::VecDeque<music_library::domain::TrackId>,
+    review_retry_worker: Option<crate::spotify_resolution::Worker>,
+    review_retry_song_pending: bool,
+    review_count_pending: bool,
+    review_count_dirty: bool,
     genre: String,
     global_songs_sort: usize,
     songs_column: music_library::browse::SongColumn,
@@ -169,13 +186,14 @@ impl Bridge {
             self.browse_changed();
             return;
         }
-        if action == "songs-sort" && self.browser.view == 3 && pane == 2 {
+        if action == "songs-sort" && matches!(self.browser.view, 3 | 5) && pane == 2 {
             use music_library::browse::SongColumn;
             let column = match id.as_str() {
                 "song" => SongColumn::Song,
                 "artist" => SongColumn::Artist,
                 "album" => SongColumn::Album,
                 "genre" => SongColumn::Genre,
+                "reason" if self.browser.view == 5 => SongColumn::Reason,
                 _ => return,
             };
             if self.browser.songs_column == column {
@@ -294,6 +312,86 @@ impl Bridge {
             self.browse_changed();
             return;
         }
+        if action == "spotify-mark-selection" {
+            if self.browser.view != 5 || pane != 2 {
+                return;
+            }
+            let tracks: Vec<TrackId> = self
+                .browser
+                .action_ids(2, &id)
+                .into_iter()
+                .map(TrackId)
+                .collect();
+            match self.session.library.mark_tracks_not_on_spotify(&tracks) {
+                Ok(count) => {
+                    self.browser.review_retry_message =
+                        format!("Marked {count} Tracks as not on Spotify");
+                    if self
+                        .spotify_playback_track
+                        .as_ref()
+                        .is_some_and(|t| tracks.contains(t))
+                    {
+                        self.spotify_resolution_generation += 1;
+                        self.spotify_resolution_pending = false;
+                        self.spotify_resolution_selection = None;
+                        self.spotify_resolution_message = "Manually marked not on Spotify".into();
+                        self.spotify_playback_changed();
+                    }
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+            self.refresh_spotify_review();
+            self.browse_changed();
+            return;
+        }
+        if matches!(action, "spotify-mark" | "spotify-check") {
+            let track = music_library::domain::TrackId(id.clone());
+            let result = if action == "spotify-mark" {
+                self.session.library.mark_not_on_spotify(&track)
+            } else {
+                self.session.library.check_spotify_again(&track)
+            };
+            if let Err(e) = result {
+                self.browser.error = e.to_string();
+            } else if self.spotify_playback_track.as_ref() == Some(&track) {
+                self.spotify_resolution_generation += 1;
+                self.spotify_resolution_pending = false;
+                self.spotify_resolution_selection = None;
+                self.spotify_resolution_message = if action == "spotify-mark" {
+                    "Manually marked not on Spotify"
+                } else {
+                    "Spotify checking re-enabled"
+                }
+                .into();
+                self.spotify_playback_changed();
+            }
+            self.refresh_spotify_review();
+            self.browse_changed();
+            return;
+        }
+        if self.browser.view == 5 && action == "review-mode" {
+            self.browser.review_marked = id == "marked";
+            self.load_pane(2, true);
+            self.request_review_count();
+            self.browse_changed();
+            return;
+        }
+        if self.browser.view == 5 && action == "review-retry" {
+            self.retry_unresolved_spotify();
+            self.browse_changed();
+            return;
+        }
+        if self.browser.view == 5 && action == "review-album" {
+            self.browser.selections[1].ids = if id.is_empty() {
+                Default::default()
+            } else {
+                [id.clone()].into_iter().collect()
+            };
+            self.browser.album = id;
+            self.load_pane(2, true);
+            self.browse_changed();
+            return;
+        }
         match action {
             "save-playlist-track" => {
                 if self.browser.view != 4 {
@@ -312,13 +410,22 @@ impl Bridge {
                 self.refresh_selection();
             }
             "view" => {
-                let Some(view) = ["Artists", "Genres", "Albums", "Songs", "Playlists"]
-                    .iter()
-                    .position(|v| *v == id)
-                else {
+                let Some(view) = [
+                    "Artists",
+                    "Genres",
+                    "Albums",
+                    "Songs",
+                    "Playlists",
+                    "Spotify Connections",
+                ]
+                .iter()
+                .position(|v| *v == id) else {
                     return;
                 };
                 self.browser.switch_view(view);
+                if view == 5 {
+                    self.refresh_spotify_review();
+                }
                 self.refresh_changed_playlist();
                 self.refresh_playlist_details(false);
                 for i in 0..3 {
@@ -954,7 +1061,7 @@ impl Bridge {
     fn load_pane(&mut self, pane: usize, reset: bool) {
         if (self.browser.view == 4 && (pane == 1 || (pane == 2 && self.browser.artist.is_empty())))
             || (pane == 0 && self.browser.view >= 2 && self.browser.view != 4)
-            || (pane == 1 && self.browser.view == 3)
+            || (pane == 1 && matches!(self.browser.view, 3 | 5))
         {
             if self.browser.view == 4 && pane == 2 {
                 self.browser.playlist_view_generation =
@@ -1276,6 +1383,8 @@ impl Bridge {
                             ("title", string(&r.title)),
                             ("subtitle", string(&r.subtitle)),
                             ("genres", string(&r.genres)),
+                            ("connectionReason", string(&r.connection_reason)),
+                            ("connectionReasonCode", string(&r.connection_reason_code)),
                             (
                                 "length",
                                 string(format!(
@@ -1462,17 +1571,66 @@ impl Bridge {
                     music_library::browse::SongColumn::Artist => "artist",
                     music_library::browse::SongColumn::Album => "album",
                     music_library::browse::SongColumn::Genre => "genre",
+                    music_library::browse::SongColumn::Reason => "reason",
                 }),
             ),
             (
                 "songsDescending",
                 (self.browser.global_songs_sort != 0).into(),
             ),
+            (
+                "unresolvedCount",
+                string(
+                    self.browser
+                        .unresolved_count
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "…".into()),
+                ),
+            ),
+            ("reviewMarked", self.browser.review_marked.into()),
+            (
+                "markedCount",
+                string(
+                    self.browser
+                        .marked_count
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(|| "…".into()),
+                ),
+            ),
+            (
+                "reviewMessage",
+                string(if self.browser.review_retry_message.is_empty() {
+                    &self.browser.review_message
+                } else {
+                    &self.browser.review_retry_message
+                }),
+            ),
+            ("reviewLocalActive", self.browser.review_local_active.into()),
+            (
+                "reviewRetryPending",
+                (self.browser.review_retry_song_pending
+                    || !self.browser.review_retry_albums.is_empty()
+                    || self
+                        .spotify_album_matcher
+                        .as_ref()
+                        .is_some_and(|m| m.pending_count() > 0))
+                .into(),
+            ),
+            ("reviewAlbum", string(&self.browser.album)),
             ("playlistDetails", self.playlist_details_value().into()),
             ("panes", panes.into()),
             (
                 "view",
-                string(["Artists", "Genres", "Albums", "Songs", "Playlists"][self.browser.view]),
+                string(
+                    [
+                        "Artists",
+                        "Genres",
+                        "Albums",
+                        "Songs",
+                        "Playlists",
+                        "Spotify Connections",
+                    ][self.browser.view],
+                ),
             ),
             ("genre", string(&self.browser.genre)),
             ("artist", string(&self.browser.artist)),
@@ -1562,6 +1720,7 @@ impl Browser {
                 2 => Sort::Artist,
                 _ => Sort::Title,
             },
+            _ if self.view == 5 => [Sort::Title, Sort::Descending][self.global_songs_sort],
             _ => self.song_sort(
                 !self.album.is_empty(),
                 !self.artist.is_empty() || !self.genre.is_empty(),
@@ -1599,7 +1758,9 @@ impl Browser {
     fn pane_request(&self, pane: usize) -> Request {
         let ids = |p: usize| self.selections[p].ids.iter().cloned().collect::<Vec<_>>();
         Request {
-            song_column: if self.view == 3 && pane == 2 {
+            unresolved_spotify: self.view == 5 && pane == 2,
+            marked_spotify: self.view == 5 && pane == 2 && self.review_marked,
+            song_column: if matches!(self.view, 3 | 5) && pane == 2 {
                 Some(self.songs_column)
             } else {
                 None
@@ -1685,6 +1846,159 @@ impl Bridge {
     fn refresh_selection(&mut self) {
         self.refresh_selection_with_details(true);
     }
+    fn request_review_count(&mut self) {
+        if self.browser.review_count_pending {
+            self.browser.review_count_dirty = true;
+            return;
+        }
+        let Ok(reader) = self.session.library.library_queue_reader() else {
+            return;
+        };
+        self.browser.review_count_pending = true;
+        self.browser.review_count_dirty = false;
+        let pointer = QPointer::from(&*self);
+        let deliver = qmetaobject::queued_callback(move |result: Result<(u64, u64), String>| {
+            if let Some(object) = pointer.as_pinned() {
+                let mut b = object.borrow_mut();
+                b.browser.review_count_pending = false;
+                if b.browser.review_count_dirty {
+                    b.request_review_count();
+                } else {
+                    if let Ok((count, marked)) = result {
+                        b.browser.unresolved_count = Some(count);
+                        b.browser.marked_count = Some(marked);
+                    }
+                    b.browse_changed();
+                }
+            }
+        });
+        std::thread::spawn(move || {
+            deliver(
+                (|| {
+                    Ok((
+                        reader.unresolved_spotify_count()?,
+                        reader.marked_spotify_count()?,
+                    ))
+                })()
+                .map_err(|e: music_library::storage::Error| e.to_string()),
+            )
+        });
+    }
+
+    pub(crate) fn refresh_spotify_review(&mut self) {
+        if self.browser.view != 5 {
+            let page = &mut self.browser.views[5].pages[2];
+            page.seek = if page.scroll_id.is_empty() {
+                page.rows.first().map(|r| r.id.clone())
+            } else {
+                Some(page.scroll_id.clone())
+            };
+            page.loaded = false;
+            page.rows.clear();
+            return;
+        }
+        self.start_local_spotify_review();
+        self.request_review_count();
+        let request = self.browser.pane_request(2);
+        let ids: Vec<_> = self.browser.pages[2]
+            .rows
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        let mut refreshed = std::collections::HashMap::new();
+        for chunk in ids.chunks(PAGE) {
+            match self.session.library.browse(&Request {
+                ids: chunk.to_vec(),
+                after: None,
+                ..request.clone()
+            }) {
+                Ok(rows) => refreshed.extend(rows.into_iter().map(|r| (r.id.clone(), r))),
+                Err(e) => {
+                    self.browser.error = e.to_string();
+                    return;
+                }
+            }
+        }
+        let reason_order_changed = request.song_column
+            == Some(music_library::browse::SongColumn::Reason)
+            && self.browser.pages[2].rows.iter().any(|old| {
+                refreshed
+                    .get(&old.id)
+                    .is_some_and(|new| new.cursor.title != old.cursor.title)
+            });
+        let old_last = self.browser.pages[2].rows.last().map(|r| r.cursor.clone());
+        let old_first = self.browser.pages[2].rows.first().map(|r| r.cursor.clone());
+        let page = &mut self.browser.pages[2];
+        page.rows = ids.iter().filter_map(|id| refreshed.remove(id)).collect();
+        let removed = ids.len().saturating_sub(page.rows.len()) as u64;
+        if let Some(count) = if self.browser.review_marked {
+            &mut self.browser.marked_count
+        } else {
+            &mut self.browser.unresolved_count
+        } {
+            *count = count.saturating_sub(removed);
+        }
+        page.rows.sort_by(|a, b| {
+            let order = (&a.cursor.title, &a.id).cmp(&(&b.cursor.title, &b.id));
+            if request.sort == Sort::Descending {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        self.browser.selections[2].retain(&page.rows.iter().map(|r| r.id.clone()).collect());
+        self.browser.song = self.browser.selections[2].focus.clone().unwrap_or_default();
+        if reason_order_changed && !page.rows.is_empty() {
+            let anchor = if page.rows.iter().any(|r| r.id == page.scroll_id) {
+                page.scroll_id.clone()
+            } else {
+                page.rows[0].id.clone()
+            };
+            match self.session.library.browse_around(&request, &anchor) {
+                Ok(mut rows) => {
+                    page.more = rows.len() > PAGE;
+                    rows.truncate(PAGE);
+                    page.rows = rows;
+                    page.before = true;
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+        } else if page.rows.is_empty() {
+            let next = self.session.library.browse(&Request {
+                after: old_last,
+                ..request.clone()
+            });
+            match next {
+                Ok(mut rows) => {
+                    page.more = rows.len() > PAGE;
+                    rows.truncate(PAGE);
+                    if rows.is_empty()
+                        && let Some(first) = old_first
+                    {
+                        rows = self
+                            .session
+                            .library
+                            .browse_before(&Request {
+                                after: Some(first),
+                                ..request
+                            })
+                            .unwrap_or_default();
+                        rows.truncate(PAGE);
+                        rows.reverse();
+                        page.before = !rows.is_empty();
+                    }
+                    page.rows = rows;
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+        }
+        page.loaded = true;
+        if page.cursors.is_empty() {
+            page.cursors = vec![None];
+        }
+        self.browse_changed();
+    }
+
     fn refresh_selection_with_details(&mut self, refresh_details: bool) {
         if refresh_details {
             self.refresh_playlist_details(true);
@@ -1705,6 +2019,10 @@ impl Bridge {
                 page.before = page.seek.is_some();
                 page.epoch = page.epoch.wrapping_add(1);
             }
+        }
+        if self.browser.view == 5 {
+            self.refresh_spotify_review();
+            return;
         }
         if self.browser.view == 4 && !self.browser.pages[2].rows.is_empty() {
             // Enrichment invalidates metadata, not the selected playlist or window.
@@ -2120,5 +2438,455 @@ impl Bridge {
             )
         }));
         self.browse_changed();
+    }
+}
+
+impl Bridge {
+    fn start_local_spotify_review(&mut self) {
+        if self.browser.review_local_active {
+            return;
+        }
+        let mut worker = match self.session.library.spotify_review_worker() {
+            Ok(Some(w)) => w,
+            Ok(None) => return,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                return;
+            }
+        };
+        self.browser.review_local_active = true;
+        self.browser.review_local_totals = [0; 3];
+        self.browser.review_progress_at = None;
+        let pointer = QPointer::from(&*self);
+        let (ack_tx, ack_rx) = std::sync::mpsc::channel();
+        let deliver = qmetaobject::queued_callback(
+            move |result: Result<Option<music_library::spotify_lifecycle::LocalBatch>, String>| {
+                if let Some(object) = pointer.as_pinned() {
+                    let mut b = object.borrow_mut();
+                    match result {
+                        Ok(Some(batch)) => {
+                            b.browser.review_local_totals[0] += batch.examined;
+                            b.browser.review_local_totals[1] += batch.accepted.len();
+                            b.browser.review_local_totals[2] += batch.needs_retry;
+                            let totals = b.browser.review_local_totals;
+                            b.browser.review_message = format!(
+                                "Local review: {} checked, {} connected, {} need retry",
+                                totals[0], totals[1], totals[2]
+                            );
+                            if !batch.errors.is_empty() {
+                                b.browser.error = batch.errors.join("\n");
+                            }
+                            if b.spotify_playback_track
+                                .as_ref()
+                                .is_some_and(|t| batch.accepted.contains(t))
+                            {
+                                b.refresh_spotify_album_diagnostic();
+                                b.spotify_playback_changed();
+                            }
+                            let visible_changed = b.browser.pages[2]
+                                .rows
+                                .iter()
+                                .any(|r| batch.updated.iter().any(|t| t.as_ref() == r.id));
+                            if visible_changed || !batch.accepted.is_empty() {
+                                b.refresh_spotify_review();
+                            }
+                            if visible_changed
+                                || !batch.accepted.is_empty()
+                                || b.browser.review_progress_at.is_none_or(|t| {
+                                    t.elapsed() >= std::time::Duration::from_millis(250)
+                                })
+                            {
+                                b.browser.review_progress_at = Some(std::time::Instant::now());
+                                b.browse_changed();
+                            }
+                            let _ = ack_tx.send(());
+                            return;
+                        }
+                        Ok(None) => {
+                            b.browser.review_local_active = false;
+                            let totals = b.browser.review_local_totals;
+                            b.browser.review_message = if totals[0] == 0 {
+                                "No stale cached evaluations. Needs retry Tracks require a Spotify lookup; use Retry unresolved.".into()
+                            } else {
+                                format!(
+                                    "Cached review complete: {} checked, {} connected. Needs retry means a fresh Spotify lookup is required. Use Retry unresolved to process Albums in batches.",
+                                    totals[0], totals[1]
+                                )
+                            };
+                        }
+                        Err(e) => {
+                            b.browser.review_local_active = false;
+                            b.browser.error = e;
+                        }
+                    }
+                    b.browse_changed();
+                }
+                let _ = ack_tx.send(());
+            },
+        );
+        std::thread::spawn(move || {
+            loop {
+                match worker.reevaluate_stale_spotify(music_library::spotify_lifecycle::LOCAL_BATCH)
+                {
+                    Ok(batch) if batch.examined > 0 => {
+                        let failed = !batch.errors.is_empty();
+                        deliver(Ok(Some(batch)));
+                        if ack_rx
+                            .recv_timeout(std::time::Duration::from_secs(10))
+                            .is_err()
+                        {
+                            return;
+                        }
+                        if failed {
+                            break;
+                        }
+                    }
+                    Ok(_) => break,
+                    Err(e) => {
+                        deliver(Err(e.to_string()));
+                        return;
+                    }
+                }
+            }
+            deliver(Ok(None));
+        });
+    }
+    fn retry_unresolved_spotify(&mut self) {
+        if self.browser.review_retry_song_pending
+            || !self.browser.review_retry_albums.is_empty()
+            || self
+                .spotify_album_matcher
+                .as_ref()
+                .is_some_and(|m| m.pending_count() > 0)
+        {
+            return;
+        }
+        let albums = match self.session.library.spotify_retry_albums(
+            self.browser.review_retry_after.as_ref(),
+            music_library::spotify_lifecycle::RETRY_ALBUMS,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                self.browser.error = e.to_string();
+                return;
+            }
+        };
+        if albums.is_empty() {
+            self.browser.review_retry_after = None;
+            self.browser.review_retry_message = "Spotify retry pass complete".into();
+            return;
+        }
+        if let Err(e) = self.ensure_spotify_album_matcher() {
+            self.browser.error = e;
+            return;
+        }
+        self.browser.review_retry_albums = albums.clone();
+        self.browser.review_retry_track_after = None;
+        self.browser.review_retry_album_started = false;
+        self.browser.review_retry_message = format!(
+            "Retrying {} Albums; use Retry unresolved again for the next bounded batch",
+            albums.len()
+        );
+        self.start_review_track_retry();
+    }
+}
+
+impl Bridge {
+    pub(crate) fn start_review_track_retry(&mut self) {
+        if self
+            .spotify_album_matcher
+            .as_ref()
+            .is_some_and(|m| m.pending_count() > 0)
+            || self.browser.review_retry_song_pending
+        {
+            return;
+        }
+        loop {
+            if !self.browser.review_retry_album_started {
+                let Some(album) = self.browser.review_retry_albums.first().cloned() else {
+                    return;
+                };
+                self.browser.review_retry_album_started = true;
+                if let Some(matcher) = self.spotify_album_matcher.as_mut() {
+                    if let Err(e) = matcher.match_album(&self.session.library, &album) {
+                        self.browser.review_retry_albums.clear();
+                        self.browser.review_retry_message = format!("Spotify retry stopped: {e}");
+                        self.browser.error = e.to_string();
+                        return;
+                    }
+                    if matcher.pending_count() > 0 {
+                        return;
+                    }
+                }
+            }
+            if self.browser.review_retry_tracks.is_empty() {
+                if self.browser.review_retry_albums.is_empty() {
+                    return;
+                }
+                match self.session.library.spotify_retry_tracks_after(
+                    &self.browser.review_retry_albums[..1],
+                    self.browser.review_retry_track_after.as_ref(),
+                    20,
+                ) {
+                    Ok(tracks) if tracks.is_empty() => {
+                        self.browser.review_retry_after =
+                            Some(self.browser.review_retry_albums.remove(0));
+                        self.browser.review_retry_album_started = false;
+                        self.browser.review_retry_track_after = None;
+                        if !self.browser.review_retry_albums.is_empty() {
+                            continue;
+                        }
+                        self.browser.review_retry_message = "Spotify retry batch complete; all remaining eligible Tracks checked. Use Retry unresolved for the next Album batch.".into();
+                        return;
+                    }
+                    Ok(tracks) => {
+                        self.browser.review_retry_track_after = tracks.last().cloned();
+                        self.browser.review_retry_tracks = tracks.into();
+                    }
+                    Err(e) => {
+                        self.browser.review_retry_albums.clear();
+                        self.browser.error = e.to_string();
+                        return;
+                    }
+                }
+            }
+            while let Some(track) = self.browser.review_retry_tracks.pop_front() {
+                let input = match self.session.library.song_resolution_input(&track) {
+                    Ok(input)
+                        if !input.spotify_excluded
+                            && self
+                                .session
+                                .library
+                                .track_provider_occurrences(&track, "spotify")
+                                .is_ok_and(|ids| ids.is_empty()) =>
+                    {
+                        input
+                    }
+                    Ok(_) => continue,
+                    Err(e) => {
+                        self.browser.error = e.to_string();
+                        continue;
+                    }
+                };
+                if self.browser.review_retry_worker.is_none() {
+                    let pointer = QPointer::from(&*self);
+                    let deliver = qmetaobject::queued_callback(
+                        move |reply: crate::spotify_resolution::Reply| {
+                            let Some(object) = pointer.as_pinned() else {
+                                return;
+                            };
+                            let mut b = object.borrow_mut();
+                            b.finish_review_track_retry(reply);
+                        },
+                    );
+                    self.browser.review_retry_worker =
+                        Some(crate::spotify_resolution::Worker::new(deliver));
+                }
+                self.browser.review_retry_message =
+                    format!("Spotify retry: checking {} — {}", input.album, input.title);
+                self.browser.review_retry_song_pending = self
+                    .browser
+                    .review_retry_worker
+                    .as_ref()
+                    .unwrap()
+                    .search_with_artist(0, input, None);
+                return;
+            }
+        }
+    }
+}
+
+impl Bridge {
+    pub(crate) fn finish_review_track_retry(&mut self, reply: crate::spotify_resolution::Reply) {
+        self.browser.review_retry_song_pending = false;
+        match reply.result {
+            Ok(page) => {
+                if let Err(e) = self
+                    .session
+                    .library
+                    .persist_spotify_song_review(&reply.input, &page)
+                    .and_then(|()| {
+                        self.session
+                            .library
+                            .apply_song_evaluation(&reply.input, &page)
+                            .map(|_| ())
+                    })
+                {
+                    self.browser.error = e.to_string();
+                }
+            }
+            Err(e) => {
+                self.browser.error = format!("Spotify retry stopped: {e}");
+                self.browser.review_retry_message = self.browser.error.clone();
+                self.browser.review_retry_tracks.clear();
+                self.browser.review_retry_albums.clear();
+                self.browser.review_retry_track_after = None;
+                self.browser.review_retry_album_started = false;
+            }
+        }
+        if self.spotify_playback_track.as_ref() == Some(&reply.input.track_id) {
+            self.refresh_spotify_album_diagnostic();
+            self.spotify_playback_changed();
+        }
+        self.refresh_spotify_review();
+        self.start_review_track_retry();
+        self.browse_changed();
+    }
+}
+
+#[cfg(test)]
+mod spotify_retry_tests {
+    use super::*;
+    use music_library::domain::*;
+    use qmetaobject::QObjectBox;
+    #[test]
+    fn bounded_retry_track_fallback_skips_marks_and_trusted_tracks_even_when_state_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut library = music_library::Library::open(temp.path().join("retry.sqlite")).unwrap();
+        let artist = ArtistCreditInput {
+            name: "Band".into(),
+            role: None,
+        };
+        let imported = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Album".into(),
+                year: None,
+                artists: vec![artist.clone()],
+                tracks: (1..=40)
+                    .map(|n| CatalogTrackInput {
+                        title: format!("Song {n:02}"),
+                        disc_number: Some(1),
+                        track_number: Some(n),
+                        artists: vec![artist.clone()],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        for t in &imported.track_ids {
+            library.add_to_library(t).unwrap();
+        }
+        let later = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "X’ed Out".into(),
+                year: None,
+                artists: vec![artist.clone()],
+                tracks: (1..=8)
+                    .map(|n| CatalogTrackInput {
+                        title: format!("Later Song {n}"),
+                        disc_number: Some(1),
+                        track_number: Some(n),
+                        artists: vec![artist.clone()],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        for t in &later.track_ids {
+            library.add_to_library(t).unwrap();
+        }
+        let later_album = library.album_id_for_track(&later.track_ids[0]).unwrap();
+        library.mark_not_on_spotify(&imported.track_ids[0]).unwrap();
+        library
+            .attach_track_external_identity(
+                &imported.track_ids[1],
+                &ExternalIdentity {
+                    provider: "spotify".into(),
+                    kind: "track".into(),
+                    external_id: "trusted".into(),
+                },
+            )
+            .unwrap();
+        let album = library.album_id_for_track(&imported.track_ids[0]).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(crate::session::Session::new(library)));
+        let (worker, requests) = crate::spotify_resolution::Worker::fake();
+        let pinned = bridge.pinned();
+        let mut b = pinned.borrow_mut();
+        b.browser.review_retry_worker = Some(worker);
+        b.browser.review_retry_albums = vec![album, later_album.clone()];
+        b.start_review_track_retry();
+        let mut seen = std::collections::HashSet::new();
+        for n in 0..46 {
+            let (_, input, _) = requests
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap();
+            assert!(!input.spotify_excluded);
+            assert_ne!(input.track_id, imported.track_ids[0]);
+            assert_ne!(input.track_id, imported.track_ids[1]);
+            assert!(seen.insert(input.track_id.clone()));
+            if n < 38 {
+                assert!(
+                    imported.track_ids.contains(&input.track_id),
+                    "finish first Album before starting the later Album"
+                );
+            } else {
+                assert!(later.track_ids.contains(&input.track_id));
+            }
+            let c = music_library::song_resolution::Candidate {
+                identity: ExternalIdentity {
+                    provider: "spotify".into(),
+                    kind: "track".into(),
+                    external_id: format!("candidate-{n}"),
+                },
+                album_identity: None,
+                title: format!("{} (Live)", input.title),
+                artist: input.artist.clone(),
+                artists: input.artists.clone(),
+                album: input.album.clone(),
+                album_artists: input.album_artists.clone(),
+                album_type: "album".into(),
+                album_total_tracks: Some(40),
+                date: String::new(),
+                duration_ms: 200000,
+                disc: 1,
+                number: input.number.unwrap(),
+            };
+            if n == 0 {
+                b.session
+                    .library
+                    .mark_not_on_spotify(&input.track_id)
+                    .unwrap();
+            }
+            b.finish_review_track_retry(crate::spotify_resolution::Reply {
+                generation: 0,
+                input,
+                result: Ok(music_library::catalog::Page {
+                    items: vec![c],
+                    next_offset: None,
+                }),
+                counts: (0, n),
+            });
+        }
+        assert!(requests.try_recv().is_err());
+        assert!(!b.browser.review_retry_song_pending);
+        assert!(b.browser.review_retry_message.contains("batch complete"));
+        assert!(later.track_ids.iter().all(|id| seen.contains(id)));
+        assert!(b.browser.review_retry_albums.is_empty());
+        assert_eq!(b.browser.review_retry_after, Some(later_album));
+        assert_eq!(b.session.library.marked_spotify_count().unwrap(), 2);
+        assert_eq!(b.session.library.unresolved_spotify_count().unwrap(), 45);
+        // An interrupted pass must not move the Album cursor past work that
+        // never received a lookup. The next explicit click can resume this batch.
+        b.browser.review_retry_after = None;
+        b.browser.review_retry_albums = b.session.library.spotify_retry_albums(None, 20).unwrap();
+        b.start_review_track_retry();
+        let (_, input, _) = requests
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        b.finish_review_track_retry(crate::spotify_resolution::Reply {
+            generation: 0,
+            input,
+            result: Err(music_library::catalog::CatalogError::Other(
+                "test provider outage".into(),
+            )),
+            counts: (0, 0),
+        });
+        assert!(b.browser.review_retry_after.is_none());
+        assert!(
+            b.browser
+                .review_retry_message
+                .contains("test provider outage")
+        );
+        assert!(b.browser.review_retry_albums.is_empty());
+        assert!(!b.browser.review_retry_song_pending);
+        assert!(requests.try_recv().is_err());
     }
 }

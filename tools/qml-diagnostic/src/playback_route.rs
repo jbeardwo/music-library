@@ -176,10 +176,11 @@ pub(crate) fn test_handoffs() {
     b.spotify_playback_action("track".into(), unknown.as_ref().into());
     assert!(searches.try_recv().is_err()); // opening/selection never searches
     b.resolve_play(unknown.as_ref());
-    let (_, input) = searches.try_recv().unwrap();
+    let (_, input, _) = searches.try_recv().unwrap();
     assert!(searches.try_recv().is_err()); // exactly one explicit-Play search
     assert!(commands.try_recv().is_err());
     let song = Candidate {
+        album_identity: None,
         album_artists: vec![],
         album_type: String::new(),
         album_total_tracks: None,
@@ -221,8 +222,9 @@ pub(crate) fn test_handoffs() {
 
     let ambiguous = b.session.rows[4].track_id.clone();
     b.resolve_play(ambiguous.as_ref());
-    let (_, input) = searches.try_recv().unwrap();
+    let (_, input, _) = searches.try_recv().unwrap();
     let song = Candidate {
+        album_identity: None,
         album_artists: vec![],
         album_type: String::new(),
         album_total_tracks: None,
@@ -948,23 +950,29 @@ impl Bridge {
 
     pub(crate) fn finish_automatic_song(&mut self, input: Input, page: Page<Candidate>) {
         match assess(&input, &page) {
-            Assessment::Unique(index) => {
+            Assessment::Unique(_index) => {
                 let track = input.track_id.clone();
                 let selection = Selection::new(input, page.items);
-                match self
-                    .session
-                    .library
-                    .confirm_song_resolution(&selection, index)
-                {
-                    Ok(_) => {
-                        self.browse_action_impl("refresh", 0, String::new());
+                match self.session.library.apply_song_evaluation(
+                    selection.input(),
+                    &Page {
+                        items: selection.candidates().to_vec(),
+                        next_offset: None,
+                    },
+                ) {
+                    Ok(Some(_)) => {
+                        self.refresh_spotify_review();
                         self.spotify_resolution_message =
                             "Unique Spotify song accepted and saved".into();
                         // Availability may have changed while HTTP was in flight.
                         self.resolve_play_inner(track.as_ref());
                     }
+                    Ok(None) => {
+                        self.route_message = "Current canonical evidence withheld automatic acceptance; inspect Spotify connection".into();
+                    }
                     Err(error) => {
-                        self.route_message = format!("Spotify association not accepted: {error}")
+                        self.route_message =
+                            format!("Spotify association could not be saved: {error}")
                     }
                 }
             }

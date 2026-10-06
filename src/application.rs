@@ -14,6 +14,109 @@ pub struct Library {
 }
 
 impl Library {
+    pub fn spotify_review_summary(&self, track: &TrackId) -> Result<(String, String)> {
+        Ok(self.store.connection.query_row(
+            "SELECT reason_code,reason FROM spotify_connection_review WHERE track_id=?1",
+            [track.as_ref()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?)
+    }
+    /// Targeted identity context for one diagnostic; no provider work or sources.
+    pub fn diagnostic_track_identities(&self, track: &TrackId) -> Result<Vec<ExternalIdentity>> {
+        let mut identities=self.store.connection.prepare("SELECT provider,kind,external_id FROM track_external_identity WHERE track_id=?1 UNION SELECT i.provider,i.kind,i.external_id FROM track t JOIN recording_external_identity i ON i.recording_id=t.recording_id WHERE t.id=?1 UNION SELECT i.provider,i.kind,i.external_id FROM track t JOIN release_external_identity i ON i.release_id=t.release_id WHERE t.id=?1 UNION SELECT i.provider,i.kind,i.external_id FROM track t JOIN release r ON r.id=t.release_id JOIN album_external_identity i ON i.album_id=r.album_id WHERE t.id=?1 ORDER BY provider,kind,external_id")?.query_map([track.as_ref()],|r|Ok(ExternalIdentity{provider:r.get(0)?,kind:r.get(1)?,external_id:r.get(2)?}))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        identities.extend(self.track_provider_occurrences(track, "spotify")?);
+        identities.sort_by(|a, b| {
+            (&a.provider, &a.kind, &a.external_id).cmp(&(&b.provider, &b.kind, &b.external_id))
+        });
+        identities.dedup();
+        Ok(identities)
+    }
+    /// Record an explicit bounded song attempt; no association or membership changes.
+    pub fn persist_spotify_song_review(
+        &mut self,
+        input: &crate::song_resolution::Input,
+        page: &crate::catalog::Page<crate::song_resolution::Candidate>,
+    ) -> Result<()> {
+        use crate::album_candidates::Reason;
+        let trusted = self.diagnostic_track_identities(&input.track_id)?;
+        let evaluations = (0..page.items.len())
+            .filter_map(|i| crate::song_resolution::evaluate(input, page, i, &trusted))
+            .collect::<Vec<_>>();
+        let code = evaluations
+            .first()
+            .and_then(|e| e.primary_code)
+            .filter(|c| evaluations.iter().all(|e| e.primary_code == Some(*c)));
+        let reason = if page.items.is_empty() {
+            Reason::NoCandidates
+        } else if let Some(code) = code {
+            match code {
+                "artist_mismatch" | "artist_credit_incomplete" => Reason::ArtistMismatch,
+                "trusted_identity_conflict" | "existing_provider_association" => {
+                    Reason::TrustedIdentityConflict
+                }
+                "release_type_mismatch" => Reason::ReleaseTypeMismatch,
+                "track_count_mismatch" => Reason::TrackCountMismatch,
+                "track_title_mismatch" => Reason::TrackTitleMismatch,
+                "album_title_mismatch" => Reason::AlbumTitleMismatch,
+                "position_mismatch" => Reason::PositionMismatch,
+                "duration_threshold" => Reason::DurationConflict,
+                "competing_candidates" => Reason::CompetingCandidates,
+                "incomplete_candidate_page" => Reason::IncompleteCandidatePage,
+                _ => Reason::InsufficientEvidence,
+            }
+        } else if matches!(
+            crate::song_resolution::assess(input, page),
+            crate::song_resolution::Assessment::Unique(_)
+        ) {
+            Reason::ManualReviewRequired
+        } else if page.next_offset.is_some() {
+            Reason::IncompleteCandidatePage
+        } else {
+            Reason::InsufficientEvidence
+        };
+        let code = serde_json::to_value(reason)
+            .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+        self.store.connection.execute(
+            "UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",
+            rusqlite::params![
+                input.track_id.as_ref(),
+                code.as_str().unwrap_or("not_evaluated"),
+                reason.review_label()
+            ],
+        )?;
+        self.cache_spotify_attempt(input, page)?;
+        Ok(())
+    }
+    /// Persist per-Track summaries of the existing Album decision, without provider work.
+    pub fn persist_spotify_review(
+        &mut self,
+        album: &AlbumId,
+        report: &crate::album_candidates::Report,
+    ) -> Result<()> {
+        let tx = self.store.connection.transaction()?;
+        let tracks = tx
+            .prepare(
+                "SELECT t.id FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1",
+            )?
+            .query_map([album.as_ref()], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for track in tracks {
+            let reason = report.review_reason(&track);
+            let code = serde_json::to_value(reason)
+                .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+            tx.execute(
+                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",
+                rusqlite::params![
+                    track,
+                    code.as_str().unwrap_or("not_evaluated"),
+                    reason.review_label()
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn local_releases_for_root(&self, root: &RootId) -> Result<Vec<ImportedRelease>> {
         self.store.local_releases_for_root(root)
     }
@@ -81,6 +184,41 @@ impl Library {
     }
     pub fn song_resolution_input(&self, track: &TrackId) -> Result<crate::song_resolution::Input> {
         self.store.song_resolution_input(track)
+    }
+    pub fn apply_song_evaluation(
+        &mut self,
+        input: &crate::song_resolution::Input,
+        page: &crate::catalog::Page<crate::song_resolution::Candidate>,
+    ) -> Result<Option<ExternalIdentity>> {
+        // An empty generic page has no provider namespace. Explicit Spotify
+        // review recording handles empty Spotify pages independently.
+        if !page.items.is_empty() && page.items.iter().all(|c| c.identity.provider == "spotify") {
+            self.cache_spotify_attempt(input, page)?;
+        }
+        let result = self.store.apply_song_evaluation(input, page);
+        let reason = match &result {
+            Err(crate::storage::Error::ReconciliationEvidenceChanged) => {
+                Some(crate::album_candidates::Reason::EvidenceChanged)
+            }
+            Err(crate::storage::Error::AssociationPersistenceFailed(_)) => {
+                Some(crate::album_candidates::Reason::CompletionFailed)
+            }
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            let code = serde_json::to_value(reason)
+                .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+            // Preserve the original operation error if even recording its summary fails.
+            let _ = self.store.connection.execute(
+                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",
+                rusqlite::params![
+                    input.track_id.as_ref(),
+                    code.as_str().unwrap_or("completion_failed"),
+                    reason.review_label()
+                ],
+            );
+        }
+        result
     }
     pub fn confirm_song_resolution(
         &mut self,

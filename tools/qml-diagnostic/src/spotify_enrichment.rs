@@ -42,6 +42,7 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
                     bridge.spotify_resolution_message = format!("Playlist reconciliation: {error}")
                 }
             }
+            bridge.refresh_spotify_review();
             bridge.spotify_playback_changed();
             bridge.changed();
             return;
@@ -122,6 +123,8 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
             }
         }
         bridge.spotify_album_matcher = Some(matcher);
+        bridge.start_review_track_retry();
+        bridge.refresh_spotify_review();
         if selected_changed {
             bridge.refresh_spotify_album_diagnostic();
         }
@@ -230,7 +233,7 @@ impl Bridge {
         }
     }
 
-    fn ensure_spotify_album_matcher(&mut self) -> Result<(), String> {
+    pub(crate) fn ensure_spotify_album_matcher(&mut self) -> Result<(), String> {
         if self.spotify_album_matcher.is_none() {
             // from_env only reads configuration; token/API work stays on the worker.
             let Ok(provider) = music_library_spotify::Spotify::from_env() else {
@@ -321,6 +324,9 @@ impl Bridge {
             .track_provider_occurrences(&track, "spotify")
             .ok()
             .and_then(|ids| music_library_spotify::playback::Song::from_associations(&ids).ok());
+        // Refresh from persisted identity state even when this diagnostic was
+        // restored from cached Album evidence and the review window was inactive.
+        self.refresh_spotify_review();
     }
     pub(crate) fn retry_selected_spotify_album(&mut self) {
         let Some(track) = self.spotify_playback_track.clone() else {
@@ -334,6 +340,14 @@ impl Bridge {
         {
             self.refresh_spotify_album_diagnostic();
             self.spotify_playback_changed();
+            return;
+        }
+        if self
+            .session
+            .library
+            .spotify_manually_excluded(&track)
+            .unwrap_or(true)
+        {
             return;
         }
         let result = (|| -> Result<(), String> {
@@ -511,6 +525,9 @@ mod tests {
             .unwrap()
             .album_id;
         let local = library.local_album_tracks(&album).unwrap();
+        for track in &release.track_ids {
+            library.add_to_library(track).unwrap();
+        }
         let tracks = local
             .iter()
             .enumerate()
@@ -576,6 +593,37 @@ mod tests {
             3,
             "Artist search, Album search and one reused program; no per-Track calls"
         );
+        // A restored diagnostic must invalidate a review snapshot even when the
+        // identity was persisted outside this matcher's completion callback.
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.session.library.add_to_library(&other).unwrap();
+            b.refresh_spotify_review();
+        }
+        assert_eq!(
+            engine
+                .invoke_method("albumEvidenceReviewCount".into(), &[])
+                .to_int(),
+            1
+        );
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.session
+                .library
+                .attach_track_external_identity(&other, &id("track", 500))
+                .unwrap();
+            b.spotify_playback_track = Some(other.clone());
+            b.refresh_spotify_album_diagnostic();
+        }
+        assert_eq!(
+            engine
+                .invoke_method("albumEvidenceReviewCount".into(), &[])
+                .to_int(),
+            0
+        );
+        bridge.pinned().borrow_mut().spotify_playback_track = Some(release.track_ids[1].clone());
         let before = bridge
             .pinned()
             .borrow()

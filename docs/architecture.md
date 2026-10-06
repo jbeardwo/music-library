@@ -2186,3 +2186,30 @@ Detail-column widths change independently and survive view navigation in window
 state. Outer pane splitting and queue snapshot ownership are unchanged.
 
 Local source disappearance and recovery are documented in [Source lifecycle](source-lifecycle.md).
+
+## Spotify Connections management review
+
+The desktop prototype exposes **Spotify Connections** under diagnostics, separately
+from primary Library navigation. Its indexed, bounded Track query intersects saved
+membership with absence of trusted Spotify Track identity, using the same manual /
+durable identity / current Album occurrence precedence as playback association
+lookup. Availability and Album metadata quality do not determine inclusion.
+Migration 0026 persists local structured review summaries; opening/scrolling the
+view performs no provider discovery. Existing association completion events patch
+loaded canonical Track rows by ID and update a coalesced background count without
+polling. This does not establish a generic provider framework or change matching
+rules. See [workflow, storage and validation](spotify-connections-review.md).
+
+Explicit Artist equivalence is stored as indexed, confirmed application-Artist edges (migration 0027), separate from provider identities and display credits. Matching derives linked identities only for requested credited Artists; it never copies them onto the other Artist or merges the Artists as a side effect. Spotify diagnostics render the core song/Album decision evidence, including final acceptance gates, rather than implementing matching logic in QML. See [Spotify identity review](spotify-identity-review.md) for boundaries and validation.
+
+## Canonical reconciliation evidence
+
+Candidate evaluation consumes typed canonical evidence with application, sparse user-override, local-source and trusted provider provenance. Local files are optional. Migration 0028 preserves typed catalog Album and exact-Release Track observations; reads use these observations only while the corresponding trusted identity remains attached. Ordered program evidence is assembled in an Album-scoped batch. No provider requests are needed to read persisted MusicBrainz evidence.
+
+Missing dates, release types, durations and unspecified positions contribute no contradiction. Known values can corroborate or conflict; conflicting source observations remain inspectable rather than rewriting display metadata. Confirmed Artist equivalence supplies application-level identity evidence without changing credits. Presentation punctuation and established Artist boilerplate normalization still require the existing surrounding identity and structural evidence.
+
+Song reconciliation has one final structured decision. Explicit diagnostic and automatic playback paths both apply accepted decisions through an immediate transaction that rechecks current evidence, evaluates all association guards, persists the identity and verifies the write. Stale evidence and persistence failure are distinct outcomes. Targeted review notifications follow successful association changes. See [implementation and validation](canonical-spotify-reconciliation.md).
+
+## Spotify reconciliation lifecycle
+
+Migration 0029 separates portable provider-specific negative user knowledge from versioned review bookkeeping and reconstructible bounded candidate/program caches. Indexed, scoped invalidation reconsiders unresolved current evidence locally in background work units; trusted successes and exclusions are skipped. Missing reusable discovery data requires an explicit bounded retry. User exclusions are reversible and cannot coexist with a current trusted Spotify association. The management UI reuses the review table and diagnostic. See [lifecycle model and validation](spotify-reconciliation-lifecycle.md).

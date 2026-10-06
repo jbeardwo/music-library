@@ -19,6 +19,7 @@ fn release() -> Release {
     }];
     Release {
         album: Album {
+            release_type: None,
             identity: id("musicbrainz", "release_group", "group"),
             title: "Album".into(),
             date: "2000".into(),
@@ -46,6 +47,7 @@ fn release() -> Release {
 }
 fn candidate() -> Candidate {
     Candidate {
+        album_identity: None,
         album_artists: vec![],
         album_type: String::new(),
         album_total_tracks: None,

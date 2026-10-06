@@ -15,7 +15,7 @@ pub use diagnostics::{
     PositionDecision, PositionedProgram, PositionedTrack, inspect_positioned_program,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Program {
     /// Diagnostic provenance only; never accepted as the local edition identity.
     pub identity: Option<ExternalIdentity>,
@@ -23,7 +23,7 @@ pub struct Program {
     pub tracks: Vec<TrackEvidence>,
     pub complete: bool,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Programs {
     pub album: ExternalIdentity,
     pub programs: Vec<Program>,
@@ -103,7 +103,7 @@ fn agreed_duration(
 
 pub const DURATION_TOLERANCE_MS: u64 = 3_000;
 pub fn comparison_title(s: &str) -> String {
-    s.to_lowercase()
+    crate::matching::normalize_album_title(crate::matching::presentation_title(s))
         .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '&' {
@@ -229,6 +229,10 @@ pub fn inspect_candidate(
         occurrence_supported: true,
         reason: "title/semantic qualifier disagreement",
     };
+    if position_conflict(l) {
+        check.reason = "Known source positions conflict";
+        return check;
+    }
     if !trusted
         && !exact
         && !(position && qualifiers(&name) == qualifiers(&candidate) && close(&name, &candidate))
@@ -301,9 +305,40 @@ pub enum TitleRelation {
     Contradictory,
 }
 pub fn title_relation(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
+    let original = title_pair(left, right);
+    // Preserve semantic version conflicts from every retained observation.
+    if original == TitleRelation::Contradictory
+        || left.title_observations.iter().any(|o| {
+            let mut evidence = left.clone();
+            evidence.title = Some(o.value.clone());
+            title_pair(&evidence, right) == TitleRelation::Contradictory
+        })
+    {
+        return TitleRelation::Contradictory;
+    }
+    if original == TitleRelation::Agrees {
+        return original;
+    }
+    for observation in &left.title_observations {
+        let mut evidence = left.clone();
+        evidence.title = Some(observation.value.clone());
+        if title_pair(&evidence, right) == TitleRelation::Agrees {
+            return TitleRelation::Agrees;
+        }
+    }
+    original
+}
+fn title_pair(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
     let a = crate::artist_credit::musical_title(left.title.as_deref().unwrap_or(""), &left.artists);
     let b =
         crate::artist_credit::musical_title(right.title.as_deref().unwrap_or(""), &right.artists);
+    let pa = crate::matching::presentation_title(a);
+    let pb = crate::matching::presentation_title(b);
+    if (pa.contains(['[', ']', '{', '}']) || pb.contains(['[', ']', '{', '}']))
+        && crate::matching::normalize_album_title(pa) != crate::matching::normalize_album_title(pb)
+    {
+        return TitleRelation::Uncorroborated;
+    }
     let punctuation = |s: &str| {
         s.to_lowercase()
             .chars()
@@ -325,7 +360,22 @@ pub fn title_relation(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelat
     }
 }
 
+fn position_conflict(t: &TrackEvidence) -> bool {
+    t.position_observations.iter().any(|o| {
+        o.value
+            .disc
+            .zip(t.disc)
+            .is_some_and(|(a, b)| a > 0 && b > 0 && a != b)
+            || o.value
+                .number
+                .zip(t.number)
+                .is_some_and(|(a, b)| a > 0 && b > 0 && a != b)
+    })
+}
 fn position(t: &TrackEvidence) -> Option<(u32, u32)> {
+    if position_conflict(t) {
+        return None;
+    }
     Some((
         t.disc.filter(|n| *n > 0).unwrap_or(1),
         t.number.filter(|n| *n > 0)?,
@@ -693,6 +743,7 @@ pub(crate) fn local_tracks(
     let names: Vec<_> = tracks.iter().map(|t| t.1.clone()).collect();
     let mut tracks: Vec<_> = tracks.drain(..).map(|t| t.0).collect();
     crate::edition_storage::load_track_evidence(db, &mut tracks)?;
+    crate::canonical_evidence::load_program_titles(db, &mut tracks, album)?;
     let track_ids = serde_json::to_string(
         &tracks
             .iter()
@@ -709,13 +760,11 @@ pub(crate) fn local_tracks(
     // the Album credit already establishes its provider identity. Reuse that
     // evidence only for exact conservative display-credit agreement, never by
     // fuzzy Artist names or merely by sharing an Album.
-    let mut album_artists: Vec<ArtistEvidence> = vec![];
-    let mut last = None;
-    for row in db.prepare("SELECT c.position,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,''),i.provider,i.kind,i.external_id FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id LEFT JOIN artist_external_identity i ON i.artist_id=a.id WHERE c.album_id=?1 ORDER BY c.position,i.provider,i.kind,i.external_id")?.query_map([album.as_ref()],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<String>>(5)?)))? {
-        let (position,name,join_phrase,provider,kind,external_id)=row?;
-        if last!=Some(position){album_artists.push(ArtistEvidence{name,join_phrase,identities:vec![]});last=Some(position);}
-        if let (Some(provider),Some(kind),Some(external_id))=(provider,kind,external_id){album_artists.last_mut().unwrap().identities.push(ExternalIdentity{provider,kind,external_id});}
-    }
+    let album_artists: Vec<ArtistEvidence> =
+        crate::artist_credit::load(db, "album", album.as_ref())?
+            .into_iter()
+            .map(|a| a.evidence)
+            .collect();
     for (track, name) in tracks.iter_mut().zip(names) {
         if track.evidence.artists.is_empty() {
             if name.is_empty()
@@ -776,12 +825,21 @@ pub(crate) fn persist_agreed_occurrences(
     conflicts: &[TrackId],
     tracks: &mut [(LocalTrackEvidence, TrackOutcome)],
 ) -> Result<()> {
+    let excluded: std::collections::HashSet<String> = if provider == "spotify" {
+        db.prepare("SELECT x.track_id FROM track_provider_exclusion x JOIN track t ON t.id=x.track_id JOIN release r ON r.id=t.release_id WHERE x.provider='spotify' AND r.album_id=?1")?.query_map([album.as_ref()],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?
+    } else {
+        Default::default()
+    };
     let manual = crate::manual_track::load(db, album)?;
     let existing: std::collections::HashSet<String> = db.prepare(
         "SELECT t.id FROM release r CROSS JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 AND (EXISTS(SELECT 1 FROM track_external_identity i WHERE i.track_id=t.id AND i.provider=?2) OR EXISTS(SELECT 1 FROM provider_track_association a WHERE a.track_id=t.id AND a.album_provider=?2))"
     )?.query_map(params![album.as_ref(),provider], |r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let mut insert = db.prepare("INSERT INTO track_external_identity(track_id,provider,kind,external_id) VALUES(?1,?2,?3,?4)")?;
     for (track, outcome) in tracks {
+        if excluded.contains(track.track_id.as_ref()) {
+            *outcome = TrackOutcome::NoConfidentMatch;
+            continue;
+        }
         if let Some(m) = manual
             .iter()
             .find(|m| m.track_id == track.track_id && m.album.provider == provider)
@@ -886,6 +944,11 @@ impl Store {
         album: &AlbumId,
         identity: &ExternalIdentity,
     ) -> Result<Option<Input>> {
+        if identity.provider == "spotify"
+            && !crate::spotify_lifecycle::album_unexcluded(&self.connection, album)?
+        {
+            return Ok(None);
+        }
         if !self
             .list_album_external_identities(album)?
             .contains(identity)
@@ -915,6 +978,20 @@ impl Store {
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let album_exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3 AND external_id=?4)",params![reply.input.album_id.as_ref(),reply.input.album.provider,reply.input.album.kind,reply.input.album.external_id],|r|r.get(0))?;
+        let trusted_tracks: std::collections::HashSet<TrackId> = if programs.album.provider
+            == "spotify"
+        {
+            tx.prepare("SELECT DISTINCT s.track_id FROM trusted_spotify_track s JOIN track t ON t.id=s.track_id JOIN release r ON r.id=t.release_id WHERE r.album_id=?1")?.query_map([reply.input.album_id.as_ref()],|r|Ok(TrackId(r.get(0)?)))?.collect::<rusqlite::Result<_>>()?
+        } else {
+            Default::default()
+        };
+        let excluded_tracks: std::collections::HashSet<TrackId> = if programs.album.provider
+            == "spotify"
+        {
+            tx.prepare("SELECT x.track_id FROM track_provider_exclusion x JOIN track t ON t.id=x.track_id JOIN release r ON r.id=t.release_id WHERE x.provider='spotify' AND r.album_id=?1")?.query_map([reply.input.album_id.as_ref()],|r|Ok(TrackId(r.get(0)?)))?.collect::<rusqlite::Result<_>>()?
+        } else {
+            Default::default()
+        };
         let current = local_tracks(&tx, &reply.input.album_id)?;
         if !album_exists
             || current.0 != reply.input.tracks
@@ -923,6 +1000,9 @@ impl Store {
             return Ok(Outcome::Error(
                 "local evidence changed; retry enrichment".into(),
             ));
+        }
+        if programs.album.provider == "spotify" {
+            tx.execute("INSERT INTO spotify_program_cache(album_id,programs_json) VALUES(?1,?2) ON CONFLICT(album_id) DO UPDATE SET programs_json=excluded.programs_json",params![reply.input.album_id.as_ref(),serde_json::to_string(&programs).map_err(|e|crate::storage::Error::Invalid(e.to_string()))?])?;
         }
         // Contradictory source Artist metadata must not vote for a template.
         let eligible: Vec<_> = reply
@@ -957,12 +1037,25 @@ impl Store {
             .map(|t| t.track_id)
             .zip(comparisons)
             .collect();
+        // Persist a local summary of the same positional evidence. Unavailability
+        // returns above and never overwrites the last meaningful review result.
+        let positions: Vec<_> = if programs.album.provider == "spotify" {
+            programs
+                .programs
+                .iter()
+                .map(|p| inspect_positioned_program(&reply.input.tracks, p))
+                .collect()
+        } else {
+            vec![]
+        };
         let mut results: Vec<_> = reply
             .input
             .tracks
             .into_iter()
             .map(|t| {
-                let outcome = if let Some(m) = manual.get(&t.track_id) {
+                let outcome = if excluded_tracks.contains(&t.track_id) {
+                    TrackOutcome::NoConfidentMatch
+                } else if let Some(m) = manual.get(&t.track_id) {
                     TrackOutcome::ManuallyMatched(m.matched())
                 } else {
                     comparisons
@@ -984,6 +1077,9 @@ impl Store {
             }
         }
         for (t, o) in &mut results {
+            if excluded_tracks.contains(&t.track_id) || trusted_tracks.contains(&t.track_id) {
+                continue;
+            }
             if !matches!(o, TrackOutcome::ManuallyMatched(_))
                 && let Some(ids) = claims.get(&t.recording_id)
                 && ids.iter().any(|a| {
@@ -995,6 +1091,49 @@ impl Store {
                 })
             {
                 *o = TrackOutcome::ConflictingIdentity;
+            }
+            if programs.album.provider == "spotify"
+                && !matches!(
+                    o,
+                    TrackOutcome::Matched(_)
+                        | TrackOutcome::AlreadyMatched(_)
+                        | TrackOutcome::ManuallyMatched(_)
+                )
+            {
+                use crate::album_candidates::Reason;
+                let reason = if reply.input.artist_conflicts.contains(&t.track_id) {
+                    Reason::ArtistMismatch
+                } else if matches!(o, TrackOutcome::ConflictingIdentity) {
+                    Reason::TrustedIdentityConflict
+                } else if matches!(o, TrackOutcome::Ambiguous) {
+                    Reason::CompetingCandidates
+                } else {
+                    let decisions: Vec<_> = positions
+                        .iter()
+                        .flat_map(|p| &p.tracks)
+                        .filter(|p| p.track_id == t.track_id.as_ref())
+                        .map(|p| p.decision)
+                        .collect();
+                    [
+                        (
+                            PositionDecision::VersionConflict,
+                            Reason::TrackTitleMismatch,
+                        ),
+                        (PositionDecision::ShiftedProgram, Reason::TrackCountMismatch),
+                        (PositionDecision::PositionMismatch, Reason::PositionMismatch),
+                        (
+                            PositionDecision::InsufficientAnchors,
+                            Reason::InsufficientProgramAnchors,
+                        ),
+                    ]
+                    .into_iter()
+                    .find(|(d, _)| !decisions.is_empty() && decisions.iter().all(|v| v == d))
+                    .map(|(_, r)| r)
+                    .unwrap_or(Reason::IncompleteProgram)
+                };
+                let code = serde_json::to_value(reason)
+                    .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
+                tx.execute("UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",params![t.track_id.as_ref(),code.as_str().unwrap_or("not_evaluated"),reason.review_label()])?;
             }
             if let TrackOutcome::Matched(m) | TrackOutcome::AlreadyMatched(m) = o {
                 for id in &m.recording.identities {
@@ -1018,6 +1157,9 @@ impl Store {
             } else if !matches!(o, TrackOutcome::ManuallyMatched(_)) {
                 tx.execute("DELETE FROM provider_track_association WHERE track_id=?1 AND album_provider=?2",params![t.track_id.as_ref(),reply.input.album.provider])?;
             }
+        }
+        if programs.album.provider == "spotify" {
+            tx.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='unresolved' WHERE track_id IN(SELECT t.id FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",params![reply.input.album_id.as_ref(),crate::spotify_lifecycle::EVALUATION_VERSION])?;
         }
         tx.commit()?;
         Ok(Outcome::Complete(results))

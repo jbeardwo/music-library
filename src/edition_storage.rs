@@ -14,10 +14,14 @@ fn identities(db: &Connection, entity: &str, id: &str) -> Result<Vec<ExternalIde
 fn artists(db: &Connection, entity: &str, id: &str) -> Result<Vec<ArtistEvidence>> {
     let rows = db.prepare(&format!("SELECT c.artist_id,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,'') FROM {entity}_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.{entity}_id=?1 ORDER BY c.position"))?
         .query_map([id], |r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut expanded = crate::artist_equivalence::identities(
+        db,
+        &rows.iter().map(|(id, _, _)| id.clone()).collect::<Vec<_>>(),
+    )?;
     rows.into_iter()
         .map(|(id, name, join_phrase)| {
             Ok(ArtistEvidence {
-                identities: identities(db, "artist", &id)?,
+                identities: expanded.remove(&id).unwrap_or_default(),
                 name,
                 join_phrase,
             })
@@ -98,10 +102,13 @@ pub(crate) fn load_track_evidence(
             }
         }
     }
-    let mut statement = db.prepare("SELECT t.id,c.position,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,''),i.provider,i.kind,i.external_id
+    let mut statement = db.prepare(
+        "SELECT t.id,c.position,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,''),a.id
         FROM track t JOIN track_artist_credit c ON c.track_id=t.id JOIN artist a ON a.id=c.artist_id
-        LEFT JOIN artist_external_identity i ON i.artist_id=a.id
-        WHERE t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.id,c.position,i.provider,i.kind,i.external_id")?;
+        WHERE t.id IN (SELECT value FROM json_each(?1)) ORDER BY t.id,c.position",
+    )?;
+    let artist_ids=db.prepare("SELECT DISTINCT artist_id FROM track_artist_credit WHERE track_id IN (SELECT value FROM json_each(?1))")?.query_map([&ids],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let expanded = crate::artist_equivalence::identities(db, &artist_ids)?;
     let mut last = None;
     for row in statement.query_map([&ids], |r| {
         Ok((
@@ -109,32 +116,19 @@ pub(crate) fn load_track_evidence(
             r.get::<_, i64>(1)?,
             r.get::<_, String>(2)?,
             r.get::<_, String>(3)?,
-            r.get::<_, Option<String>>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, Option<String>>(6)?,
+            r.get::<_, String>(4)?,
         ))
     })? {
-        let (track, position, name, join_phrase, provider, kind, external_id) = row?;
+        let (track, position, name, join_phrase, artist) = row?;
         let index = indexes[&track];
         let credits = &mut tracks[index].evidence.artists;
         if last != Some((index, position)) {
             credits.push(ArtistEvidence {
                 name,
                 join_phrase,
-                identities: vec![],
+                identities: expanded.get(&artist).cloned().unwrap_or_default(),
             });
             last = Some((index, position));
-        }
-        if let (Some(provider), Some(kind), Some(external_id)) = (provider, kind, external_id) {
-            credits
-                .last_mut()
-                .expect("credit inserted above")
-                .identities
-                .push(ExternalIdentity {
-                    provider,
-                    kind,
-                    external_id,
-                });
         }
     }
     Ok(())

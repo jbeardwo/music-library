@@ -1,4 +1,5 @@
     TestCase { id: albumEvidenceTest; when: false }
+    function albumEvidenceReviewCount() { return window.library.panes[2].rows.length; }
     function exerciseSpotifyAlbumEvidence(track, playing) {
         function check(value, message) { if (!value) throw new Error(message); }
         function wait() { albumEvidenceTest.wait(30); }
@@ -7,6 +8,8 @@
             wait();
             const before = JSON.stringify([view.currentId, view.queue, view.status]);
             check(view.currentId === playing, "different Now Playing Track");
+            window.bridge.browse_action("view", 0, "Spotify Connections"); wait();
+            check(window.library.panes[2].rows.length === 3, "unresolved Album initially shown");
             window.openSpotifyConnection(track); wait();
             const retry = albumEvidenceTest.findChild(spotifyPlaybackDialog, "spotifyAlbumReevaluate");
             const evidence = albumEvidenceTest.findChild(spotifyPlaybackDialog, "spotifyAlbumEvidence");
@@ -16,6 +19,7 @@
             for (let n = 0; n < 250 && spotifyPlayback.albumPending; ++n) wait();
             wait();
             check(!spotifyPlayback.albumPending && spotifyPlayback.available, "explicit retry persists association: " + spotifyPlayback.albumExplanation);
+            check(window.library.panes[2].rows.length === 0, "accepted Album disappears from Spotify Connections immediately");
             check(spotifyPlayback.trackId === track, "retry retains clicked Track");
             check(evidence.text.indexOf("Accepted") >= 0 && evidence.text.indexOf("release-type suffix normalized") >= 0, "real decision reason rendered");
             check(evidence.text.indexOf("3 / 3 local positions corroborated") >= 0, "program evidence rendered");

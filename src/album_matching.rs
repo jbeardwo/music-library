@@ -43,6 +43,7 @@ pub enum MatchOutcome {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MatchInput {
+    pub evidence: Box<crate::canonical_evidence::AlbumEvidence>,
     pub date: Option<crate::catalog_date::Date>,
     pub album_id: AlbumId,
     pub title: String,
@@ -50,6 +51,8 @@ pub struct MatchInput {
     pub artist: String,
     pub artist_id: ArtistId,
     pub known_artist: Option<ExternalIdentity>,
+    /// Provider identities linked only by explicit application Artist equivalence.
+    pub equivalent_artists: Vec<ExternalIdentity>,
     pub manual_artist: bool,
 }
 #[derive(Clone, Debug)]
@@ -679,7 +682,7 @@ impl AlbumMatcher {
                                         &page,
                                     );
                                     if let Some(id) = &pair.0 {
-                                        match crate::album_candidates::resolve_with_report(
+                                        match crate::album_candidates::resolve_canonical(
                                             &mut provider,
                                             (&input.raw_title, input.date),
                                             id,
@@ -687,6 +690,8 @@ impl AlbumMatcher {
                                             input.manual_artist,
                                             &local,
                                             &mut candidate_cache,
+                                            &input.equivalent_artists,
+                                            &input.evidence,
                                         ) {
                                             Ok(resolution) => {
                                                 diagnostic = Some(resolution.report);
@@ -715,34 +720,36 @@ impl AlbumMatcher {
                         }
                         Err(outcome) => (None, outcome),
                         Ok(id) => {
-                            let response = if input.manual_artist {
+                            let response = if input.equivalent_artists.len() > 1 {
+                                provider.albums_for_artists(&input.equivalent_artists, &input.title)
+                            } else if input.manual_artist {
                                 provider.artist_albums_confirmed(&id, &input.title)
                             } else {
                                 provider.artist_albums(&id, &input.title)
                             };
-                            let outcome =
-                                response
-                                    .map(|page| {
-                                        let outcome =
-                                            match crate::album_candidates::resolve_with_report(
-                                                &mut provider,
-                                                (&input.raw_title, input.date),
-                                                &id,
-                                                &page,
-                                                input.manual_artist,
-                                                &local,
-                                                &mut candidate_cache,
-                                            ) {
-                                                Ok(resolution) => {
-                                                    diagnostic = Some(resolution.report);
-                                                    resolution.outcome
-                                                }
-                                                Err(error) => provider_outcome(error),
-                                            };
-                                        selected_album = matched_album(&outcome, &page);
-                                        outcome
-                                    })
-                                    .unwrap_or_else(provider_outcome);
+                            let outcome = response
+                                .map(|page| {
+                                    let outcome = match crate::album_candidates::resolve_canonical(
+                                        &mut provider,
+                                        (&input.raw_title, input.date),
+                                        &id,
+                                        &page,
+                                        input.manual_artist,
+                                        &local,
+                                        &mut candidate_cache,
+                                        &input.equivalent_artists,
+                                        &input.evidence,
+                                    ) {
+                                        Ok(resolution) => {
+                                            diagnostic = Some(resolution.report);
+                                            resolution.outcome
+                                        }
+                                        Err(error) => provider_outcome(error),
+                                    };
+                                    selected_album = matched_album(&outcome, &page);
+                                    outcome
+                                })
+                                .unwrap_or_else(provider_outcome);
                             (Some(id), outcome)
                         }
                     };
@@ -910,6 +917,29 @@ impl AlbumMatcher {
             .complete_album_match_for(reply, &self.scope)
             .unwrap_or_else(|e| MatchOutcome::Error(e.to_string()));
         self.active = false;
+        if self.scope.provider == "spotify" && diagnostic.is_none() {
+            use crate::album_candidates::{Reason, Report};
+            let reason = match &outcome {
+                MatchOutcome::ArtistAmbiguous(_) => Some(Reason::ArtistUnresolved),
+                MatchOutcome::NoConfidentMatch if retry.known_artist.is_none() => {
+                    Some(Reason::ArtistUnresolved)
+                }
+                MatchOutcome::NoConfidentMatch => Some(Reason::NoCandidates),
+                MatchOutcome::AlbumAmbiguous(_) => Some(Reason::CompetingCandidates),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                diagnostic = Some(Report {
+                    local_title: retry.raw_title.clone(),
+                    established_artist: retry.known_artist.clone(),
+                    candidate_count: 0,
+                    more_candidates: false,
+                    candidates: vec![],
+                    decision: "Withheld".into(),
+                    reasons: vec![reason],
+                });
+            }
+        }
         if let Some(mut report) = diagnostic.take() {
             if !matches!(
                 outcome,
@@ -935,6 +965,11 @@ impl AlbumMatcher {
                         candidate.reasons = vec![reason];
                     }
                 }
+            }
+            if self.scope.provider == "spotify"
+                && let Err(error) = library.persist_spotify_review(&id, &report)
+            {
+                return MatchOutcome::Error(error.to_string());
             }
             self.diagnostics.retain(|(key, _)| key != &id);
             if self.diagnostics.len() == 16 {

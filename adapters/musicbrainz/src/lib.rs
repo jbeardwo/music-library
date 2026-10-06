@@ -791,6 +791,8 @@ fn edition_evidence(
             mbid(&track.recording.id)?;
             complete &= track.position > 0;
             tracks.push(TrackEvidence {
+                title_observations: vec![],
+                position_observations: vec![],
                 identities: vec![identity("track", &track.id)],
                 disc: Some(medium.position),
                 number: Some(track.position),
@@ -972,6 +974,8 @@ struct FullRelease {
 }
 #[derive(Deserialize)]
 struct GroupRef {
+    #[serde(rename = "primary-type")]
+    primary_type: Option<String>,
     id: String,
     title: String,
     #[serde(rename = "first-release-date")]
@@ -1104,6 +1108,7 @@ fn convert_release(mut r: FullRelease) -> Result<catalog::Release, CatalogError>
     }
     Ok(catalog::Release {
         album: catalog::Album {
+            release_type: r.group.primary_type,
             identity: identity("release_group", &r.group.id),
             title: r.group.title,
             date: r.group.date.unwrap_or_default(),

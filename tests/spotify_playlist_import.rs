@@ -657,7 +657,7 @@ fn provenance_copy_migration_preserves_existing_snapshot_and_is_atomic() {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                25
+                29
             );
             assert_eq!(
                 db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -773,6 +773,23 @@ fn existing_snapshot_reconciles_with_full_program_and_trusted_artist_without_tou
         0
     );
     programs.programs[0].tracks[0].disc = Some(1);
+    l.mark_not_on_spotify(track).unwrap();
+    assert!(l.playlist_reconciliation_programs(&id).unwrap().is_empty());
+    assert_eq!(
+        l.reconcile_playlist_album_program(&id, &local.release_id, &programs)
+            .unwrap(),
+        0
+    );
+    assert!(l.spotify_manually_excluded(track).unwrap());
+    assert_eq!(
+        l.playlist_entries(&id, None, 200).unwrap()[0]
+            .track
+            .as_ref()
+            .unwrap()
+            .track_id,
+        before[0].track.as_ref().unwrap().track_id
+    );
+    l.check_spotify_again(track).unwrap();
     db.execute_batch("CREATE TRIGGER reject_repoint BEFORE UPDATE OF track_id ON playlist_entry BEGIN SELECT RAISE(ABORT,'test entry failure'); END;").unwrap();
     assert!(
         l.reconcile_playlist_album_program(&id, &local.release_id, &programs)

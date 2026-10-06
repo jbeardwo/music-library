@@ -60,7 +60,7 @@ pub fn credit_display(credits: &[Credit]) -> String {
         .map(|c| format!("{}{}", c.name, c.join_phrase))
         .collect()
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_offset: Option<u32>,
@@ -284,6 +284,8 @@ pub trait CatalogProvider: Send {
 /// Initial friendly Album metadata, independent of the selected edition.
 #[derive(Clone, Debug)]
 pub struct Album {
+    /// Optional provider observation, never inferred from absent local tags.
+    pub release_type: Option<String>,
     pub identity: ExternalIdentity,
     pub title: String,
     pub date: String,
@@ -292,6 +294,7 @@ pub struct Album {
 impl AlbumCandidate {
     pub fn album(&self) -> Album {
         Album {
+            release_type: (!self.primary_type.is_empty()).then(|| self.primary_type.clone()),
             identity: self.identity.clone(),
             title: self.title.clone(),
             date: self.date.clone(),

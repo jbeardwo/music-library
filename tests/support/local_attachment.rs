@@ -15,6 +15,7 @@ pub fn get_disowned() -> music_library::catalog::Release {
     }];
     Release {
         album: Album {
+            release_type: None,
             identity: id("album", v["album_id"].as_str().unwrap()),
             title: v["title"].as_str().unwrap().into(),
             date: "2012".into(),

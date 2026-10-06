@@ -27,6 +27,7 @@ fn fixture(n: usize, run: usize) -> Release {
     ];
     Release {
         album: Album {
+            release_type: None,
             identity: id("album", format!("{n}-{run}")),
             title: format!("Audit Album {n}"),
             date: "2005".into(),

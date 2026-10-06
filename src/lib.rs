@@ -5,6 +5,7 @@ pub mod album_matching;
 pub mod album_program;
 pub mod application;
 pub mod artist_credit;
+pub mod artist_equivalence;
 mod artist_identity;
 pub mod artwork;
 pub mod browse;
@@ -38,3 +39,7 @@ pub mod track_container;
 
 pub use application::Library;
 pub use storage::{Error, Result};
+
+pub mod canonical_evidence;
+
+pub mod spotify_lifecycle;

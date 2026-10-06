@@ -38,6 +38,9 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
     let mut mock = Mock::new(vec![token(), page.clone(), page]);
     assert_eq!(mock.client.request_counts(), (0, 0));
     let input = music_library::song_resolution::Input {
+        evidence: Default::default(),
+        association_providers: vec![],
+        spotify_excluded: false,
         album_date: None,
         album_artists: vec![],
         album_required_tracks: 0,
@@ -484,6 +487,7 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
     let item = json!({"id":"1234567890123456789012","name":"Feel Good Inc.","disc_number":1,"track_number":6,"duration_ms":222640,"artists":[{"id":"primary","name":"Gorillaz"},{"id":"guest","name":"De La Soul"}],"album":{"id":"album","name":"Demon Days","artists":[{"id":"primary","name":"Gorillaz"}],"release_date":"2005"}});
     let mut mock = Mock::new(vec![
         token(),
+        (200, json!({"id":"primary","name":"Gorillaz"}), None),
         (
             200,
             json!({"tracks":{"items":[item],"total":1,"offset":0,"next":null}}),
@@ -496,6 +500,9 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
         join_phrase: " feat. ".into(),
     };
     let input = music_library::song_resolution::Input {
+        evidence: Default::default(),
+        association_providers: vec![],
+        spotify_excluded: false,
         album_date: None,
         album_artists: vec![],
         album_required_tracks: 0,
@@ -527,9 +534,9 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
         music_library::song_resolution::assess(&input, &found),
         music_library::song_resolution::Assessment::Unique(0)
     );
-    assert_eq!(mock.client.request_counts(), (1, 1));
+    assert_eq!(mock.client.request_counts(), (1, 2));
     let requests = mock.finish();
-    let request = requests[1]
+    let request = requests[2]
         .lines()
         .next()
         .unwrap()
@@ -738,4 +745,120 @@ fn case_equivalent_artist_search_names_share_query_without_merging_identities() 
         query.contains(" artist:"),
         "case variants retain Artist-scoped discovery: {query}"
     );
+}
+
+#[test]
+fn typographic_album_search_uses_general_normalization_without_extra_requests() {
+    let mut mock = Mock::new(vec![
+        token(),
+        (200, json!({"id":"artist1","name":"Artist"}), None),
+        (
+            200,
+            json!({"albums":{"items":[{"id":"album1","name":"X'ed Out","artists":[{"id":"artist1","name":"Artist"}],"release_date":"2013","release_date_precision":"year","album_type":"album","total_tracks":12}],"total":1,"next":null}}),
+            None,
+        ),
+    ]);
+    mock.client
+        .artist_albums(&id("artist", "artist1"), "X’ed Out")
+        .unwrap();
+    let requests = mock.finish();
+    let url = Url::parse(&format!(
+        "http://test{}",
+        requests[2].split_whitespace().nth(1).unwrap()
+    ))
+    .unwrap();
+    let query = url
+        .query_pairs()
+        .find(|(k, _)| k == "q")
+        .unwrap()
+        .1
+        .into_owned();
+    assert_eq!(query, "album:\"X'ed Out\" artist:\"Artist\"");
+    assert_eq!(requests.len(), 3);
+}
+
+#[test]
+fn trusted_artist_identity_supplies_current_search_name_without_rewriting_credit() {
+    let item = json!({"id":"1234567890123456789012","name":"Song","disc_number":1,"track_number":1,"duration_ms":200000,"artists":[{"id":"renamed","name":"Current band name"}],"album":{"id":"album","name":"Album","artists":[{"id":"renamed","name":"Current band name"}],"release_date":"2013","total_tracks":1}});
+    let mut mock = Mock::new(vec![
+        token(),
+        (
+            200,
+            json!({"id":"renamed","name":"Current band name"}),
+            None,
+        ),
+        (
+            200,
+            json!({"tracks":{"items":[item],"total":1,"next":null}}),
+            None,
+        ),
+    ]);
+    let primary = ArtistEvidence {
+        name: "Historical band name".into(),
+        identities: vec![id("artist", "renamed")],
+        join_phrase: String::new(),
+    };
+    let input = music_library::song_resolution::Input {
+        track_id: music_library::domain::TrackId("canonical".into()),
+        evidence: Default::default(),
+        association_providers: vec![],
+        spotify_excluded: false,
+        album_date: None,
+        album_artists: vec![],
+        album_required_tracks: 1,
+        primary_artist: Some(primary.clone()),
+        title: "Song".into(),
+        artist: primary.name.clone(),
+        artists: vec![primary],
+        album: "Album".into(),
+        duration_ms: None,
+        disc: None,
+        number: None,
+    };
+    let before = input.clone();
+    let page = mock.client.search_songs(&input).unwrap();
+    assert_eq!(
+        music_library::song_resolution::assess(&input, &page),
+        music_library::song_resolution::Assessment::Unique(0)
+    );
+    assert_eq!(input, before);
+    let requests = mock.finish();
+    let url = Url::parse(&format!(
+        "http://test{}",
+        requests[2].split_whitespace().nth(1).unwrap()
+    ))
+    .unwrap();
+    assert_eq!(
+        url.query_pairs().find(|(k, _)| k == "q").unwrap().1,
+        "track:\"Song\" artist:\"Current band name\""
+    );
+    assert_eq!(requests.len(), 3);
+}
+
+#[test]
+fn manually_excluded_song_lookup_performs_no_provider_request() {
+    use music_library::song_resolution::SongSearch;
+    let temp = tempfile::tempdir().unwrap();
+    let mut library = music_library::Library::open(temp.path().join("excluded.sqlite")).unwrap();
+    let imported = library
+        .create_catalog_release(&music_library::domain::CatalogReleaseInput {
+            title: "Album".into(),
+            year: None,
+            artists: vec![],
+            tracks: vec![music_library::domain::CatalogTrackInput {
+                title: "Song".into(),
+                disc_number: None,
+                track_number: None,
+                artists: vec![],
+            }],
+        })
+        .unwrap();
+    library.mark_not_on_spotify(&imported.track_ids[0]).unwrap();
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let mut mock = Mock::new(vec![]);
+    let result = mock.client.search_songs(&input).unwrap();
+    assert!(result.items.is_empty());
+    assert_eq!(mock.client.request_counts(), (0, 0));
 }

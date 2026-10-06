@@ -23,6 +23,11 @@ pub struct TrackEvidence {
     pub disc: Option<u32>,
     pub number: Option<u32>,
     pub title: Option<String>,
+    #[serde(default)]
+    pub title_observations: Vec<crate::canonical_evidence::Observation<String>>,
+    #[serde(default)]
+    pub position_observations:
+        Vec<crate::canonical_evidence::Observation<crate::canonical_evidence::Position>>,
     pub artists: Vec<ArtistEvidence>,
     pub duration_ms: Option<u64>,
     #[serde(default)]

@@ -117,8 +117,55 @@ pub fn resolve_with_report(
     local: &[LocalTrackEvidence],
     cache: &mut Vec<Programs>,
 ) -> Result<Resolution, CatalogError> {
+    resolve_with_equivalents(provider, context, artist, page, manual, local, cache, &[])
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_with_equivalents(
+    provider: &mut impl CatalogProvider,
+    context: (&str, Option<crate::catalog_date::Date>),
+    artist: &ExternalIdentity,
+    page: &Page<ArtistAlbumCandidate>,
+    manual: bool,
+    local: &[LocalTrackEvidence],
+    cache: &mut Vec<Programs>,
+    equivalents: &[ExternalIdentity],
+) -> Result<Resolution, CatalogError> {
+    resolve_canonical(
+        provider,
+        context,
+        artist,
+        page,
+        manual,
+        local,
+        cache,
+        equivalents,
+        &Default::default(),
+    )
+}
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_canonical(
+    provider: &mut impl CatalogProvider,
+    context: (&str, Option<crate::catalog_date::Date>),
+    artist: &ExternalIdentity,
+    page: &Page<ArtistAlbumCandidate>,
+    manual: bool,
+    local: &[LocalTrackEvidence],
+    cache: &mut Vec<Programs>,
+    equivalents: &[ExternalIdentity],
+    known: &crate::canonical_evidence::AlbumEvidence,
+) -> Result<Resolution, CatalogError> {
     if provider.album_candidate_programs() && artist.provider == "spotify" {
-        return evidence::resolve_spotify(provider, context, artist, page, local, cache);
+        return evidence::resolve_spotify(
+            provider,
+            context,
+            artist,
+            page,
+            local,
+            cache,
+            equivalents,
+            known,
+        );
     }
     let report = initial_report(provider, context, Some(artist), page, local);
     let outcome = resolve_legacy(provider, context, artist, page, manual, local, cache)?;

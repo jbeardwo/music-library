@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         let mut cache = vec![];
         let resolution = if established {
-            album_candidates::resolve_with_report(
+            album_candidates::resolve_canonical(
                 &mut provider,
                 (&input.raw_title, input.date),
                 &artist,
@@ -116,6 +116,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 false,
                 &local,
                 &mut cache,
+                &input.equivalent_artists,
+                &input.evidence,
             )?
         } else {
             let mut report = album_candidates::initial_report(

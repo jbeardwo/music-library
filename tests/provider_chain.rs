@@ -402,7 +402,9 @@ fn unresolved_tracks_do_not_trigger_another_provider() {
         .unwrap()
         .album_id;
     let track = lib.local_album_tracks(&album).unwrap().remove(0);
-    lib.set_track_title_override(&track.track_id, "Unknown local song")
+    // A meaningful version conflict remains unresolved even when the original
+    // source title is retained as accumulated evidence.
+    lib.set_track_title_override(&track.track_id, "Song (Live)")
         .unwrap();
     let calls = Arc::new(Mutex::new(vec![]));
     let (mut c, rx) = chain(&[("a", Mode::Found), ("b", Mode::Found)], calls.clone());

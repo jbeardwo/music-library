@@ -33,6 +33,12 @@ terminal evidence; clients that repeat/restart without that evidence need Next.
 
 Use **Spotify…** once to connect/refresh and select your desktop device. The normal
 row Play then chooses the backend. Source/status text reports the decision.
+**⋯ → Spotify Connections** reviews saved Tracks without trusted Spotify Track
+associations. Its shared details table supports persisted reasons, sortable/resizable
+columns and right-click **Review this Album**. Double-click opens the existing
+connection diagnostic. Resolutions remove rows immediately; browsing never searches
+Spotify. See [review workflow and validation](../../docs/spotify-connections-review.md).
+
 Catalog and playback counters remain separate. Subsequent Play and restart reuse
 accepted song IDs without catalog requests; polling never searches.
 
@@ -646,3 +652,9 @@ candidate. Enable `MUSIC_LIBRARY_CATALOG_TIMING=1` to record actual query string
 and HTTP counts. See [the structured-credit audit](../../docs/spotify-credit-matching-audit.md)
 for before/after results and the distinction between human-Album correlation and
 provider-object certainty.
+
+The shared Spotify connection diagnostic now renders ordered known-evidence/candidate comparisons, matcher primary blockers/warnings, acceptance requirements and expandable program details. An optional Artist search name changes only the explicit provider query. `Mark artists as same…` requires confirmation and saves an application Artist-equivalence edge, followed by bounded current-Album re-evaluation. See [identity review and live audit](../../docs/spotify-identity-review.md). Run `artist_equivalence_comparison_and_explicit_confirmation_ui` for isolated offline QML coverage; `live_tsosis_artist_equivalence` is opt-in and modifies the selected validation database through the actual confirmation workflow.
+
+Canonical reconciliation uses persisted catalog evidence without requiring a local source. Explicit bounded diagnostic searches persist final accepted Track associations; needs-review candidates retain manual confirmation. Source annotations expose local observations and provider provenance. See [canonical reconciliation validation](../../docs/canonical-spotify-reconciliation.md).
+
+Spotify Connections now has Unresolved / Marked Not on Spotify modes, reversible per-Track exclusions, background local-only stale replay and an explicit Album-first bounded Retry unresolved action. Tests: `spotify_connections_review_updates_without_losing_context` and `bounded_retry_track_fallback_skips_marks_and_trusted_tracks_even_when_state_changes`. See [lifecycle behavior and validation](../../docs/spotify-reconciliation-lifecycle.md).

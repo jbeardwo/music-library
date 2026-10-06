@@ -873,6 +873,7 @@ fn songs_details_columns_sort_globally_with_genres_and_stable_ranges() {
                 SongColumn::Artist => r.subtitle.to_ascii_lowercase(),
                 SongColumn::Album => r.track.as_ref().unwrap().release_title.to_ascii_lowercase(),
                 SongColumn::Genre => r.genres.to_ascii_lowercase(),
+                SongColumn::Reason => r.connection_reason.to_ascii_lowercase(),
             };
             expected.sort_by_key(|r| (key(r), r.id.clone()));
             if descending {

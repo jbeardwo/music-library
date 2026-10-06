@@ -1,5 +1,5 @@
 //! Precision-aware comparative evidence, never Album or edition identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Date {
     pub year: u16,
     pub month: Option<u8>,

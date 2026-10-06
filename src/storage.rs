@@ -28,6 +28,10 @@ pub enum Error {
     Metadata { path: PathBuf, message: String },
     #[error("Artist consolidation conflicts with different external Artist identities")]
     ArtistIdentityConflict,
+    #[error("Canonical evidence changed; re-evaluate before accepting")]
+    ReconciliationEvidenceChanged,
+    #[error("Match accepted but association persistence failed: {0}")]
+    AssociationPersistenceFailed(Box<Error>),
     #[error("invalid operation: {0}")]
     Invalid(String),
 }
@@ -68,6 +72,13 @@ impl Store {
         id: &crate::domain::AlbumId,
         scope: &crate::catalog::MatchingScope,
     ) -> Result<crate::album_matching::Preparation> {
+        if scope.provider == "spotify"
+            && !crate::spotify_lifecycle::album_unexcluded(&self.connection, id)?
+        {
+            return Ok(crate::album_matching::Preparation::Done(
+                crate::album_matching::MatchOutcome::Skipped,
+            ));
+        }
         prepare_album_match(&self.connection, id, scope)
     }
     pub fn complete_album_match(
@@ -85,6 +96,11 @@ impl Store {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if scope.provider == "spotify"
+            && !crate::spotify_lifecycle::album_unexcluded(&tx, &reply.input.album_id)?
+        {
+            return Ok(MatchOutcome::Skipped);
+        }
         // Snapshot before Artist canonicalization adds independently resolved identities.
         let candidate_tracks = if matches!(reply.outcome, MatchOutcome::AlbumEquivalent { .. }) {
             Some(crate::album_program::local_tracks(
@@ -110,6 +126,7 @@ impl Store {
                 || current.raw_title != reply.input.raw_title
                 || current.artist != reply.input.artist
                 || current.date != reply.input.date
+                || current.evidence != reply.input.evidence
             {
                 return Ok(MatchOutcome::Skipped);
             }
@@ -120,12 +137,15 @@ impl Store {
             {
                 return Ok(MatchOutcome::Skipped);
             }
-            canonical = canonical_external_artist(
+            canonical = if crate::artist_equivalence::confirmed_compatible(
                 &tx,
-                Some(&current.artist_id),
-                &current.artist,
+                &current.artist_id,
                 identity,
-            )?;
+            )? {
+                current.artist_id.clone()
+            } else {
+                canonical_external_artist(&tx, Some(&current.artist_id), &current.artist, identity)?
+            };
         }
         let outcome = match prepare_album_match(&tx, &reply.input.album_id, scope)? {
             Preparation::Done(outcome) => outcome,
@@ -134,6 +154,7 @@ impl Store {
                     || current.raw_title != reply.input.raw_title
                     || current.artist != reply.input.artist
                     || current.date != reply.input.date
+                    || current.evidence != reply.input.evidence
                     || current.artist_id != canonical =>
             {
                 MatchOutcome::Skipped
@@ -184,6 +205,23 @@ impl Store {
                 _ => reply.outcome,
             },
         };
+        if let Some(candidate) = &reply.matched_album
+            && matches!(
+                outcome,
+                MatchOutcome::Matched(_)
+                    | MatchOutcome::MatchedClose(_)
+                    | MatchOutcome::AlreadyMatched
+            )
+        {
+            crate::canonical_evidence::observe_album(
+                &tx,
+                &reply.input.album_id,
+                &candidate.identity,
+                &candidate.title,
+                &candidate.date,
+                Some(&candidate.primary_type),
+            )?;
+        }
         tx.commit()?;
         Ok(outcome)
     }
@@ -215,7 +253,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 25 {
+        } else if version > 29 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -365,6 +403,23 @@ impl Store {
         if version < 25 {
             connection.execute_batch(include_str!(
                 "../migrations/0025_playlist_content_revision.sql"
+            ))?;
+        }
+
+        if version < 26 {
+            connection.execute_batch(include_str!("../migrations/0026_spotify_connections.sql"))?;
+        }
+
+        if version < 27 {
+            connection.execute_batch(include_str!("../migrations/0027_artist_equivalence.sql"))?;
+        }
+
+        if version < 28 {
+            connection.execute_batch(include_str!("../migrations/0028_canonical_evidence.sql"))?;
+        }
+        if version < 29 {
+            connection.execute_batch(include_str!(
+                "../migrations/0029_spotify_reconciliation_lifecycle.sql"
             ))?;
         }
 
@@ -1194,11 +1249,6 @@ impl Store {
         // Refresh existing identities as well as newly created Tracks. Position
         // matching is scoped to the exact reconciled Release and must be unique.
         let mut positions = std::collections::HashMap::<(u32, u32), Vec<String>>::new();
-        if release
-            .media
-            .iter()
-            .flat_map(|m| &m.tracks)
-            .any(|t| t.duration.is_some())
         {
             let mut query =
                 tx.prepare("SELECT id,disc_number,track_number FROM track WHERE release_id=?1")?;
@@ -1215,8 +1265,29 @@ impl Store {
                 }
             }
         }
+        crate::canonical_evidence::observe_album(
+            &tx,
+            &album_id,
+            &release.album.identity,
+            &release.album.title,
+            &release.album.date,
+            release.album.release_type.as_deref(),
+        )?;
         for medium in &release.media {
             for track in &medium.tracks {
+                if let Some(ids) = positions.get(&(medium.position, track.position))
+                    && let [id] = ids.as_slice()
+                {
+                    crate::canonical_evidence::observe_track(
+                        &tx,
+                        &TrackId(id.clone()),
+                        &release.identity,
+                        &track.title,
+                        medium.position,
+                        track.position,
+                        track.duration.map(|d| d.milliseconds),
+                    )?;
+                }
                 if let Some(duration) = track.duration {
                     let ids = positions
                         .get(&(medium.position, track.position))
@@ -2086,7 +2157,16 @@ fn prepare_album_match(
                 .collect(),
         )));
     }
-    let known_artist = known.pop();
+    let equivalents =
+        crate::artist_equivalence::identities(db, std::slice::from_ref(&artist_id.0))?
+            .remove(artist_id.as_ref())
+            .unwrap_or_default();
+    let known_artist = known.pop().or_else(|| {
+        equivalents
+            .iter()
+            .find(|i| i.provider == scope.provider && i.kind == scope.artist_kind)
+            .cloned()
+    });
     let mut query = db.prepare("SELECT e.title FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1")?;
     let mut titles = query.query_map([id.as_ref()], |r| r.get::<_, Option<String>>(0))?;
     let mut usable = false;
@@ -2096,15 +2176,28 @@ fn prepare_album_match(
             break;
         }
     }
+    let mut evidence = crate::canonical_evidence::load_album(db, id)?;
+    if let Some(year) = year {
+        evidence.dates.push(crate::canonical_evidence::Observation {
+            value: year.to_string(),
+            origin: crate::canonical_evidence::Origin::Application,
+        });
+    }
+    let date = crate::canonical_evidence::agreed_date(&evidence.dates);
     Ok(if usable {
         Preparation::Ready(MatchInput {
-            date: year.and_then(|y| crate::catalog_date::Date::parse(&y.to_string())),
+            evidence: Box::new(evidence),
+            date,
             album_id: id.clone(),
             title,
             raw_title,
             artist,
             artist_id,
             known_artist,
+            equivalent_artists: equivalents
+                .into_iter()
+                .filter(|i| i.provider == scope.provider && i.kind == scope.artist_kind)
+                .collect(),
             manual_artist: false,
         })
     } else {
@@ -2155,6 +2248,9 @@ pub(crate) fn merge_artist_tx(
     }
     tx.execute("INSERT INTO artist_external_identity(artist_id,provider,kind,external_id) SELECT ?2,provider,kind,external_id FROM artist_external_identity WHERE artist_id=?1 ON CONFLICT DO NOTHING", params![source.as_ref(),canonical.as_ref()])?;
     tx.execute("INSERT OR IGNORE INTO local_artist_context(root_id,directory,name_key,artist_id) SELECT root_id,directory,name_key,?2 FROM local_artist_context WHERE artist_id=?1",params![source.as_ref(),canonical.as_ref()])?;
+    // Preserve explicit links when an existing identity consolidation replaces a
+    // duplicate canonical Artist. This never creates a link from matching names.
+    tx.execute("INSERT OR IGNORE INTO artist_equivalence(artist_a,artist_b,confirmed_at) SELECT min(?2,CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END),max(?2,CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END),confirmed_at FROM artist_equivalence WHERE (artist_a=?1 OR artist_b=?1) AND CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END<>?2",params![source.as_ref(),canonical.as_ref()])?;
     tx.execute("DELETE FROM artist WHERE id=?1", [source.as_ref()])?;
     // Display is unchanged, so effective metadata, FTS and Album keys stay valid.
     Ok(true)

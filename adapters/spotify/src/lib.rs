@@ -343,8 +343,16 @@ impl Spotify {
         // plausible Artists share it, then enforce membership using returned IDs.
         let base = music_library::album_matching::album_title_variants(title)
             .first()
-            .map(|v| v.title.clone())
-            .unwrap_or_else(|| title.to_owned());
+            .map(|v| {
+                music_library::matching::title_typography(
+                    music_library::matching::presentation_title(&v.title),
+                )
+            })
+            .unwrap_or_else(|| {
+                music_library::matching::title_typography(
+                    music_library::matching::presentation_title(title),
+                )
+            });
         let mut query = format!("album:{}", quoted(&base));
         if let [name] = names.as_slice() {
             query.push_str(&format!(" artist:{}", quoted(name)));
@@ -553,6 +561,12 @@ impl music_library::song_resolution::SongSearch for Spotify {
         &mut self,
         input: &music_library::song_resolution::Input,
     ) -> Result<Page<music_library::song_resolution::Candidate>, CatalogError> {
+        if input.spotify_excluded {
+            return Ok(Page {
+                items: vec![],
+                next_offset: None,
+            });
+        }
         if input.title.trim().is_empty() || input.search_artist().trim().is_empty() {
             return Err(CatalogError::Other(
                 "Song resolution needs a Track title and credited Artist".into(),
@@ -560,10 +574,24 @@ impl music_library::song_resolution::SongSearch for Spotify {
         }
         // Native search shares the existing catalog get/token/market/error path.
         // Album remains presentation evidence rather than an exact-edition filter.
+        let known: Vec<_> = input
+            .primary_artist
+            .as_ref()
+            .into_iter()
+            .flat_map(|a| &a.identities)
+            .filter(|id| id.provider == "spotify" && id.kind == "artist")
+            .collect();
+        let artist = if let [identity] = known.as_slice() {
+            self.artist_name(identity)?
+        } else {
+            input.search_artist().to_owned()
+        };
         let query = format!(
             "track:{} artist:{}",
-            quoted(&input.title),
-            quoted(input.search_artist())
+            quoted(&music_library::matching::title_typography(
+                music_library::matching::presentation_title(&input.title)
+            )),
+            quoted(&artist)
         );
         Timing::event(format_args!("spotify Track query={query:?}"));
         let response: SongSearch = self.get(
@@ -593,6 +621,7 @@ impl music_library::song_resolution::SongSearch for Spotify {
                     return None;
                 }
                 Some(music_library::song_resolution::Candidate {
+                    album_identity: Some(id("album", &entry.album.id)),
                     identity: id("track", &key),
                     title: s.name,
                     artist: display(&s.artists),
@@ -857,6 +886,8 @@ impl CatalogProvider for Spotify {
                     ));
                 }
                 tracks.push(TrackEvidence {
+                    title_observations: vec![],
+                    position_observations: vec![],
                     identities: vec![id("track", &identity.unwrap())],
                     title: Some(song.name),
                     disc: Some(song.disc_number),

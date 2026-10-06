@@ -11,6 +11,7 @@ pub enum Reason {
     ArtistUnresolved,
     ArtistMismatch,
     AlbumTitleMismatch,
+    TrackTitleMismatch,
     AlbumVersionMismatch,
     ReleaseTypeMismatch,
     TrackCountMismatch,
@@ -24,22 +25,52 @@ pub enum Reason {
     CandidateLimit,
     AcceptedExactTitle,
     AcceptedNormalizedTitle,
+    AcceptedArtistBoilerplate,
     AcceptedReleaseTypeSuffix,
     AcceptedMinorTypo,
     EquivalentCandidatesCollapsed,
     EquivalentOccurrences,
     AlreadyAssociated,
     NotEvaluated,
+    ManualReviewRequired,
+    InsufficientEvidence,
     EvidenceChanged,
     CompletionFailed,
 }
 impl Reason {
+    pub fn review_label(self) -> &'static str {
+        match self {
+            Self::NoCandidates => "No Spotify candidate",
+            Self::ArtistUnresolved => "Artist identity needs review",
+            Self::ArtistMismatch | Self::TrustedIdentityConflict => {
+                "Artist / trusted identity conflict"
+            }
+            Self::AlbumTitleMismatch => "Album title mismatch",
+            Self::TrackTitleMismatch => "Track title / version mismatch",
+            Self::AlbumVersionMismatch | Self::ReleaseTypeMismatch => "Version qualifier conflict",
+            Self::TrackCountMismatch => "Album program mismatch",
+            Self::PositionMismatch => "No corresponding Track position",
+            Self::InsufficientProgramAnchors => "Insufficient positional evidence",
+            Self::CompetingCandidates => "Competing candidates",
+            Self::NotEvaluated => "No reconciliation attempted yet",
+            Self::ManualReviewRequired => "Manual review required",
+            Self::InsufficientEvidence => "Insufficient evidence",
+            Self::IncompleteProgram | Self::IncompleteCandidatePage | Self::CandidateLimit => {
+                "Insufficient evidence"
+            }
+            Self::DurationConflict => "Duration conflict",
+            Self::EvidenceChanged => "Evidence changed; re-evaluate",
+            Self::CompletionFailed => "Association persistence failed",
+            _ => "Album needs review",
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::NoCandidates => "No candidates returned by the bounded search",
             Self::ArtistUnresolved => "Artist identity is not established",
             Self::ArtistMismatch => "Candidate Artist IDs differ from the established Artist",
             Self::AlbumTitleMismatch => "Album titles do not agree under conservative comparison",
+            Self::TrackTitleMismatch => "Track titles or semantic versions disagree",
             Self::AlbumVersionMismatch => "Meaningful Album/version qualifier differs",
             Self::ReleaseTypeMismatch => "Release type conflicts with the title's format suffix",
             Self::TrackCountMismatch => {
@@ -60,6 +91,9 @@ impl Reason {
             Self::AcceptedExactTitle => {
                 "Established Artist, exact Album title and compatible positioned program"
             }
+            Self::AcceptedArtistBoilerplate => {
+                "Established Artist boilerplate normalized; strong positioned program corroborates"
+            }
             Self::AcceptedNormalizedTitle => {
                 "Harmless typography normalized; strong positioned program corroborates"
             }
@@ -79,6 +113,8 @@ impl Reason {
             Self::EvidenceChanged => {
                 "Persisted metadata or trusted associations changed before completion; evaluation withheld"
             }
+            Self::ManualReviewRequired => "Compatible candidate awaits explicit manual review",
+            Self::InsufficientEvidence => "No candidate has sufficient compatible evidence",
             Self::CompletionFailed => {
                 "Association could not be persisted; inspect the completion error"
             }
@@ -94,6 +130,7 @@ pub enum TitleComparison {
     Exact,
     Typography,
     ReleaseTypeSuffix,
+    EstablishedArtistBoilerplate,
     MinorTypo,
     Conflict,
     VersionConflict,
@@ -104,6 +141,9 @@ impl TitleComparison {
         match self {
             Self::Exact => "exact title",
             Self::Typography => "typography normalized",
+            Self::EstablishedArtistBoilerplate => {
+                "established Artist boilerplate normalized; requires strong program evidence"
+            }
             Self::ReleaseTypeSuffix => "compatible release-type suffix normalized",
             Self::MinorTypo => "minor typo; requires strong program evidence",
             Self::Conflict => "title mismatch",
@@ -197,6 +237,33 @@ pub struct CandidateEvidence {
     pub decision: String,
     pub reasons: Vec<Reason>,
 }
+impl CandidateEvidence {
+    fn equivalent_title_typography(&self) -> bool {
+        normalize(&crate::matching::title_typography(&self.title.local_raw))
+            == normalize(&crate::matching::title_typography(&self.title.provider_raw))
+    }
+    /// The exact anchor threshold consumed by conservative title relaxation.
+    pub fn minimum_program_anchors(&self) -> usize {
+        if self.title.comparison == TitleComparison::Exact || self.equivalent_title_typography() {
+            0
+        } else {
+            3.max(self.required_tracks.saturating_sub(1))
+        }
+    }
+    pub fn acceptance_requirements(&self) -> String {
+        let title_requirement = if self.minimum_program_anchors() == 0 {
+            "Exact or typographically equivalent title: the standard compatible positioned program is still required".into()
+        } else {
+            format!(
+                "Title relaxation requires at least {} independent title/position anchors",
+                self.minimum_program_anchors()
+            )
+        };
+        format!(
+            "Established provider Artist identity (or explicitly confirmed equivalence); valid Album identity namespace; compatible title/type/version; complete program; no duplicate, missing, shifted or conflicting positions. {title_requirement}. Competing programs require a unique date winner and at least 3 anchors each; a typo cannot win by date. Missing program data means an earlier gate or bound stopped evaluation."
+        )
+    }
+}
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Report {
     pub local_title: String,
@@ -228,6 +295,16 @@ pub fn initial_report(
     page: &Page<ArtistAlbumCandidate>,
     local: &[LocalTrackEvidence],
 ) -> Report {
+    initial_report_with_equivalents(provider, context, artist, page, local, &[])
+}
+fn initial_report_with_equivalents(
+    provider: &impl CatalogProvider,
+    context: (&str, Option<crate::catalog_date::Date>),
+    artist: Option<&ExternalIdentity>,
+    page: &Page<ArtistAlbumCandidate>,
+    local: &[LocalTrackEvidence],
+    equivalents: &[ExternalIdentity],
+) -> Report {
     let mut candidates = page.items.clone();
     candidates.extend(provider.rejected_album_candidates());
     candidates.sort_by(|a, b| identity_key(&a.identity).cmp(&identity_key(&b.identity)));
@@ -244,15 +321,48 @@ pub fn initial_report(
             .into_iter()
             .take(10)
             .map(|c| {
-                let title = title_evidence(context.0, &c);
+                let mut title = title_evidence(context.0, &c);
                 let accepted = artist.is_some_and(|a| {
-                    c.artist_ids.as_slice() == std::slice::from_ref(a)
+                    c.artist_ids.len() == 1
+                        && c.artist_ids
+                            .iter()
+                            .all(|id| id == a || equivalents.contains(id))
                         && a.kind == "artist"
                         && !a.external_id.is_empty()
                         && c.identity.provider == a.provider
                         && c.identity.kind == "album"
                         && !c.identity.external_id.is_empty()
                 });
+                let primary_established = artist.is_some_and(|id| {
+                    c.artist_ids
+                        .first()
+                        .is_some_and(|candidate| candidate == id || equivalents.contains(candidate))
+                });
+                let established_names = std::iter::once(c.artist.as_str()).chain(
+                    local
+                        .iter()
+                        .filter_map(|t| t.evidence.artists.first())
+                        .filter(|a| {
+                            artist.is_some_and(|id| {
+                                a.identities.contains(id)
+                                    || a.identities.iter().any(|i| equivalents.contains(i))
+                            })
+                        })
+                        .map(|a| a.name.as_str()),
+                );
+                if primary_established && title.comparison == TitleComparison::Conflict {
+                    for name in established_names {
+                        if let Some(base) = crate::matching::artist_album_title(&c.title, name)
+                            && crate::matching::normalize_album_title(context.0)
+                                == crate::matching::normalize_album_title(base)
+                        {
+                            title.provider_normalized =
+                                crate::matching::normalize_album_title(base);
+                            title.comparison = TitleComparison::EstablishedArtistBoilerplate;
+                            break;
+                        }
+                    }
+                }
                 let mut reasons = vec![];
                 if !accepted {
                     reasons.push(if artist.is_some() {
@@ -402,6 +512,7 @@ fn equivalent(
         && album_representation_title(&a.title) == album_representation_title(&b.title)
         && same_program(ap, bp)
 }
+#[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_spotify(
     provider: &mut impl CatalogProvider,
     context: (&str, Option<crate::catalog_date::Date>),
@@ -409,8 +520,41 @@ pub(super) fn resolve_spotify(
     page: &Page<ArtistAlbumCandidate>,
     local: &[LocalTrackEvidence],
     cache: &mut Vec<Programs>,
+    equivalents: &[ExternalIdentity],
+    known: &crate::canonical_evidence::AlbumEvidence,
 ) -> Result<Resolution, CatalogError> {
-    let mut report = initial_report(provider, context, Some(artist), page, local);
+    let mut report =
+        initial_report_with_equivalents(provider, context, Some(artist), page, local, equivalents);
+    // An established provider observation can corroborate an incomplete display
+    // title. Semantic version conflicts remain a veto, never discarded.
+    for row in &mut report.candidates {
+        if row.title.comparison == TitleComparison::Conflict {
+            for observation in &known.titles {
+                if let Some(candidate) = page.items.iter().find(|c| c.identity == row.identity) {
+                    let title = title_evidence(&observation.value, candidate);
+                    if matches!(
+                        title.comparison,
+                        TitleComparison::Exact
+                            | TitleComparison::Typography
+                            | TitleComparison::ReleaseTypeSuffix
+                    ) {
+                        row.title = title;
+                        row.reasons.retain(|r| *r != Reason::AlbumTitleMismatch);
+                        break;
+                    }
+                }
+            }
+        }
+        if known.release_types.iter().any(|o| {
+            !crate::canonical_evidence::release_type_compatible(
+                &o.value,
+                &row.title.provider_type,
+                &row.identity.provider,
+            )
+        }) {
+            row.reasons.push(Reason::ReleaseTypeMismatch);
+        }
+    }
     let finish = |outcome, mut report: Report, reason| {
         report.reasons = vec![reason];
         report.decision = if matches!(
@@ -464,8 +608,18 @@ pub(super) fn resolve_spotify(
             .items
             .iter()
             .find(|c| c.identity == row.identity)
-            .unwrap()
-            .clone();
+            .cloned()
+            .or_else(|| {
+                provider
+                    .rejected_album_candidates()
+                    .into_iter()
+                    .find(|c| c.identity == row.identity)
+            })
+            .ok_or_else(|| {
+                CatalogError::Other(
+                    "Evaluated candidate is missing from the bounded provider snapshot".into(),
+                )
+            })?;
         let p = if let Some(p) = cache.iter().find(|p| p.album == c.identity) {
             p.clone()
         } else {
@@ -492,11 +646,11 @@ pub(super) fn resolve_spotify(
             .filter_map(|p| program_reason(p, row.required_tracks))
             .collect();
         let compatible = !row.programs.is_empty() && reasons.is_empty();
-        let relaxed = row.title.comparison != TitleComparison::Exact;
+        let relaxed = row.minimum_program_anchors() != 0;
         let strong = row
             .programs
             .iter()
-            .all(|p| p.anchors >= 3 && p.anchors + 1 >= required_tracks(local));
+            .all(|p| p.anchors >= row.minimum_program_anchors());
         // Typo/suffix/typography cannot be an identity shortcut. No duration
         // contradictions or comparable competitors may be hidden by a typo.
         let duration_conflict = row.title.comparison == TitleComparison::MinorTypo
@@ -609,6 +763,7 @@ pub(super) fn resolve_spotify(
             match report.candidates[*index].title.comparison {
                 TitleComparison::Exact => Reason::AcceptedExactTitle,
                 TitleComparison::Typography => Reason::AcceptedNormalizedTitle,
+                TitleComparison::EstablishedArtistBoilerplate => Reason::AcceptedArtistBoilerplate,
                 TitleComparison::ReleaseTypeSuffix => Reason::AcceptedReleaseTypeSuffix,
                 _ => Reason::AcceptedMinorTypo,
             }
@@ -682,6 +837,65 @@ pub(super) fn resolve_spotify(
 }
 
 impl Report {
+    /// Concise review reason from structured evidence, never title-specific logic.
+    pub fn review_reason(&self, track: &str) -> Reason {
+        use album_program::PositionDecision;
+        let decisions: Vec<_> = self
+            .candidates
+            .iter()
+            .flat_map(|c| &c.programs)
+            .flat_map(|p| &p.tracks)
+            .filter(|t| t.track_id == track)
+            .map(|t| t.decision)
+            .collect();
+        for (decision, reason) in [
+            (
+                PositionDecision::VersionConflict,
+                Reason::TrackTitleMismatch,
+            ),
+            (
+                PositionDecision::TrustedIdentityConflict,
+                Reason::TrustedIdentityConflict,
+            ),
+            (PositionDecision::ShiftedProgram, Reason::TrackCountMismatch),
+            (PositionDecision::PositionMismatch, Reason::PositionMismatch),
+            (
+                PositionDecision::InsufficientAnchors,
+                Reason::InsufficientProgramAnchors,
+            ),
+        ] {
+            if !decisions.is_empty() && decisions.iter().all(|d| *d == decision) {
+                return reason;
+            }
+        }
+        if !self.candidates.is_empty()
+            && self
+                .candidates
+                .iter()
+                .any(|c| c.title.comparison == TitleComparison::VersionConflict)
+        {
+            return Reason::AlbumVersionMismatch;
+        }
+        for reason in [
+            Reason::ArtistMismatch,
+            Reason::AlbumVersionMismatch,
+            Reason::TrackCountMismatch,
+            Reason::PositionMismatch,
+            Reason::InsufficientProgramAnchors,
+            Reason::AlbumTitleMismatch,
+        ] {
+            if !self.candidates.is_empty()
+                && self.candidates.iter().all(|c| c.reasons.contains(&reason))
+            {
+                return reason;
+            }
+        }
+        self.reasons
+            .first()
+            .copied()
+            .unwrap_or(Reason::NotEvaluated)
+    }
+
     /// Presentation of the same structured decision used by the matcher, limited
     /// to the selected Track. The full ordered program is never dumped into QML.
     pub fn explain_track(&self, track: &str) -> String {

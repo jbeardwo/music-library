@@ -66,6 +66,7 @@ impl Fixture {
         self.library
             .add_catalog_release(&catalog::Release {
                 album: catalog::Album {
+                    release_type: None,
                     identity: identity("release_group", group),
                     title: title.into(),
                     date: "2005".into(),
@@ -363,6 +364,7 @@ fn album_artist_display_matches_catalog_join_phrases_despite_different_track_art
         .library
         .add_catalog_release(&catalog::Release {
             album: catalog::Album {
+                release_type: None,
                 identity: identity("release_group", "group"),
                 title: "Album".into(),
                 date: "2005".into(),

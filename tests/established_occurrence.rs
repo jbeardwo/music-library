@@ -86,6 +86,7 @@ fn live_toe_and_tricot_programs_persist_occurrences_without_linguistic_identity(
         for (track, provider) in imported.track_ids.iter().zip(&f.programs[0].tracks) {
             let manual_input = lib.song_resolution_input(track).unwrap();
             let candidate = music_library::song_resolution::Candidate {
+                album_identity: None,
                 identity: provider.identities[0].clone(),
                 title: provider.title.clone().unwrap(),
                 artist: f.artist.clone(),

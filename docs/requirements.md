@@ -975,3 +975,25 @@ Spotify contents. Ambiguous overwrite targets require renaming. Playlist access 
 determined by the official API response, including followed playlists; owner
 metadata does not gate access. Playlist metadata/playback updates preserve the
 Songs viewport, entry selection, sort and independent detail-column widths.
+
+## Spotify association review
+
+Provide a management workflow for saved Library Tracks without trusted Spotify
+Track association, separate from primary Library browsing. It must be Track-based,
+bounded and provider-free during ordinary browsing, show persisted structured
+reasons, support Album-focused review and open the existing canonical Track
+connection diagnostic. Manual connection and Album re-evaluation must remove newly
+resolved rows without losing viewport, sorting, filters or column widths. Source
+availability and incomplete Album metadata must not make a trusted Track unresolved.
+Metadata correction suggestions and tag rewriting remain deferred. See
+[Spotify Connections](spotify-connections-review.md) for the current implementation.
+
+Spotify connection diagnostics must make local/candidate values directly comparable, expose primary blockers separately from warnings, and explain complete-page, identity, position, duration and Album-program acceptance requirements. Users may explicitly confirm primary Artist equivalence across historical/provider names without changing display credits or provider IDs. Confirmation persists at application identity level and triggers only bounded current-Album re-evaluation. Similar names/programs never create equivalence implicitly; metadata correction and Artist-wide retries remain deferred.
+
+### Canonical evidence for provider reconciliation
+
+Provider candidates must be evaluated against accumulated trusted Track/Album evidence, with provenance preserved. Local sources are optional; catalog-only saved Tracks and ordered programs are eligible. Missing optional metadata is neutral. Known conflicts, trusted identity conflicts, Artist compatibility and semantic version distinctions remain conservative gates. A final accepted decision must persist an association or report a distinct persistence error. Explicit re-evaluation uses current evidence and updates Spotify Connections by stable Track ID. Metadata correction suggestions and file/tag rewriting remain deferred.
+
+### Reconciliation lifecycle and negative provider knowledge
+
+Unresolved Spotify decisions must become stale after matcher upgrades or relevant canonical evidence changes. Automatic reconsideration is persisted/local-only and bounded; fresh provider discovery requires explicit user retry. Current-version failures, trusted successes and user exclusions must not repeatedly run. Users can mark an unresolved canonical Track Not on Spotify and reverse that decision with Check Spotify again. Provider-specific negative knowledge is durable, does not change membership/sources/other identities/playlists, and is cleared by an explicit trusted connection. The shared management table exposes separate actionable and marked views/counts and retains interaction state during targeted updates.

@@ -29,9 +29,13 @@ pub enum SongColumn {
     Artist,
     Album,
     Genre,
+    Reason,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Request {
+    /// Explicit Spotify identity review; never performs provider work.
+    pub unresolved_spotify: bool,
+    pub marked_spotify: bool,
     pub song_column: Option<SongColumn>,
     pub descending: bool,
     pub pane: Pane,
@@ -66,6 +70,8 @@ pub struct Cursor {
 
 #[derive(Clone, Debug)]
 pub struct Row {
+    pub connection_reason: String,
+    pub connection_reason_code: String,
     pub id: String,
     pub title: String,
     pub subtitle: String,
@@ -88,6 +94,13 @@ pub struct Row {
 /// It observes library membership when `read` runs and never performs migrations.
 pub struct QueueReader(pub(crate) rusqlite::Connection);
 impl QueueReader {
+    pub fn marked_spotify_count(&self) -> Result<u64> {
+        Ok(self.0.query_row("SELECT count(*) FROM track_provider_exclusion x INDEXED BY provider_exclusion_list JOIN library_membership m ON m.track_id=x.track_id WHERE x.provider='spotify'",[],|r|r.get::<_,i64>(0))? as u64)
+    }
+    pub fn unresolved_spotify_count(&self) -> Result<u64> {
+        Ok(self.0.query_row("SELECT (SELECT count(*) FROM library_membership) - (SELECT count(DISTINCT s.track_id) FROM trusted_spotify_track s JOIN library_membership lm ON lm.track_id=s.track_id) - (SELECT count(*) FROM track_provider_exclusion x JOIN library_membership m ON m.track_id=x.track_id WHERE x.provider='spotify')", [], |r| r.get::<_, i64>(0))? as u64)
+    }
+
     pub fn read(self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         self.read_request(request)
     }
@@ -189,6 +202,10 @@ impl Library {
     /// Fetch predecessors nearest-first for a bounded scrolling window.
     pub fn browse_before(&self, request: &Request) -> Result<Vec<Row>> {
         query(&self.store.connection, request, false, false, true, None)
+    }
+
+    pub fn unresolved_spotify_count(&self) -> Result<u64> {
+        Ok(self.store.connection.query_row("SELECT (SELECT count(*) FROM library_membership) - (SELECT count(DISTINCT s.track_id) FROM trusted_spotify_track s JOIN library_membership lm ON lm.track_id=s.track_id) - (SELECT count(*) FROM track_provider_exclusion x JOIN library_membership m ON m.track_id=x.track_id WHERE x.provider='spotify')", [], |r| r.get::<_,i64>(0))? as u64)
     }
 
     pub fn browse(&self, request: &Request) -> Result<Vec<Row>> {
@@ -343,10 +360,16 @@ fn query_projection(
     // Track credits. Preserve the effective Track value whenever present.
     let album_credit = album_artist_credit_sql();
     let track_credit = song_artist_credit_sql();
+    if request.unresolved_spotify && request.pane == Pane::Songs {
+        scope.push_str(" AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track spotify WHERE spotify.track_id=t.id)");
+        scope.push_str(if request.marked_spotify { " AND EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify')" } else { " AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify')" });
+    }
     let saved = "JOIN library_membership lm ON lm.track_id=t.id";
 
-    let album_order =
-        request.sort == Sort::Album || (request.sort == Sort::Default && request.album.is_some());
+    let album_order = request.sort == Sort::Album
+        || (request.sort == Sort::Default
+            && request.album.is_some()
+            && request.song_column.is_none());
     let sql = match request.pane {
             Pane::Genres => "SELECT g.genre, g.genre, '', lower(g.genre), '', 0, 0, '', '', '', NULL, '', '' FROM (SELECT DISTINCT genre FROM file_genre_observation) g WHERE EXISTS(SELECT 1 FROM file_genre_observation observation JOIN track_source ts ON ts.source_id=observation.source_id JOIN library_membership lm ON lm.track_id=ts.track_id WHERE observation.genre=g.genre)".into(),
             Pane::Artists => format!("SELECT a.id, a.name, '', lower(a.name), '', 0, 0, '', '', '', NULL, '', ''
@@ -374,12 +397,17 @@ fn query_projection(
                     ("b.title_key", "''", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
                 } else if album_order {
                     ("b.year_key", "b.title_key", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
-                } else { (match request.song_column {Some(SongColumn::Artist)=>"lower(e.artist_names)",Some(SongColumn::Album)=>"lower(e.release_title)",Some(SongColumn::Genre)=>"lower(e.genre_names)",_=>"lower(e.title)"}, "''", "0", "0") };
+                } else { (match request.song_column {Some(SongColumn::Artist)=>"lower(e.artist_names)",Some(SongColumn::Album)=>"lower(e.release_title)",Some(SongColumn::Genre)=>"lower(e.genre_names)",Some(SongColumn::Reason)=>"lower(review.reason)",_=>"lower(e.title)"}, "''", "0", "0") };
                 let album_filter = if request.album.is_some() { " AND r.album_id=?2" }
                     else if album_order && target.is_some() { " AND b.album_id=(SELECT r2.album_id FROM track t2 JOIN release r2 ON r2.id=t2.release_id WHERE t2.id=?11)" }
                     else { "" };
                 let track_filter = if request.track.is_some() { " AND t.id=?3" } else { "" };
-                let from = if album_order && request.album.is_none() && target.is_none() && request.album_sort == Sort::Title {
+                let reason_stream = !request.marked_spotify && request.song_column == Some(SongColumn::Reason) && request.album.is_none() && request.albums.is_empty() && request.ids.is_empty();
+                let from = if request.marked_spotify && !album_order {
+                    "track_provider_exclusion excluded INDEXED BY provider_exclusion_list CROSS JOIN track t ON t.id=excluded.track_id JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id"
+                } else if reason_stream {
+                    "spotify_connection_review review INDEXED BY spotify_connection_reason CROSS JOIN track t ON t.id=review.track_id JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id"
+                } else if album_order && request.album.is_none() && target.is_none() && request.album_sort == Sort::Title {
                     "album_browse_order b INDEXED BY album_order_title CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
                 } else if album_order {
                     "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
@@ -392,14 +420,15 @@ fn query_projection(
                 } else {
                     "effective_track_metadata e JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"
                 };
+                let from = if request.song_column == Some(SongColumn::Reason) && !reason_stream { format!("{from} JOIN spotify_connection_review review ON review.track_id=t.id") } else { from.to_owned() };
                 let (display_title, display_year) = if album_order { ("''", "NULL") } else { ("e.title", "e.year") };
                 let (album_title, album_key, edition, metadata_join) = if album_order {
                     ("''", "b.album_id", "r.id", "")
-                } else { ("a.title", "''", "''", "JOIN album_application_metadata a ON a.album_id=r.album_id") };
-                let track_id = if album_order { "t.id" } else { "e.track_id" };
+                } else { ("a.title", if request.unresolved_spotify {"r.album_id"} else {"''"}, "''", "JOIN album_application_metadata a ON a.album_id=r.album_id") };
+                let track_id = if request.song_column == Some(SongColumn::Reason) { "review.track_id" } else if album_order { "t.id" } else { "e.track_id" };
                 format!("SELECT {track_id}, {display_title}, '', {title}, {release}, {disc}, {position}, t.release_id, {album_title}, '', {display_year}, {album_key}, {edition}
                     FROM {from} {metadata_join} {saved}
-                    WHERE 1=1 {album_filter} {track_filter} {scope}")
+                    WHERE 1=1 {album_filter} {track_filter} {scope} {}", if request.marked_spotify && !album_order {"AND excluded.provider='spotify'"} else {""})
             }
         };
     let c = request.after.clone().unwrap_or_default();
@@ -493,6 +522,14 @@ fn query_projection(
     } else {
         ""
     };
+    let joins = if request.unresolved_spotify && request.pane == Pane::Songs && !queue && !ids_only
+    {
+        format!(
+            "{joins} JOIN spotify_connection_review review_display ON review_display.track_id=chosen.id"
+        )
+    } else {
+        joins.to_owned()
+    };
     let final_order = order
         .split(',')
         .map(|key| format!("chosen.{key}"))
@@ -501,9 +538,13 @@ fn query_projection(
     let sql = format!(
         "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} AND (?19 IS NULL OR id IN (SELECT value FROM json_each(?19))) ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) AND (?15 IS NULL OR 1) AND (?16 IS NULL OR 1) AND (?17 IS NULL OR 1) AND (?18 IS NULL OR 1) ORDER BY {final_order}",
         if request.pane == Pane::Songs && !queue {
-            "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names"
+            if request.unresolved_spotify {
+                "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names,CASE WHEN EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=chosen.id AND x.provider='spotify') THEN 'Manually marked not on Spotify' WHEN review_display.state='needs_retry' THEN 'Needs retry · ' || review_display.reason ELSE review_display.reason END,review_display.reason_code"
+            } else {
+                "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names,'',''"
+            }
         } else {
-            "NULL, NULL, 0, ''"
+            "NULL, NULL, 0, '', '', ''"
         }
     );
     let mut statement = connection.prepare(&sql)?;
@@ -537,6 +578,8 @@ fn query_projection(
             let id: String = r.get(0)?;
             if ids_only {
                 return Ok(Row {
+                    connection_reason: String::new(),
+                    connection_reason_code: String::new(),
                     id: id.clone(),
                     title: String::new(),
                     subtitle: String::new(),
@@ -559,6 +602,8 @@ fn query_projection(
             }
             let title: String = r.get(1)?;
             Ok(Row {
+                connection_reason: r.get(19)?,
+                connection_reason_code: r.get(20)?,
                 id: id.clone(),
                 title: title.clone(),
                 subtitle: r.get(2)?,

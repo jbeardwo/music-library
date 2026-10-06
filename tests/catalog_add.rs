@@ -27,6 +27,7 @@ fn release(key: &str) -> Release {
     ];
     Release {
         album: music_library::catalog::Album {
+            release_type: None,
             identity: id("musicbrainz", "release_group", "group"),
             title: "Edition (Live)".into(),
             date: "2001-02-03".into(),
@@ -331,7 +332,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        25
+        29
     );
 }
 

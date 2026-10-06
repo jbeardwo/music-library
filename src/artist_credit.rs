@@ -115,44 +115,19 @@ pub(crate) fn load(
             ));
         }
     };
-    let mut statement=db.prepare(&format!("SELECT c.position,a.name,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,''),i.provider,i.kind,i.external_id FROM {table} c JOIN artist a ON a.id=c.artist_id LEFT JOIN artist_external_identity i ON i.artist_id=a.id WHERE c.{column}=?1 ORDER BY c.position,i.provider,i.kind,i.external_id"))?;
-    let mut result: Vec<LoadedCredit> = vec![];
-    let mut last = None;
-    for row in statement.query_map([key], |r| {
-        Ok((
-            r.get::<_, i64>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, Option<String>>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, Option<String>>(6)?,
-        ))
-    })? {
-        let (position, canonical_name, name, join_phrase, provider, kind, external_id) = row?;
-        if last != Some(position) {
-            result.push(LoadedCredit {
-                canonical_name,
-                evidence: ArtistEvidence {
-                    name,
-                    join_phrase,
-                    identities: vec![],
-                },
-            });
-            last = Some(position);
-        }
-        if let (Some(provider), Some(kind), Some(external_id)) = (provider, kind, external_id) {
-            result
-                .last_mut()
-                .unwrap()
-                .evidence
-                .identities
-                .push(ExternalIdentity {
-                    provider,
-                    kind,
-                    external_id,
-                });
-        }
-    }
-    Ok(result)
+    let rows=db.prepare(&format!("SELECT a.id,a.name,COALESCE(c.credited_name,a.name),COALESCE(c.join_phrase,'') FROM {table} c JOIN artist a ON a.id=c.artist_id WHERE c.{column}=?1 ORDER BY c.position"))?
+        .query_map([key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids = rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>();
+    let expanded = crate::artist_equivalence::identities(db, &ids)?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, canonical_name, name, join_phrase)| LoadedCredit {
+            canonical_name,
+            evidence: ArtistEvidence {
+                name,
+                join_phrase,
+                identities: expanded.get(&id).cloned().unwrap_or_default(),
+            },
+        })
+        .collect())
 }

@@ -172,6 +172,8 @@ impl Library {
                 let id: String = r.get(0)?;
                 let title: String = r.get(1)?;
                 Ok(Row {
+                    connection_reason: String::new(),
+                    connection_reason_code: String::new(),
                     id: id.clone(),
                     title: title.clone(),
                     subtitle: String::new(),
@@ -328,6 +330,8 @@ fn read_selected_entries_direction(
                     available: r.get(8)?,
                 };
                 Ok(Row {
+                    connection_reason: String::new(),
+                    connection_reason_code: String::new(),
                     id: id.clone(),
                     title: track.title.clone(),
                     subtitle: track.artist_names.clone(),
@@ -912,6 +916,8 @@ fn read_view(
                 available: r.get(7)?,
             };
             Ok(Row {
+                connection_reason: String::new(),
+                connection_reason_code: String::new(),
                 id: r.get(0)?,
                 title: track.title.clone(),
                 subtitle: track.artist_names.clone(),

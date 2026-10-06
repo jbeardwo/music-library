@@ -12,6 +12,7 @@ music-library-musicbrainz = { path = "../../adapters/musicbrainz" }
 music-library-spotify = { path = "../../adapters/spotify" }
 music-library-gstreamer = { path = "../../adapters/gstreamer", optional = true }
 music-library = { path = "../.." }
+serde_json = "1"
 url = "2"
 httpdate = "1"
 qmetaobject = "0.2.10"
@@ -20,4 +21,3 @@ tempfile = "3"
 
 [dev-dependencies]
 lofty = "0.25"
-serde_json = "1"

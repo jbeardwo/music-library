@@ -469,7 +469,18 @@ impl Library {
                     external_id: r.get(2)?,
                 })
             })? {
-                result.push((local.release_id.clone(), row?));
+                let identity = row?;
+                if identity.provider == "spotify" {
+                    let eligible: bool = self.store.connection.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM track t WHERE t.release_id=?1 AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion e WHERE e.track_id=t.id AND e.provider='spotify'))",
+                        [local.release_id.as_ref()],
+                        |r| r.get(0),
+                    )?;
+                    if !eligible {
+                        continue;
+                    }
+                }
+                result.push((local.release_id.clone(), identity));
             }
         }
         Ok(result)
@@ -512,9 +523,16 @@ impl Library {
         if !still_referenced {
             return Ok(0);
         }
+        let excluded: HashSet<TrackId> = tx.prepare(
+            "SELECT e.track_id FROM track_provider_exclusion e JOIN track t ON t.id=e.track_id WHERE t.release_id=?1 AND e.provider=?2",
+        )?.query_map(params![release.as_ref(), programs.album.provider], |r| Ok(TrackId(r.get(0)?)))?
+            .collect::<rusqlite::Result<_>>()?;
         let mut associations = 0;
         for (local, outcome) in local.iter().zip(comparisons) {
             if current.1.contains(&local.track_id) {
+                continue;
+            }
+            if excluded.contains(&local.track_id) {
                 continue;
             }
             let has_source: bool = tx.query_row(
