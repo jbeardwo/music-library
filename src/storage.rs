@@ -673,21 +673,13 @@ impl Store {
             })
             .collect::<Result<Vec<_>>>()?;
         let tx = self.connection.transaction()?;
-        let unchanged_ids: Vec<_> = items
-            .iter()
-            .filter(|i| i.metadata.is_none())
-            .filter_map(|i| i.source_id.as_ref().map(|id| id.as_ref().to_owned()))
-            .collect();
-        let unchanged_json =
-            serde_json::to_string(&unchanged_ids).map_err(|e| Error::Invalid(e.to_string()))?;
         let adopted_albums = if root_id.is_some() {
             tx.prepare("SELECT DISTINCT r.album_id FROM local_file_observation l JOIN track_source ts ON ts.source_id=l.source_id JOIN track t ON t.id=ts.track_id JOIN release r ON r.id=t.release_id WHERE l.root_id IS NULL AND l.source_id IN (SELECT value FROM json_each(?1))")?
                 .query_map([serde_json::to_string(&items.iter().filter_map(|i|i.source_id.as_ref().map(AsRef::as_ref)).collect::<Vec<_>>()).expect("source IDs")], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
         } else {
             vec![]
         };
-        let mut affected_sources = tx.prepare("SELECT source_id FROM local_file_observation WHERE source_id IN (SELECT value FROM json_each(?1)) AND available=0")?
-            .query_map([unchanged_json], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut affected_sources = Vec::new();
         let mut source_ids = Vec::with_capacity(items.len());
         for (item, provenance) in items.iter().zip(&observations) {
             let source_id = item.source_id.clone().unwrap_or_else(SourceId::new);
@@ -739,9 +731,6 @@ impl Store {
 
     pub(crate) fn complete_scan(&mut self, root_id: &RootId, scan_id: i64) -> Result<u64> {
         let tx = self.connection.transaction()?;
-        let sources = tx.prepare("SELECT l.source_id FROM local_root_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.root_id=?1 AND l.available=1 AND (s.last_seen_scan_id IS NULL OR s.last_seen_scan_id<>?2)")?
-            .query_map(params![root_id.as_ref(),scan_id], |r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let albums = crate::provenance_acceptance::albums_for_sources(&tx, &sources)?;
         let changed = tx.execute(
             "UPDATE local_file_observation
              SET available = 0, last_observed_at = unixepoch()
@@ -754,7 +743,6 @@ impl Store {
              WHERE id = ?1 AND root_id = ?2 AND status = 'running'",
             params![scan_id, root_id.as_ref()],
         )?;
-        crate::provenance_acceptance::reconcile(&tx, &albums, self.provenance_validator, true)?;
         tx.commit()?;
         Ok(changed as u64)
     }

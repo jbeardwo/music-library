@@ -123,14 +123,14 @@ pub(crate) fn reconcile(
         (
             "album",
             albums,
-            "SELECT r.album_id,ts.source_id,m.provenance_json FROM release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id AND l.available=1 LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id IN (SELECT value FROM json_each(?1))",
+            "SELECT r.album_id,ts.source_id,m.provenance_json FROM release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE r.album_id IN (SELECT value FROM json_each(?1))",
             Scope::Album,
             Semantics::AlbumIdentity,
         ),
         (
             "recording",
             recordings.as_slice(),
-            "SELECT t.recording_id,ts.source_id,m.provenance_json FROM track t CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id AND l.available=1 LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE t.recording_id IN (SELECT value FROM json_each(?1))",
+            "SELECT t.recording_id,ts.source_id,m.provenance_json FROM track t CROSS JOIN track_source ts ON ts.track_id=t.id CROSS JOIN local_file_observation l ON l.source_id=ts.source_id LEFT JOIN file_metadata_observation m ON m.source_id=ts.source_id WHERE t.recording_id IN (SELECT value FROM json_each(?1))",
             Scope::Recording,
             Semantics::RecordingIdentity,
         ),

@@ -166,15 +166,22 @@ fn current_conflicts_retract_and_missing_claims_do_not_vote() {
 }
 
 #[test]
-fn malformed_claims_stay_raw_and_source_unavailability_retracts_only_managed() {
+fn malformed_claims_stay_raw_and_source_unavailability_preserves_identities() {
     let mut f = Fixture::new(vec![promotable("malformed")]);
     assert!(!f.snapshots().is_empty());
     f.assert_no_canonical_ids();
     f.retag(0, promotable(X));
     std::fs::remove_file(f.path(0)).unwrap();
     f.scan();
+    let album = f.evidence().album_id;
+    f.library
+        .as_mut()
+        .unwrap()
+        .reconcile_local_provenance(&album)
+        .unwrap();
+    f.restart();
     for entity in ["album", "recording"] {
-        assert!(accepted(&f, entity).is_empty());
+        assert_eq!(accepted(&f, entity), vec![(X.into(), true)]);
     }
     assert!(f.snapshots()[0].contains(X));
     assert_eq!(f.evidence().tracks.len(), 1);

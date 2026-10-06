@@ -580,3 +580,307 @@ fn real_get_disowned_catalog_tracks_gain_local_sources() {
         "after/reopen: unchanged identities and membership; 10 local sources; local route without another scan"
     );
 }
+
+fn disappearance_cycle(real: bool) {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("db");
+    let root = temp.path().join("music");
+    std::fs::create_dir(&root).unwrap();
+    let file = root.join("song.mp3");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("test-media/Get Disowned/01 Some Grace.mp3");
+    if real {
+        std::fs::copy(&fixture, &file).unwrap();
+    } else {
+        std::fs::write(&file, b"disposable").unwrap();
+    }
+    let mut library = Library::open(&database).unwrap();
+    let release = if real {
+        support::get_disowned()
+    } else {
+        catalog_release()
+    };
+    let imported = library.add_catalog_release(&release).unwrap();
+    let track = imported.track_ids[0].clone();
+    let playlist = library.create_playlist("Preserved").unwrap();
+    library.append_playlist_track(&playlist, &track).unwrap();
+    let entries = playlist_tracks(&library, &playlist);
+    let db = Connection::open(&database).unwrap();
+    let identity = snapshot(&db);
+    let providers = provider_snapshot(&db);
+    let artists = count(&db, "artist");
+    let mut extractor: Box<dyn MetadataExtractor> = if real {
+        Box::new(LoftyMetadataExtractor)
+    } else {
+        Box::new(Tags(tags()))
+    };
+    let mut scan = |library: &mut Library, request| {
+        library
+            .ingest_local(&request, extractor.as_mut(), &mut |_| {})
+            .unwrap()
+    };
+    scan(&mut library, Request::Folder(root.clone()));
+    let root_id = library.local_locations().unwrap()[0].id.clone();
+    let mut capability = remote();
+    capability.unavailable = None;
+    capability.catalog_available = true;
+    let Route::Local(source) = library.playback_route(&track, &capability).unwrap() else {
+        panic!("local")
+    };
+    println!(
+        "before: Track={} source={} route=local",
+        track.as_ref(),
+        source.source_id.as_ref()
+    );
+    assert_eq!(
+        scan(&mut library, Request::Rescan(root_id.clone())).unavailable,
+        0
+    );
+    // Root offline and a partial traversal preserve unseen source availability.
+    let offline = temp.path().join("offline");
+    std::fs::rename(&root, &offline).unwrap();
+    assert!(
+        library
+            .scan_local_root(&root_id, &mut Tags(tags()))
+            .is_err()
+    );
+    assert_eq!(
+        scan(&mut library, Request::Rescan(root_id.clone())).locations_failed,
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT available FROM local_file_observation WHERE source_id=?1",
+            [source.source_id.as_ref()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    std::fs::write(&root, b"root replaced by non-directory").unwrap();
+    assert_eq!(
+        scan(&mut library, Request::Rescan(root_id.clone())).locations_failed,
+        1
+    );
+    std::fs::remove_file(&root).unwrap();
+    std::fs::rename(&offline, &root).unwrap();
+    std::fs::remove_file(&file).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let blocked = root.join("blocked");
+        std::fs::create_dir(&blocked).unwrap();
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o0)).unwrap();
+        assert!(
+            library
+                .scan_local_root(&root_id, &mut Tags(tags()))
+                .is_err()
+        );
+        let partial = scan(&mut library, Request::Rescan(root_id.clone()));
+        std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(partial.locations_failed, 1);
+        assert_eq!(partial.unavailable, 0);
+        assert_eq!(
+            db.query_row(
+                "SELECT available FROM local_file_observation WHERE source_id=?1",
+                [source.source_id.as_ref()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+    assert_eq!(
+        scan(&mut library, Request::Rescan(root_id.clone())).unavailable,
+        1
+    );
+    let Route::Remote(spotify) = library.playback_route(&track, &capability).unwrap() else {
+        panic!("persisted Spotify")
+    };
+    println!(
+        "absent: Track={} source={} route=Spotify {}",
+        track.as_ref(),
+        source.source_id.as_ref(),
+        spotify.external_id
+    );
+    assert_eq!(snapshot(&db), identity);
+    assert_eq!(provider_snapshot(&db), providers);
+    assert_eq!(count(&db, "artist"), artists);
+    assert_eq!(playlist_tracks(&library, &playlist), entries);
+    assert!(
+        !library
+            .search(&SearchRequest {
+                text: release.media[0].tracks[0].title.clone(),
+                ..Default::default()
+            })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(count(&db, "local_source_suppression"), 0);
+    assert_eq!(
+        scan(&mut library, Request::Rescan(root_id.clone())).unavailable,
+        0
+    );
+    drop(library);
+    let mut library = Library::open(&database).unwrap();
+    assert_eq!(
+        library.playback_route(&track, &capability).unwrap(),
+        Route::Remote(spotify)
+    );
+    if real {
+        std::fs::copy(&fixture, &file).unwrap();
+    } else {
+        std::fs::write(&file, b"disposable").unwrap();
+    }
+    scan(&mut library, Request::Rescan(root_id));
+    assert_eq!(
+        library.playback_route(&track, &capability).unwrap(),
+        Route::Local(source.clone())
+    );
+    assert_eq!(count(&db, "local_file_observation"), 1);
+    assert_eq!(snapshot(&db), identity);
+    assert_eq!(provider_snapshot(&db), providers);
+    println!(
+        "returned: Track={} source={} route=local",
+        track.as_ref(),
+        source.source_id.as_ref()
+    );
+}
+#[test]
+fn source_disappearance_preserves_saved_identity_playlist_search_and_restart() {
+    disappearance_cycle(false);
+}
+#[test]
+#[ignore = "uses disposable copy of ignored real-audio test-media"]
+fn real_source_disappearance_local_spotify_local() {
+    disappearance_cycle(true);
+}
+
+#[test]
+fn availability_is_per_source_root_scoped_and_independent_of_suppression() {
+    use music_library::library_removal::Target;
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("db");
+    let mut l = Library::open(&database).unwrap();
+    let track = l.add_catalog_release(&catalog_release()).unwrap().track_ids[0].clone();
+    let mut roots = vec![];
+    let mut paths = vec![];
+    for name in ["one", "two"] {
+        let root = temp.path().join(name);
+        std::fs::create_dir(&root).unwrap();
+        let file = root.join("song.mp3");
+        std::fs::write(&file, b"disposable").unwrap();
+        run(&mut l, Request::Folder(root.clone()), tags());
+        roots.push(l.register_local_root(&root).unwrap());
+        paths.push(file);
+    }
+    let db = Connection::open(&database).unwrap();
+    let mut capability = remote();
+    capability.unavailable = None;
+    std::fs::remove_file(&paths[0]).unwrap();
+    assert_eq!(
+        run(&mut l, Request::Rescan(roots[0].clone()), tags()).unavailable,
+        1
+    );
+    assert!(matches!(
+        l.playback_route(&track, &capability).unwrap(),
+        Route::Local(_)
+    ));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM local_file_observation WHERE available=1",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Same bytes and mtime: the incremental fast path must still check readability.
+        std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o0)).unwrap();
+        assert!(matches!(
+            l.playback_route(&track, &capability).unwrap(),
+            Route::Remote(_)
+        ));
+        assert!(l.scan_local_root(&roots[1], &mut Tags(tags())).is_err());
+        assert_eq!(
+            db.query_row(
+                "SELECT available FROM local_file_observation WHERE root_id=?1",
+                [roots[1].as_ref()],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            run(&mut l, Request::Rescan(roots[1].clone()), tags()).unavailable,
+            0
+        );
+        std::fs::set_permissions(&paths[1], std::fs::Permissions::from_mode(0o600)).unwrap();
+        // Known-unavailable routes stay skipped until a new observation reactivates them.
+        assert!(matches!(
+            l.playback_route(&track, &capability).unwrap(),
+            Route::Remote(_)
+        ));
+        run(&mut l, Request::Rescan(roots[1].clone()), tags());
+        assert!(matches!(
+            l.playback_route(&track, &capability).unwrap(),
+            Route::Local(_)
+        ));
+    }
+    l.remove_library_object(&Target::Track(track.clone()), true)
+        .unwrap();
+    std::fs::remove_file(&paths[1]).unwrap();
+    run(&mut l, Request::Rescan(roots[1].clone()), tags());
+    assert_eq!(count(&db, "local_source_suppression"), 2);
+    std::fs::write(&paths[1], b"disposable").unwrap();
+    run(&mut l, Request::Rescan(roots[1].clone()), tags());
+    assert_eq!(count(&db, "library_membership"), 0);
+    assert_eq!(count(&db, "local_source_suppression"), 2);
+    run(&mut l, Request::Files(vec![paths[1].clone()]), tags());
+    assert_eq!(count(&db, "library_membership"), 1);
+    assert_eq!(count(&db, "local_source_suppression"), 1);
+    assert_eq!(count(&db, "local_file_observation"), 2);
+}
+
+#[test]
+fn reconciliation_and_playback_use_root_and_track_indexes() {
+    let temp = tempfile::tempdir().unwrap();
+    let database = temp.path().join("db");
+    let _library = Library::open(&database).unwrap();
+    let db = Connection::open(database).unwrap();
+    let plan = |sql: &str| {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n")
+    };
+    let reconciliation = plan(
+        "EXPLAIN QUERY PLAN UPDATE local_file_observation SET available=0 WHERE available=1 AND source_id IN (SELECT source_id FROM local_root_source WHERE root_id='root' AND (last_seen_scan_id IS NULL OR last_seen_scan_id<>123))",
+    );
+    assert!(
+        reconciliation.contains(
+            "SEARCH local_root_source USING INDEX sqlite_autoindex_local_root_source_1 (root_id=?)"
+        ),
+        "{reconciliation}"
+    );
+    assert!(
+        !reconciliation.contains("SCAN local_file_observation"),
+        "{reconciliation}"
+    );
+    let playback = plan(
+        "EXPLAIN QUERY PLAN SELECT ps.id,l.path FROM track_source ts CROSS JOIN playable_source ps ON ps.id=ts.source_id CROSS JOIN local_file_observation l ON l.source_id=ps.id WHERE ts.track_id='track' AND ps.kind='local_file' AND l.available=1 ORDER BY ts.source_id COLLATE BINARY",
+    );
+    assert!(
+        playback.contains(
+            "SEARCH ts USING COVERING INDEX sqlite_autoindex_track_source_2 (track_id=?)"
+        ),
+        "{playback}"
+    );
+    assert!(!playback.contains("SCAN l"), "{playback}");
+}

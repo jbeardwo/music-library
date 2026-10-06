@@ -667,10 +667,10 @@ mod tests {
         assert!(library.available_playback_source(&track).unwrap().is_none());
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../test-media/Get Disowned/01 Some Grace.mp3");
-        std::fs::copy(source, root.join("Some Grace.mp3")).unwrap();
+        std::fs::copy(&source, root.join("Some Grace.mp3")).unwrap();
         let report = library
             .ingest_local(
-                &Request::Folder(root),
+                &Request::Folder(root.clone()),
                 &mut LoftyMetadataExtractor,
                 &mut |_| {},
             )
@@ -710,6 +710,88 @@ mod tests {
             playback.state().media_position_ms
         );
         playback.stop().unwrap();
+        let local_source = library.available_playback_source(&track).unwrap().unwrap();
+        let root_id = library.local_locations().unwrap()[0].id.clone();
+        std::fs::remove_file(root.join("Some Grace.mp3")).unwrap();
+        let report = library
+            .ingest_local(
+                &Request::Rescan(root_id.clone()),
+                &mut LoftyMetadataExtractor,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(report.unavailable, 1);
+        let ready = RemoteCapability {
+            provider: "spotify",
+            unavailable: None,
+            catalog_available: false,
+            accepts: |_| true,
+        };
+        assert!(matches!(
+            library.playback_route(&track, &ready).unwrap(),
+            Route::Remote(_)
+        ));
+        assert_eq!(playback.state().queue, queue);
+        println!(
+            "disappeared: Track={} source={} route=Spotify",
+            track.as_ref(),
+            local_source.source_id.as_ref()
+        );
+        if let Some(probe) = std::env::var_os("MUSIC_LIBRARY_LIFECYCLE_SPOTIFY_PROBE") {
+            assert!(
+                std::process::Command::new(probe)
+                    .arg(&database)
+                    .arg(track.as_ref())
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        drop(library);
+        let mut library = Library::open(&database).unwrap();
+        assert!(matches!(
+            library.playback_route(&track, &ready).unwrap(),
+            Route::Remote(_)
+        ));
+        std::fs::copy(&source, root.join("Some Grace.mp3")).unwrap();
+        library
+            .ingest_local(
+                &Request::Rescan(root_id),
+                &mut LoftyMetadataExtractor,
+                &mut |_| {},
+            )
+            .unwrap();
+        assert_eq!(
+            library
+                .available_playback_source(&track)
+                .unwrap()
+                .unwrap()
+                .source_id,
+            local_source.source_id
+        );
+        playback.play(&library).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            let event = receive.recv_timeout(Duration::from_secs(2)).unwrap();
+            if let EngineEventKind::Error(error) = &event.kind {
+                panic!("{error}");
+            }
+            playback.handle_event(&library, event).unwrap();
+            if playback.state().status == PlaybackStatus::Playing
+                && playback.state().media_position_ms > 0
+            {
+                break;
+            }
+        }
+        println!(
+            "restored: Track={} source={} backend=GStreamer/local at {} ms",
+            track.as_ref(),
+            local_source.source_id.as_ref(),
+            playback.state().media_position_ms
+        );
+        assert_eq!(playback.state().queue, queue);
+        playback.stop().unwrap();
         drop(playback);
         drop(library);
         let library = Library::open(&database).unwrap();
@@ -726,7 +808,10 @@ mod tests {
         );
         assert_eq!(
             library
-                .search(&music_library::domain::SearchRequest{limit:200,..Default::default()})
+                .search(&music_library::domain::SearchRequest {
+                    limit: 200,
+                    ..Default::default()
+                })
                 .unwrap()
                 .len(),
             10

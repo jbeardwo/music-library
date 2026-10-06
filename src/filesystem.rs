@@ -111,6 +111,11 @@ fn scan_started(
     root: &Path,
     extractor: &mut dyn MetadataExtractor,
 ) -> Result<ScanReport> {
+    // A configured root must still be an inspectable directory, not a replacement file.
+    std::fs::read_dir(root).map_err(|source| Error::Filesystem {
+        path: root.to_path_buf(),
+        source,
+    })?;
     let mut report = ScanReport::default();
     let mut batch = Vec::with_capacity(SCAN_BATCH_SIZE);
     for entry in WalkDir::new(root).follow_links(false) {
@@ -125,7 +130,19 @@ fn scan_started(
             continue;
         }
         let known = store.known_local_source(root_id, entry.path())?;
-        let item = observe(entry.path(), known.as_ref(), extractor)?;
+        let item = match observe(entry.path(), known.as_ref(), extractor) {
+            Ok(item) => item,
+            Err(error) => {
+                // This route failed; unseen siblings are not evidence of absence.
+                if let Some(known) = known {
+                    store.connection.execute(
+                        "UPDATE local_file_observation SET available=0,last_observed_at=unixepoch() WHERE source_id=?1 AND available=1",
+                        [known.source_id.as_ref()],
+                    )?;
+                }
+                return Err(error);
+            }
+        };
         if item.metadata.is_some() {
             report.parsed += 1;
         } else {
@@ -151,7 +168,11 @@ pub(crate) fn observe(
     known: Option<&crate::storage::KnownLocalSource>,
     extractor: &mut dyn MetadataExtractor,
 ) -> Result<ScannedLocalSource> {
-    let attributes = std::fs::metadata(path).map_err(|source| Error::Filesystem {
+    let file = std::fs::File::open(path).map_err(|source| Error::Filesystem {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let attributes = file.metadata().map_err(|source| Error::Filesystem {
         path: path.to_path_buf(),
         source,
     })?;

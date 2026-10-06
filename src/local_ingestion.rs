@@ -39,6 +39,8 @@ pub struct Report {
     pub unsupported: u64,
     pub unreadable: u64,
     pub locations_failed: u64,
+    /// Known routes made unavailable by completed scans or failed readability checks.
+    pub unavailable: u64,
     /// Successfully admitted Releases, also the ordinary post-import scheduling input.
     pub releases: Vec<ImportedRelease>,
 }
@@ -227,6 +229,10 @@ impl Library {
         let path = self.store.root_path(root)?;
         let scan = self.store.begin_scan(root)?;
         let result = (|| -> Result<bool> {
+            if std::fs::read_dir(&path).is_err() {
+                report.unreadable += 1;
+                return Ok(false);
+            }
             let mut complete = true;
             let mut batch = Vec::with_capacity(BATCH);
             for entry in WalkDir::new(&path).follow_links(false) {
@@ -276,7 +282,7 @@ impl Library {
         })();
         match result {
             Ok(true) => {
-                self.store.complete_scan(root, scan)?;
+                report.unavailable += self.store.complete_scan(root, scan)?;
             }
             Ok(false) => {
                 self.store.fail_scan(scan)?;
@@ -339,6 +345,7 @@ impl Library {
         let mut items = Vec::with_capacity(paths.len());
         let mut admitted = Vec::with_capacity(paths.len());
         let mut seen = Vec::with_capacity(paths.len());
+        let mut unavailable = Vec::new();
         for path in paths {
             let candidates: Vec<_> = known.get(path).into_iter().flatten().collect();
             // Never merge ambiguous pre-existing sources from overlapping roots.
@@ -362,6 +369,16 @@ impl Library {
             let known = candidates.first().copied();
             report.scanned += 1;
             if let Some(k) = known.filter(|k| !explicit && k.suppressed) {
+                // Suppression is independent of availability; verify readability without parsing.
+                if !std::fs::File::open(path)
+                    .and_then(|f| f.metadata())
+                    .is_ok_and(|m| m.is_file())
+                {
+                    seen.push(k.observation.source_id.clone());
+                    unavailable.push(k.observation.source_id.clone());
+                    report.unreadable += 1;
+                    continue;
+                }
                 // Observe presence without reparsing excluded audio or admitting membership.
                 items.push(crate::storage::ScannedLocalSource {
                     source_id: Some(k.observation.source_id.clone()),
@@ -386,6 +403,7 @@ impl Library {
                 Err(_) => {
                     if let Some(k) = known {
                         seen.push(k.observation.source_id.clone());
+                        unavailable.push(k.observation.source_id.clone());
                     }
                     report.unreadable += 1;
                 }
@@ -399,6 +417,12 @@ impl Library {
             tx.execute("INSERT INTO local_root_source(root_id,source_id,last_seen_scan_id) SELECT ?1,value,?2 FROM json_each(?3) WHERE 1
                 ON CONFLICT(root_id,source_id) DO UPDATE SET last_seen_scan_id=excluded.last_seen_scan_id",params![root.map(AsRef::as_ref),scan,&json])?;
             tx.commit()?;
+        }
+        if !unavailable.is_empty() {
+            report.unavailable += self.store.connection.execute(
+                "UPDATE local_file_observation SET available=0,last_observed_at=unixepoch() WHERE available=1 AND source_id IN (SELECT value FROM json_each(?1))",
+                [source_json(&unavailable)],
+            )? as u64;
         }
         self.store.apply_local_batch(root, scan, &items)?;
         let json = source_json(&admitted);

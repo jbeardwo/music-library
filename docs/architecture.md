@@ -1607,9 +1607,10 @@ reread occurs. Missing provenance never blocks import or matching.
 Unavailable sources retain their last observations but do not contribute to current
 local evidence; completed scans remain authoritative for availability. Reappearance
 can restore that evidence. Deleting a source cascades its observation row through the
-existing foreign key. Neither action deletes its Album/Tracks/membership. Independently
-established identities remain protected; locally managed acceptance follows the policy
-below. The local evidence snapshot keeps observations separate from
+existing foreign key. Neither action deletes its Album/Tracks/membership. All
+established identities remain protected when a route becomes unavailable; identity
+acceptance uses preserved metadata observations, independently of availability.
+The local evidence snapshot keeps observations separate from
 the comparator's trusted identity fields.
 
 Album/group and edition observations must agree within each provider/kind namespace;
@@ -1643,22 +1644,25 @@ missing claims are neutral, invalid claims block acceptance, and conflicts never
 Completeness, edition identity, Artist credits, and network availability are irrelevant.
 Artist, edition, occurrence and ISRC promotion remain deferred. No entities merge.
 Recording identities belong to application Recordings, not release-specific Tracks;
-all current sources across Tracks sharing a Recording contribute to its reconciliation.
+all preserved source observations across Tracks sharing a Recording contribute to
+its reconciliation, including unavailable routes.
 
 Migration 0010 adds `album_provenance_identity` and `recording_provenance_identity`
 ownership markers, referencing the existing canonical associations with cascading
 foreign keys. Unmarked identities are independent; migration protects all existing
 associations. Reconciliation atomically retracts managed associations when support
-disappears or conflicts, and accepts a replacement only if unanimous and not opposed
+is removed by a metadata update or conflicts, and accepts a replacement only if
+unanimous and not opposed
 by independent canonical values. An independent INSERT, including an idempotent
 confirmation, clears ownership via a BEFORE INSERT trigger. Catalog Album reuse
 explicitly confirms its identity; Recording reassignment preserves ownership unless
 either side independently established that association. Raw observations never change
 as a side effect of acceptance.
 
-Source metadata updates, reappearance, completed-scan unavailability and import
-association reconcile only affected Albums/Recordings, in the existing transaction.
-Unchanged available sources skip reconciliation. `Library::reconcile_local_provenance`
+Source metadata updates and import association reconcile only affected
+Albums/Recordings, in the existing transaction. Availability-only transitions
+never revoke identities or require identity reconciliation. Unchanged sources skip
+reconciliation. `Library::reconcile_local_provenance`
 also permits scoped reevaluation after explicit association/lifecycle changes; direct
 SQL deletion is not an application lifecycle API and needs this explicit reevaluation.
 Reads batch source snapshots and canonical associations using existing Album, Track,
@@ -2165,3 +2169,5 @@ Playlist enrichment refreshes a bounded existing window by stable entry identity
 QML patches rows with unchanged ordered IDs instead of clearing the ListModel.
 Detail-column widths change independently and survive view navigation in window
 state. Outer pane splitting and queue snapshot ownership are unchanged.
+
+Local source disappearance and recovery are documented in [Source lifecycle](source-lifecycle.md).
