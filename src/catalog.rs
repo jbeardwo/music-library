@@ -159,6 +159,12 @@ pub struct SongCandidate {
 
 /// Calls may block. UI callers must dispatch them off their owning thread.
 pub trait CatalogProvider: Send {
+    /// Begin a context; persistent caches control freshness rather than session caches.
+    fn begin_discovery(&mut self) -> bool {
+        false
+    }
+    /// Explicit discovery refresh, independent of matcher retries.
+    fn refresh_discovery(&mut self, _refresh: bool) {}
     fn catalog_albums(&mut self, query: &str) -> Result<Page<AlbumCandidate>, CatalogError> {
         self.search_albums(query, 0)
     }

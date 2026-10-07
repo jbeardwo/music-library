@@ -1,3 +1,5 @@
+> Provider discovery and batch retry policy were updated by [Spotify provider discovery and quota lifecycle](spotify-provider-discovery.md). Its persisted query cache, 30-day TTL, shared Retry-After deadline and removal of automatic per-Track batch fallback supersede the older retry descriptions below.
+
 # Spotify reconciliation lifecycle
 
 ## Versioned local reconciliation

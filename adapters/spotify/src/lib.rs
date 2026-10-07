@@ -87,6 +87,18 @@ struct Token {
     value: String,
     expires: Instant,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiscoveryRequestReason {
+    ExplicitRefresh,
+    Expired,
+    NoCompletedResult,
+}
+#[derive(Clone, Debug)]
+pub struct CatalogRequestAudit {
+    pub category: String,
+    pub fingerprint: String,
+    pub reason: DiscoveryRequestReason,
+}
 pub struct Spotify {
     config: Config,
     agent: ureq::Agent,
@@ -99,6 +111,13 @@ pub struct Spotify {
     configuration_error: Option<CatalogError>,
     candidate_counts: HashMap<String, u32>,
     request_counts: (u64, u64),
+    discovery: Option<music_library::Library>,
+    cooldown_until: i64,
+    refresh_discovery: bool,
+    cache_only: bool,
+    cache_miss: bool,
+    categories: HashMap<String, u64>,
+    request_audit: std::collections::VecDeque<CatalogRequestAudit>,
 }
 impl std::fmt::Debug for Spotify {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -131,6 +150,13 @@ impl Spotify {
             configuration_error: None,
             candidate_counts: HashMap::new(),
             request_counts: (0, 0),
+            discovery: None,
+            cooldown_until: 0,
+            refresh_discovery: false,
+            cache_only: false,
+            cache_miss: false,
+            categories: HashMap::new(),
+            request_audit: Default::default(),
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(30)))
                 .max_redirects(0)
@@ -138,6 +164,63 @@ impl Spotify {
                 .build()
                 .into(),
         }
+    }
+    /// Share persisted discovery and provider cooldown across all catalog workers.
+    pub fn with_library(mut self, path: Option<&str>) -> Result<Self, CatalogError> {
+        self.discovery = path
+            .map(music_library::Library::open)
+            .transpose()
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        Ok(self)
+    }
+    /// Diagnostic preload: exact current query, TTL and market, with no HTTP on misses.
+    pub fn cached_songs_in_library(
+        path: &str,
+        market: &str,
+        input: &music_library::song_resolution::Input,
+    ) -> Result<Option<Page<music_library::song_resolution::Candidate>>, CatalogError> {
+        let config = Config::new("offline".into(), "offline".into(), market.into())?;
+        Self::new(config)
+            .with_library(Some(path))?
+            .try_cached_songs(input)
+    }
+    pub fn try_cached_songs(
+        &mut self,
+        input: &music_library::song_resolution::Input,
+    ) -> Result<Option<Page<music_library::song_resolution::Candidate>>, CatalogError> {
+        use music_library::song_resolution::SongSearch as _;
+        let previous = (self.cache_only, self.refresh_discovery);
+        self.cache_only = true;
+        self.refresh_discovery = false;
+        self.cache_miss = false;
+        let result = self.search_songs(input);
+        self.cache_only = previous.0;
+        self.refresh_discovery = previous.1;
+        if self.cache_miss {
+            Ok(None)
+        } else {
+            result.map(Some)
+        }
+    }
+    pub fn refresh_discovery(&mut self, refresh: bool) {
+        self.refresh_discovery = refresh;
+        if refresh {
+            self.programs.clear();
+            self.artist_names.clear();
+        }
+    }
+    pub fn request_categories(&self) -> &HashMap<String, u64> {
+        &self.categories
+    }
+    /// Last 64 actual catalog HTTP attempts; no logging or credentials.
+    pub fn request_audit(&self) -> &std::collections::VecDeque<CatalogRequestAudit> {
+        &self.request_audit
+    }
+    fn now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64
     }
     fn sanitize(&self, text: &str) -> String {
         let mut result = text
@@ -153,7 +236,7 @@ impl Spotify {
         self.request_counts
     }
     fn response<T: DeserializeOwned>(
-        &self,
+        &mut self,
         mut response: ureq::http::Response<ureq::Body>,
         auth: bool,
     ) -> Result<T, CatalogError> {
@@ -166,6 +249,16 @@ impl Spotify {
         Timing::event(format_args!(
             "spotify status={status} token_endpoint={auth}"
         ));
+        if status == 429 {
+            let now = Self::now();
+            self.cooldown_until = now.saturating_add(
+                music_library::spotify_lifecycle::spotify_retry_delay(retry_after.as_deref(), now),
+            );
+            if let Some(db) = &self.discovery {
+                db.retain_spotify_cooldown(self.cooldown_until)
+                    .map_err(|e| CatalogError::Other(e.to_string()))?;
+            }
+        }
         let body = response
             .body_mut()
             .with_config()
@@ -187,8 +280,19 @@ impl Spotify {
                     .and_then(|v| v.as_str())
                     .unwrap_or("Catalog request failed")
             };
-            let message =
+            let mut message =
                 self.sanitize(&format!("Spotify HTTP {status}: {detail}; reason={reason}"));
+            if status == 429 {
+                let seconds = music_library::spotify_lifecycle::spotify_retry_delay(
+                    retry_after.as_deref(),
+                    Self::now(),
+                );
+                message.push_str(&format!(
+                    ". Retry available in {}h {}m ({seconds} seconds)",
+                    seconds / 3600,
+                    (seconds % 3600) / 60
+                ));
+            }
             return Err(match status {
                 429 => CatalogError::RateLimited {
                     status,
@@ -270,10 +374,90 @@ impl Spotify {
         url.query_pairs_mut()
             .append_pair("market", &self.config.market)
             .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())));
+        let fingerprint = format!(
+            "spotify:{}:{}",
+            music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
+            url
+        );
+        let now = Self::now();
+        if !self.refresh_discovery
+            && let Some(db) = &self.discovery
+            && let Some(response) = db
+                .spotify_discovery_response(&fingerprint, now)
+                .map_err(|e| CatalogError::Other(e.to_string()))?
+        {
+            return serde_json::from_str(&response).map_err(|e| CatalogError::Other(e.to_string()));
+        }
+        if self.cache_only {
+            self.cache_miss = true;
+            return Err(CatalogError::Other(
+                "No reusable persisted Spotify discovery".into(),
+            ));
+        }
+        let remaining = self
+            .discovery
+            .as_ref()
+            .map(|db| db.spotify_cooldown_remaining(now))
+            .transpose()
+            .map_err(|e| CatalogError::Other(e.to_string()))?
+            .unwrap_or(0)
+            .max(self.cooldown_until.saturating_sub(now));
+        if remaining > 0 {
+            return Err(CatalogError::RateLimited {
+                status: 429,
+                message: format!(
+                    "Spotify requested a wait of {remaining} seconds; remaining work was not queried"
+                ),
+                retry_after: Some(remaining.to_string()),
+            });
+        }
+        let reason = if self.refresh_discovery {
+            DiscoveryRequestReason::ExplicitRefresh
+        } else if self
+            .discovery
+            .as_ref()
+            .map(|db| db.spotify_discovery_status(&fingerprint, now))
+            .transpose()
+            .map_err(|e| CatalogError::Other(e.to_string()))?
+            .is_some_and(|s| {
+                s.freshness == music_library::spotify_lifecycle::DiscoveryFreshness::Expired
+            })
+        {
+            DiscoveryRequestReason::Expired
+        } else {
+            DiscoveryRequestReason::NoCompletedResult
+        };
         for retry in 0..=1 {
             let token = self.token()?.to_owned();
             let _timing = Timing::new(format!("spotify.{path}.http"));
             self.request_counts.1 += 1;
+            let category = if path == "search" {
+                format!(
+                    "{} search",
+                    params
+                        .iter()
+                        .find(|(k, _)| *k == "type")
+                        .map(|(_, v)| v.as_str())
+                        .unwrap_or("catalog")
+                )
+            } else if path.ends_with("/tracks") {
+                "Album program/pagination".into()
+            } else if path.starts_with("albums/") {
+                "Album detail".into()
+            } else if path.starts_with("tracks/") {
+                "Track detail".into()
+            } else {
+                "Artist detail/pagination".into()
+            };
+            if self.request_audit.len() == 64 {
+                self.request_audit.pop_front();
+            }
+            self.request_audit.push_back(CatalogRequestAudit {
+                category: category.clone(),
+                fingerprint: fingerprint.clone(),
+                reason: reason.clone(),
+            });
+            *self.categories.entry(category).or_default() += 1;
             let response = self
                 .agent
                 .get(url.as_str())
@@ -284,11 +468,18 @@ impl Spotify {
                 self.token = None;
                 continue;
             }
-            let result = self.response(response, false);
+            let result: Result<serde_json::Value, CatalogError> = self.response(response, false);
             if let Err(error @ CatalogError::Configuration { .. }) = &result {
                 self.configuration_error = Some(error.clone());
             }
-            return result;
+            let value = result?;
+            let parsed = serde_json::from_value(value.clone())
+                .map_err(|e| CatalogError::Other(format!("Invalid Spotify response: {e}")))?;
+            if let Some(db) = &self.discovery {
+                db.persist_spotify_discovery(&fingerprint, &value.to_string(), now)
+                    .map_err(|e| CatalogError::Other(e.to_string()))?;
+            }
+            return Ok(parsed);
         }
         unreachable!()
     }
@@ -307,6 +498,24 @@ impl Spotify {
     }
     fn artist_name(&mut self, artist: &ExternalIdentity) -> Result<String, CatalogError> {
         Self::require(artist, "artist")?;
+        if !self.refresh_discovery
+            && let Some(db) = &self.discovery
+        {
+            let key = format!(
+                "spotify-name:{}:{}:{}",
+                music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
+                self.config.market,
+                artist.external_id
+            );
+            if let Some(value) = db
+                .spotify_discovery_response(&key, Self::now())
+                .map_err(|e| CatalogError::Other(e.to_string()))?
+            {
+                let name: String =
+                    serde_json::from_str(&value).map_err(|e| CatalogError::Other(e.to_string()))?;
+                return Ok(name);
+            }
+        }
         if let Some(name) = self.artist_names.get(&artist.external_id) {
             return Ok(name.clone());
         }
@@ -314,14 +523,29 @@ impl Spotify {
         if found.id != artist.external_id {
             return Err(config("Spotify returned another Artist"));
         }
-        self.remember_artist(&found);
+        self.remember_artist(&found)?;
         Ok(found.name)
     }
-    fn remember_artist(&mut self, a: &Artist) {
+    fn remember_artist(&mut self, a: &Artist) -> Result<(), CatalogError> {
+        if let Some(db) = &self.discovery {
+            let key = format!(
+                "spotify-name:{}:{}:{}",
+                music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
+                self.config.market,
+                a.id
+            );
+            db.persist_spotify_discovery(
+                &key,
+                &serde_json::to_string(&a.name).unwrap(),
+                Self::now(),
+            )
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        }
         if self.artist_names.len() >= 64 {
             self.artist_names.clear();
         }
         self.artist_names.insert(a.id.clone(), a.name.clone());
+        Ok(())
     }
     fn scoped_albums(
         &mut self,
@@ -561,6 +785,9 @@ impl music_library::song_resolution::SongSearch for Spotify {
         &mut self,
         input: &music_library::song_resolution::Input,
     ) -> Result<Page<music_library::song_resolution::Candidate>, CatalogError> {
+        if self.discovery.is_some() {
+            self.artist_names.clear();
+        }
         if input.spotify_excluded {
             return Ok(Page {
                 items: vec![],
@@ -661,6 +888,18 @@ impl music_library::song_resolution::SongSearch for Spotify {
     }
 }
 impl CatalogProvider for Spotify {
+    fn begin_discovery(&mut self) -> bool {
+        if self.discovery.is_some() {
+            self.programs.clear();
+            self.artist_names.clear();
+            true
+        } else {
+            false
+        }
+    }
+    fn refresh_discovery(&mut self, refresh: bool) {
+        Spotify::refresh_discovery(self, refresh);
+    }
     fn browse_artist(
         &mut self,
         artist: &ExternalIdentity,
@@ -822,7 +1061,7 @@ impl CatalogProvider for Spotify {
                 "spotify artist candidate id={} name={:?}",
                 a.id, a.name
             ));
-            self.remember_artist(&a);
+            self.remember_artist(&a)?;
             items.push(ArtistCandidate {
                 identity: id("artist", &a.id),
                 name: a.name,

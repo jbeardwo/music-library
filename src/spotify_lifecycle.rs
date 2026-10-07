@@ -206,10 +206,8 @@ impl Library {
                 serde_json::from_str(page).map_err(|e| Error::Invalid(e.to_string()))?;
             // A new discovery scope needs a fresh complete page. Evidence within the same
             // scope (date, type, positions, trusted IDs/equivalence) may be reconsidered locally.
-            if !page.items.is_empty()
-                && page.next_offset.is_none()
-                && crate::matching::normalize_album_title(&snapshot.title)
-                    == crate::matching::normalize_album_title(&input.title)
+            if crate::matching::normalize_album_title(&snapshot.title)
+                == crate::matching::normalize_album_title(&input.title)
                 && crate::matching::normalize_album_title(&snapshot.album)
                     == crate::matching::normalize_album_title(&input.album)
                 && snapshot.primary_artist.as_ref().map(|a| &a.name)
@@ -259,5 +257,140 @@ impl Library {
         self.store.connection.execute("UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0 WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
         batch.needs_retry += 1;
         Ok(())
+    }
+}
+
+/// Successful discovery expires lazily; browsing never refreshes it.
+pub const DISCOVERY_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
+/// Query construction/breadth only. Never increment for evaluator changes.
+pub const SEARCH_STRATEGY_VERSION: u32 = 1;
+impl Library {
+    pub fn database_path(&self) -> Option<String> {
+        self.store
+            .connection
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(str::to_owned)
+    }
+    pub fn spotify_discovery_response(
+        &self,
+        fingerprint: &str,
+        now: i64,
+    ) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        Ok(self.store.connection.query_row(
+            "SELECT response_json FROM spotify_discovery WHERE fingerprint=?1 AND completed_at>?2",
+            params![fingerprint, now - DISCOVERY_TTL_SECONDS], |r| r.get(0)).optional()?)
+    }
+    pub fn persist_spotify_discovery(
+        &self,
+        fingerprint: &str,
+        response: &str,
+        now: i64,
+    ) -> Result<()> {
+        // Incremental retention; never purge on failed refresh, and bound cleanup work.
+        self.store.connection.execute("DELETE FROM spotify_discovery WHERE fingerprint IN(SELECT fingerprint FROM spotify_discovery WHERE completed_at<?1 AND fingerprint<>?2 ORDER BY completed_at LIMIT 32)",params![now-DISCOVERY_TTL_SECONDS,fingerprint])?;
+        self.store.connection.execute("INSERT INTO spotify_discovery VALUES(?1,?2,?3) ON CONFLICT(fingerprint) DO UPDATE SET response_json=excluded.response_json,completed_at=excluded.completed_at", params![fingerprint,response,now])?;
+        Ok(())
+    }
+    pub fn spotify_cooldown_remaining(&self, now: i64) -> Result<i64> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .store
+            .connection
+            .query_row(
+                "SELECT until_epoch FROM provider_cooldown WHERE provider='spotify'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            .saturating_sub(now)
+            .max(0))
+    }
+    pub fn retain_spotify_cooldown(&self, until: i64) -> Result<()> {
+        self.store.connection.execute("INSERT INTO provider_cooldown VALUES('spotify',?1) ON CONFLICT(provider) DO UPDATE SET until_epoch=max(until_epoch,excluded.until_epoch)",[until])?;
+        Ok(())
+    }
+}
+
+/// Both delta-seconds and HTTP-date Retry-After forms; injected time for tests.
+pub fn spotify_retry_delay(header: Option<&str>, now: i64) -> i64 {
+    header
+        .and_then(|s| {
+            s.trim().parse::<i64>().ok().or_else(|| {
+                httpdate::parse_http_date(s.trim())
+                    .ok()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|d| (d.as_secs() as i64).saturating_sub(now))
+            })
+        })
+        .unwrap_or(30)
+        .max(1)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiscoveryFreshness {
+    NeverSearched,
+    Fresh,
+    Expired,
+}
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct DiscoveryStatus {
+    pub freshness: DiscoveryFreshness,
+    pub completed_at: Option<i64>,
+    pub cached_candidate_count: Option<usize>,
+    pub has_unfetched_pages: bool,
+    pub provider_retry_in_seconds: i64,
+}
+impl Library {
+    /// Diagnostic lookup for an exact query fingerprint; no provider activity.
+    pub fn spotify_discovery_status(&self, fingerprint: &str, now: i64) -> Result<DiscoveryStatus> {
+        use rusqlite::OptionalExtension;
+        let row: Option<(i64, String)> = self
+            .store
+            .connection
+            .query_row(
+                "SELECT completed_at,response_json FROM spotify_discovery WHERE fingerprint=?1",
+                [fingerprint],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let mut status = DiscoveryStatus {
+            freshness: DiscoveryFreshness::NeverSearched,
+            completed_at: None,
+            cached_candidate_count: None,
+            has_unfetched_pages: false,
+            provider_retry_in_seconds: self.spotify_cooldown_remaining(now)?,
+        };
+        if let Some((completed, response)) = row {
+            let value: serde_json::Value =
+                serde_json::from_str(&response).map_err(|e| Error::Invalid(e.to_string()))?;
+            let page = value
+                .get("albums")
+                .or_else(|| value.get("tracks"))
+                .or_else(|| value.get("artists"))
+                .unwrap_or(&value);
+            status.cached_candidate_count =
+                page.get("items").and_then(|v| v.as_array()).map(Vec::len);
+            status.has_unfetched_pages = page.get("next").is_some_and(|v| !v.is_null())
+                || page
+                    .get("total")
+                    .and_then(|v| v.as_u64())
+                    .is_some_and(|total| {
+                        page.get("offset").and_then(|v| v.as_u64()).unwrap_or(0)
+                            + (status.cached_candidate_count.unwrap_or(0) as u64)
+                            < total
+                    });
+            status.completed_at = Some(completed);
+            status.freshness = if completed > now - DISCOVERY_TTL_SECONDS {
+                DiscoveryFreshness::Fresh
+            } else {
+                DiscoveryFreshness::Expired
+            };
+        }
+        Ok(status)
     }
 }

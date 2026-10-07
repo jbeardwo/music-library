@@ -190,6 +190,11 @@ ApplicationWindow {
                     enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
                     onClicked: window.bridge.spotify_resolve(spotifySearchArtist.text.trim().length > 0 ? "search-artist:" + spotifySearchArtist.text.trim() : "search", -1)
                 }
+                Button {
+                    text: "Search Spotify again (refresh provider results)"
+                    enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending
+                    onClicked: window.bridge.spotify_resolve("refresh", -1)
+                }
                 Label {
                     text: window.spotifyPlayback.resolutionMessage
                     textFormat: Text.PlainText
@@ -331,6 +336,11 @@ ApplicationWindow {
                     text: window.spotifyPlayback.albumPending ? "Evaluating Album…" : "Re-evaluate Album matching"
                     enabled: window.spotifyPlayback.title.length > 0 && !window.spotifyPlayback.albumPending && !window.spotifyPlayback.resolutionPending && !window.spotifyPlayback.available
                     onClicked: window.bridge.spotify_album_retry()
+                }
+                Button {
+                    text: "Search Spotify again for this Album"
+                    enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.albumPending && !window.spotifyPlayback.resolutionPending
+                    onClicked: window.bridge.spotify_album_refresh()
                 }
                 ScrollView {
                     contentWidth: availableWidth
@@ -1725,7 +1735,7 @@ ApplicationWindow {
         RowLayout {
             visible: pane.reviewTable
             ComboBox { objectName: "spotifyReviewMode"; model: ["Unresolved", "Marked Not on Spotify"]; currentIndex: window.library.reviewMarked ? 1 : 0; onActivated: window.bridge.browse_action("review-mode",2,currentIndex === 1 ? "marked" : "unresolved") }
-            Button { objectName: "spotifyRetryUnresolved"; text: "Retry unresolved"; ToolTip.visible: hovered; ToolTip.text: "Retries up to 20 Albums, then checks all their remaining Tracks in bounded pages. Click again for the next Album batch."; enabled: !window.library.reviewRetryPending && !window.library.reviewLocalActive; visible: !window.library.reviewMarked; onClicked: window.bridge.browse_action("review-retry",2,"") }
+            Button { objectName: "spotifyRetryUnresolved"; text: "Retry unresolved"; ToolTip.visible: hovered; ToolTip.text: "Re-evaluates up to 20 Albums using fresh cached discovery where available. Unresolved Tracks can be searched individually. Click again for the next Album batch."; enabled: !window.library.reviewRetryPending && !window.library.reviewLocalActive; visible: !window.library.reviewMarked; onClicked: window.bridge.browse_action("review-retry",2,"") }
             Label { text: window.library.reviewMessage || ""; Layout.fillWidth: true; wrapMode: Text.Wrap }
         }
         RowLayout {

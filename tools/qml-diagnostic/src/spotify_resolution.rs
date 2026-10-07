@@ -4,11 +4,7 @@ use music_library::{
     song_resolution::{Candidate, Input, SongSearch},
 };
 use music_library_spotify::Spotify;
-use std::{
-    sync::mpsc,
-    thread,
-    time::{Duration, Instant},
-};
+use std::{sync::mpsc, thread};
 pub struct Reply {
     pub generation: u64,
     pub input: Input,
@@ -18,6 +14,7 @@ pub struct Reply {
 pub struct Worker {
     send: Option<mpsc::SyncSender<(u64, Input, Option<String>)>>,
     join: Option<thread::JoinHandle<()>>,
+    refresh: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Worker {
     #[cfg(test)]
@@ -27,60 +24,36 @@ impl Worker {
             Self {
                 send: Some(send),
                 join: None,
+                refresh: Default::default(),
             },
             receive,
         )
     }
-    pub fn new(emit: impl Fn(Reply) + Send + 'static) -> Self {
+    pub fn with_library(emit: impl Fn(Reply) + Send + 'static, path: Option<String>) -> Self {
         let (send, recv) = mpsc::sync_channel::<(u64, Input, Option<String>)>(1);
+        let refresh = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_refresh = refresh.clone();
         let join = thread::spawn(move || {
-            let mut client = Spotify::from_env();
-            let mut unavailable: Option<(Instant, CatalogError)> = None;
+            let mut client = Spotify::from_env().and_then(|p| p.with_library(path.as_deref()));
             while let Ok((generation, input, artist_query)) = recv.recv() {
-                let result = if let Some((until, error)) = &unavailable
-                    && *until > Instant::now()
-                {
-                    Err(error.clone())
-                } else {
-                    match &mut client {
-                        Ok(client) => {
-                            let mut lookup = input.clone();
-                            if let Some(name) = artist_query {
-                                if let Some(primary) = &mut lookup.primary_artist {
-                                    primary.name = name.clone();
-                                    // An explicit lookup name overrides discovery only.
-                                    primary.identities.clear();
-                                }
-                                lookup.artist = name;
+                let result = match &mut client {
+                    Ok(client) => {
+                        client.refresh_discovery(
+                            worker_refresh.swap(false, std::sync::atomic::Ordering::AcqRel),
+                        );
+                        let mut lookup = input.clone();
+                        if let Some(name) = artist_query {
+                            if let Some(primary) = &mut lookup.primary_artist {
+                                primary.name = name.clone();
+                                // An explicit lookup name overrides discovery only.
+                                primary.identities.clear();
                             }
-                            client.search_songs(&lookup)
+                            lookup.artist = name;
                         }
-                        Err(error) => Err(error.clone()),
+                        client.search_songs(&lookup)
                     }
+                    Err(error) => Err(error.clone()),
                 };
-                if let Err(error) = &result {
-                    if error.is_provider_unavailable()
-                        && unavailable
-                            .as_ref()
-                            .is_none_or(|(until, _)| *until <= Instant::now())
-                    {
-                        let seconds = match error {
-                            CatalogError::RateLimited { retry_after, .. }
-                            | CatalogError::ServiceUnavailable { retry_after, .. } => retry_after
-                                .as_ref()
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(30),
-                            _ => 30,
-                        }
-                        .max(1);
-                        unavailable = Some((
-                            Instant::now() + Duration::from_secs(seconds.min(86400)),
-                            error.clone(),
-                        ));
-                    }
-                } else {
-                    unavailable = None;
-                }
                 let counts = client
                     .as_ref()
                     .map(Spotify::request_counts)
@@ -96,7 +69,12 @@ impl Worker {
         Self {
             send: Some(send),
             join: Some(join),
+            refresh,
         }
+    }
+    pub fn refresh_next_search(&self) {
+        self.refresh
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     pub fn search_with_artist(
         &self,

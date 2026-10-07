@@ -2218,3 +2218,5 @@ Song reconciliation has one final structured decision. Explicit diagnostic and a
 ## Spotify reconciliation lifecycle
 
 Migration 0029 separates portable provider-specific negative user knowledge from versioned review bookkeeping and reconstructible bounded candidate/program caches. Indexed, scoped invalidation reconsiders unresolved current evidence locally in background work units; trusted successes and exclusions are skipped. Missing reusable discovery data requires an explicit bounded retry. User exclusions are reversible and cannot coexist with a current trusted Spotify association. The management UI reuses the review table and diagnostic. See [lifecycle model and validation](spotify-reconciliation-lifecycle.md).
+
+Spotify reconciliation caches successful bounded provider discovery independently of matcher decisions, with selective request fingerprints, a 30-day TTL and a durable shared Retry-After deadline. Batch retry groups canonical Albums and does not fan out automatically into individual Track searches after Album absence. See [provider discovery lifecycle](spotify-provider-discovery.md).

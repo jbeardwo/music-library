@@ -742,3 +742,158 @@ fn identical_provider_observations_do_not_stale_current_failures() {
         .unwrap();
     assert!(l.stale_spotify_tracks(32).unwrap().is_empty());
 }
+
+#[test]
+fn discovery_ttl_restart_and_cooldown_use_controlled_time() {
+    use music_library::spotify_lifecycle::DISCOVERY_TTL_SECONDS;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db");
+    let l = Library::open(&path).unwrap();
+    let now = 1_800_000_000;
+    l.persist_spotify_discovery("search:v1:album", "{\"items\":[]}", now)
+        .unwrap();
+    l.retain_spotify_cooldown(now + 5893).unwrap();
+    drop(l);
+    let l = Library::open(&path).unwrap();
+    assert!(
+        l.spotify_discovery_response("search:v1:album", now + DISCOVERY_TTL_SECONDS - 1)
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        l.spotify_discovery_response("search:v1:album", now + DISCOVERY_TTL_SECONDS)
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        l.spotify_discovery_response("search:v2:album", now)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(l.spotify_cooldown_remaining(now).unwrap(), 5893);
+    assert_eq!(l.spotify_cooldown_remaining(now + 5892).unwrap(), 1);
+    assert_eq!(l.spotify_cooldown_remaining(now + 5893).unwrap(), 0);
+    l.retain_spotify_cooldown(now + 1).unwrap();
+    assert_eq!(l.spotify_cooldown_remaining(now).unwrap(), 5893);
+}
+
+#[test]
+fn empty_completed_track_search_replays_after_evaluator_version_change() {
+    let (dir, mut library, imported) = fixture();
+    drain(&mut library);
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    library
+        .persist_spotify_song_review(
+            &input,
+            &Page {
+                items: vec![],
+                next_offset: None,
+            },
+        )
+        .unwrap();
+    old(&dir, &input.track_id);
+    let batch = library.reevaluate_stale_spotify(32).unwrap();
+    assert_eq!(batch.needs_retry, 0);
+    assert_eq!(batch.still_unresolved, 1);
+    assert_eq!(batch.errors.len(), 0);
+    assert!(library.stale_spotify_tracks(32).unwrap().is_empty());
+}
+
+#[test]
+fn retry_after_delta_and_http_date_use_the_actual_deadline() {
+    use music_library::spotify_lifecycle::spotify_retry_delay;
+    let now = 1_800_000_000;
+    assert_eq!(spotify_retry_delay(Some("5893"), now), 5893);
+    let date = httpdate::fmt_http_date(
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs((now + 5893) as u64),
+    );
+    assert_eq!(spotify_retry_delay(Some(&date), now), 5893);
+    assert_eq!(spotify_retry_delay(Some("invalid"), now), 30);
+}
+
+#[test]
+fn three_persisted_candidates_survive_old_rejection_and_new_evaluator_acceptance() {
+    let (dir, mut library, imported) = fixture();
+    drain(&mut library);
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let good = candidate(&input);
+    let mut live = good.clone();
+    live.identity.external_id = "other-live".into();
+    live.title.push_str(" (Live)");
+    let mut remix = good.clone();
+    remix.identity.external_id = "other-remix".into();
+    remix.title.push_str(" (Remix)");
+    library
+        .persist_spotify_song_review(
+            &input,
+            &Page {
+                items: vec![live, good, remix],
+                next_offset: None,
+            },
+        )
+        .unwrap();
+    // Historical evaluator decision is independent of the successful candidate page.
+    db(&dir).execute("UPDATE spotify_connection_review SET evaluation_version=0,state='unresolved',stale=0 WHERE track_id=?1",[input.track_id.as_ref()]).unwrap();
+    drop(library);
+    let mut library = Library::open(dir.path().join("db")).unwrap();
+    let batch = library.reevaluate_stale_spotify(32).unwrap();
+    assert_eq!(batch.accepted, vec![input.track_id.clone()]);
+    assert_eq!(db(&dir).query_row("SELECT json_array_length(page_json,'$.items') FROM spotify_reconciliation_cache WHERE track_id=?1",[input.track_id.as_ref()],|r|r.get::<_,i64>(0)).unwrap(),3);
+    assert!(
+        !library
+            .track_provider_occurrences(&input.track_id, "spotify")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn genre_source_availability_and_path_do_not_change_discovery_inputs() {
+    let (dir, mut library, imported) = fixture();
+    let track = &imported.track_ids[0];
+    let sql = db(&dir);
+    sql.execute_batch("INSERT INTO playable_source(id,kind) VALUES('cache-source','local_file'); INSERT INTO local_file_observation(source_id,path,size_bytes,modified_ns,available) VALUES('cache-source',X'2f6f6c642e666c6163',1,1,1);").unwrap();
+    sql.execute(
+        "INSERT INTO track_source(track_id,source_id) VALUES(?1,'cache-source')",
+        [track.as_ref()],
+    )
+    .unwrap();
+    drain(&mut library);
+    let input = library.song_resolution_input(track).unwrap();
+    library
+        .persist_spotify_song_review(
+            &input,
+            &Page {
+                items: vec![],
+                next_offset: None,
+            },
+        )
+        .unwrap();
+    library
+        .save_metadata(
+            &music_library::metadata::Target::Track(track.as_ref().into()),
+            &[music_library::metadata::Change {
+                field: "genre".into(),
+                value: Some("Jazz".into()),
+            }],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(library.song_resolution_input(track).unwrap(), input);
+    sql.execute(
+        "UPDATE local_file_observation SET available=0 WHERE source_id='cache-source'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(library.song_resolution_input(track).unwrap(), input);
+    sql.execute("UPDATE local_file_observation SET path=X'2f6e65772e666c6163' WHERE source_id='cache-source'",[]).unwrap();
+    assert_eq!(library.song_resolution_input(track).unwrap(), input);
+    old(&dir, track);
+    let batch = library.reevaluate_stale_spotify(32).unwrap();
+    assert_eq!(batch.needs_retry, 0);
+    assert_eq!(batch.still_unresolved, 1);
+}

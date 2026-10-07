@@ -660,7 +660,7 @@ fn provenance_copy_migration_preserves_existing_snapshot_and_is_atomic() {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                30
+                31
             );
             assert_eq!(
                 db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r

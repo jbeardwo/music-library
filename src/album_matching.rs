@@ -445,7 +445,12 @@ impl Cooldown {
                         .ok()
                 })
         });
-        let delay = base.max(requested.unwrap_or_default().min(Duration::from_secs(120)));
+        let requested = requested.unwrap_or_default();
+        let delay = if matches!(error, crate::catalog::CatalogError::RateLimited { .. }) {
+            base.max(requested)
+        } else {
+            base.max(requested.min(Duration::from_secs(120)))
+        };
         let schedule = RetrySchedule {
             token: self.generation,
             delay,
@@ -455,6 +460,7 @@ impl Cooldown {
     }
 }
 enum WorkerCommand {
+    Refresh(AlbumId),
     Programs(crate::album_program::Input),
     Match(MatchInput, Vec<crate::edition::LocalTrackEvidence>),
     Recordings(crate::recording::Input),
@@ -589,6 +595,7 @@ impl AlbumMatcher {
                 let mut artists = HashMap::<String, ExternalIdentity>::new();
                 let mut candidate_cache = Vec::<crate::album_program::Programs>::new();
                 let mut timer = WorkerTimer::default();
+                let mut refresh_album: Option<AlbumId> = None;
                 loop {
                     if stopped.load(Ordering::Acquire) {
                         break;
@@ -612,13 +619,24 @@ impl AlbumMatcher {
                         break;
                     }
                     let (input, local) = match command {
+                        WorkerCommand::Refresh(album) => {
+                            refresh_album = Some(album);
+                            continue;
+                        }
                         WorkerCommand::Programs(input) => {
+                            let refresh = refresh_album.as_ref() == Some(&input.album_id);
+                            if refresh {
+                                refresh_album = None;
+                                candidate_cache.clear();
+                            }
+                            provider.refresh_discovery(refresh);
                             let result = candidate_cache
                                 .iter()
                                 .find(|p: &&crate::album_program::Programs| p.album == input.album)
                                 .cloned()
                                 .map(Ok)
                                 .unwrap_or_else(|| provider.album_programs(&input.album));
+                            provider.refresh_discovery(false);
                             if !stopped.load(Ordering::Acquire)
                                 && let Some(emit) = &programs
                             {
@@ -645,6 +663,17 @@ impl AlbumMatcher {
                             continue;
                         }
                     };
+                    let refresh = refresh_album.as_ref() == Some(&input.album_id);
+                    if refresh {
+                        refresh_album = None;
+                        artists.clear();
+                        candidate_cache.clear();
+                    }
+                    provider.refresh_discovery(refresh);
+                    if provider.begin_discovery() {
+                        artists.clear();
+                        candidate_cache.clear();
+                    }
                     let resolved = if let Some(id) = input
                         .known_artist
                         .clone()
@@ -753,6 +782,7 @@ impl AlbumMatcher {
                             (Some(id), outcome)
                         }
                     };
+                    provider.refresh_discovery(false);
                     if !stopped.load(Ordering::Acquire) {
                         emit(MatchReply {
                             input,
@@ -815,6 +845,16 @@ impl AlbumMatcher {
         Ok(updates)
     }
     /// Manual retry is independent of automatic policy. Pending requests coalesce.
+    pub fn refresh_album(&mut self, library: &Library, id: &AlbumId) -> Result<MatchOutcome> {
+        if self.active {
+            return self.match_album(library, id);
+        }
+        self.program_cache.clear();
+        if let Some(sender) = &self.sender {
+            let _ = sender.send(WorkerCommand::Refresh(id.clone()));
+        }
+        self.match_album(library, id)
+    }
     pub fn match_album(&mut self, library: &Library, id: &AlbumId) -> Result<MatchOutcome> {
         if self.program_enabled && self.prepare_program(library, id)?.is_some() {
             self.outcomes

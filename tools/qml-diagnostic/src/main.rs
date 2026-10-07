@@ -165,7 +165,9 @@ struct Bridge {
                 .strip_prefix("search-artist:")
                 .filter(|s| !s.trim().is_empty())
                 .map(str::to_owned);
-            if (action != "search" && artist_query.is_none()) || self.spotify_resolution_pending {
+            if (action != "search" && action != "refresh" && artist_query.is_none())
+                || self.spotify_resolution_pending
+            {
                 return;
             }
             let Some(track) = self.spotify_playback_track.clone() else {
@@ -210,7 +212,16 @@ struct Bridge {
                             b.finish_song_lookup(reply);
                         }
                     });
-                self.spotify_resolution_worker = Some(spotify_resolution::Worker::new(callback));
+                self.spotify_resolution_worker = Some(spotify_resolution::Worker::with_library(
+                    callback,
+                    self.session.library.database_path(),
+                ));
+            }
+            if action == "refresh" {
+                self.spotify_resolution_worker
+                    .as_ref()
+                    .unwrap()
+                    .refresh_next_search();
             }
             self.spotify_resolution_generation += 1;
             self.spotify_resolution_selection = None;
@@ -236,6 +247,12 @@ struct Bridge {
     spotify_playback_title: String,
     spotify_album_id: Option<music_library::domain::AlbumId>,
     spotify_album_explanation: String,
+    spotify_album_refresh: qt_method!(
+        fn spotify_album_refresh(&mut self) {
+            self.refresh_selected_spotify_album();
+            self.spotify_playback_changed();
+        }
+    ),
     spotify_album_retry: qt_method!(
         fn spotify_album_retry(&mut self) {
             self.retry_selected_spotify_album();
@@ -277,6 +294,31 @@ struct Bridge {
                     .and_then(|ids| {
                         music_library_spotify::playback::Song::from_associations(&ids).ok()
                     });
+                if self.spotify_playback_song.is_none()
+                    && let Some(path) = self.session.library.database_path()
+                    && let Ok(market) = std::env::var("SPOTIFY_MARKET")
+                    && let Some(track) = &self.spotify_playback_track
+                    && let Ok(input) = self.session.library.song_resolution_input(track)
+                    && !input.spotify_excluded
+                {
+                    match music_library_spotify::Spotify::cached_songs_in_library(
+                        &path, &market, &input,
+                    ) {
+                        Ok(Some(page)) => {
+                            self.spotify_resolution_more = page.next_offset.is_some();
+                            self.spotify_resolution_message = format!(
+                                "Fresh cached Spotify discovery: {} candidates. No provider requests; Search Spotify again performs a refresh.",
+                                page.items.len()
+                            );
+                            let mut selection =
+                                music_library::song_resolution::Selection::new(input, page.items);
+                            selection.show_all();
+                            self.spotify_resolution_selection = Some(selection);
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.spotify_resolution_message = error.to_string(),
+                    }
+                }
                 self.refresh_spotify_album_diagnostic();
                 self.spotify_playback_changed();
                 return;
@@ -781,6 +823,7 @@ fn row_value(row: &music_library::domain::TrackSearchResult) -> QVariant {
 
 impl Bridge {
     fn finish_song_lookup(&mut self, reply: spotify_resolution::Reply) {
+        let reused = reply.counts == self.spotify_resolution_counts;
         self.spotify_resolution_counts = reply.counts;
         if reply.generation == self.spotify_resolution_generation {
             self.spotify_resolution_pending = false;
@@ -820,6 +863,11 @@ impl Bridge {
                             }
                         }
                     };
+                    if reused {
+                        self.spotify_resolution_message.push_str(
+                            ". Fresh cached Spotify discovery reused; no provider requests.",
+                        );
+                    }
                     self.spotify_resolution_more = page.next_offset.is_some();
                     let mut selection =
                         music_library::song_resolution::Selection::new(reply.input, page.items);
@@ -884,6 +932,7 @@ impl Bridge {
             spotify_album_id: None,
             spotify_album_explanation: String::new(),
             spotify_album_retry: Default::default(),
+            spotify_album_refresh: Default::default(),
             spotify_playback_snapshot: Default::default(),
             spotify_playback_changed: Default::default(),
             spotify_playback_action: Default::default(),
@@ -1252,6 +1301,9 @@ impl Bridge {
                     };
                     let matcher = if name == "spotify" {
                         music_library_spotify::Spotify::from_env()
+                            .and_then(|p| {
+                                p.with_library(self.session.library.database_path().as_deref())
+                            })
                             .map_err(|e| e.to_string())
                             .and_then(|p| {
                                 music_library::album_matching::AlbumMatcher::for_provider(
@@ -1288,7 +1340,11 @@ impl Bridge {
             self.matcher = Some(
                 if self.spotify {
                     music_library::album_matching::AlbumMatcher::for_provider(
-                        music_library_spotify::Spotify::from_env().map_err(|e| e.to_string())?,
+                        music_library_spotify::Spotify::from_env()
+                            .and_then(|p| {
+                                p.with_library(self.session.library.database_path().as_deref())
+                            })
+                            .map_err(|e| e.to_string())?,
                         music_library_spotify::matching_scope(),
                         callback,
                         programs,

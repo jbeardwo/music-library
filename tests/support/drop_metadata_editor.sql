@@ -1,3 +1,5 @@
+DROP TABLE IF EXISTS spotify_discovery;
+DROP TABLE IF EXISTS provider_cooldown;
 -- Restore the pre-editor schema before testing an older migration.
 DROP TRIGGER metadata_album_index_insert;
 DROP TRIGGER metadata_album_index_update;

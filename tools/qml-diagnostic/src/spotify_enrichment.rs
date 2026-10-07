@@ -53,10 +53,23 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
         let album = match event {
             Event::Album(reply) => {
                 let album = reply.input.album_id.clone();
+                if let music_library::album_matching::MatchOutcome::Deferred(error) = &reply.outcome
+                {
+                    bridge.stop_spotify_retry_batch(format!(
+                        "Spotify batch stopped: {error}. Remaining Tracks were not queried."
+                    ));
+                }
                 matcher.complete(&mut bridge.session.library, *reply);
                 Some(album)
             }
             Event::Programs(reply) => {
+                if let Err(error) = &reply.result
+                    && error.is_provider_unavailable()
+                {
+                    bridge.stop_spotify_retry_batch(format!(
+                        "Spotify batch stopped: {error}. Remaining Tracks were not queried."
+                    ));
+                }
                 let album = reply.input.album_id.clone();
                 matcher.complete_programs(&mut bridge.session.library, *reply);
                 Some(album)
@@ -148,7 +161,9 @@ impl Bridge {
         if requests.is_empty() {
             return;
         }
-        let Ok(mut provider) = music_library_spotify::Spotify::from_env() else {
+        let Ok(mut provider) = music_library_spotify::Spotify::from_env()
+            .and_then(|p| p.with_library(self.session.library.database_path().as_deref()))
+        else {
             self.spotify_resolution_message =
                 "Spotify catalog configuration is needed to reconcile local Tracks".into();
             return;
@@ -236,7 +251,9 @@ impl Bridge {
     pub(crate) fn ensure_spotify_album_matcher(&mut self) -> Result<(), String> {
         if self.spotify_album_matcher.is_none() {
             // from_env only reads configuration; token/API work stays on the worker.
-            let Ok(provider) = music_library_spotify::Spotify::from_env() else {
+            let Ok(provider) = music_library_spotify::Spotify::from_env()
+                .and_then(|p| p.with_library(self.session.library.database_path().as_deref()))
+            else {
                 return Err(
                     "Spotify catalog configuration is needed to evaluate Album evidence".into(),
                 );
@@ -329,6 +346,12 @@ impl Bridge {
         self.refresh_spotify_review();
     }
     pub(crate) fn retry_selected_spotify_album(&mut self) {
+        self.evaluate_selected_spotify_album(false);
+    }
+    pub(crate) fn refresh_selected_spotify_album(&mut self) {
+        self.evaluate_selected_spotify_album(true);
+    }
+    fn evaluate_selected_spotify_album(&mut self, refresh: bool) {
         let Some(track) = self.spotify_playback_track.clone() else {
             return;
         };
@@ -359,11 +382,13 @@ impl Bridge {
             // Trust is retained. match_album skips accepted Album discovery and
             // may enrich missing occurrences through its existing program path.
             self.ensure_spotify_album_matcher()?;
-            self.spotify_album_matcher
-                .as_mut()
-                .unwrap()
-                .match_album(&self.session.library, &album)
-                .map_err(|e| e.to_string())?;
+            let matcher = self.spotify_album_matcher.as_mut().unwrap();
+            if refresh {
+                matcher.refresh_album(&self.session.library, &album)
+            } else {
+                matcher.match_album(&self.session.library, &album)
+            }
+            .map_err(|e| e.to_string())?;
             Ok(())
         })();
         self.refresh_spotify_album_diagnostic();
