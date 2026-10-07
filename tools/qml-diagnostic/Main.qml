@@ -1124,6 +1124,208 @@ ApplicationWindow {
     palette.highlightedText: "white"
     color: palette.window
 
+    property var metadataState: JSON.parse(bridge.metadata_snapshot)
+    function openMetadata(kind, canonicalId) {
+        artistsPane.rememberViewport(); albumsPane.rememberViewport(); songsPane.rememberViewport();
+        bridge.metadata_action("open", kind, canonicalId, "");
+        metadataDialog.reload();
+        metadataDialog.open();
+    }
+    Dialog {
+        id: metadataDialog
+        objectName: "metadataDialog"
+        modal: true
+        width: Math.min(920, window.width - 40)
+        height: Math.min(800, window.height - 40)
+        anchors.centerIn: parent
+        title: inspection && inspection.target.album !== undefined ? "Album Metadata" : "Track Metadata"
+        property var inspection: window.metadataState.inspection
+        property var edits: ({})
+        property var selectedFiles: ({})
+        property bool writeFiles: false
+        function reload() { edits = ({}); selectedFiles = ({}); writeFiles = false; }
+        function setEdit(key,value) { const copy=Object.assign({},edits); copy[key]=value; edits=copy; }
+        function save() {
+            const changes=Object.keys(edits).map(key=>({field:key,value:edits[key]}));
+            const files=writeFiles ? Object.keys(selectedFiles).filter(key=>selectedFiles[key]) : [];
+            if(writeFiles && files.length===0) { localWarning.text="Select the files to update."; return; }
+            localWarning.text="";
+            bridge.metadata_action("save","","",JSON.stringify({changes:changes,files:files}));
+        }
+        closePolicy: window.metadataState.busy ? Popup.NoAutoClose : Popup.CloseOnEscape
+        contentItem: ColumnLayout {
+            spacing: 8
+            Button { text: "Edit shared Album metadata…"; visible: !!metadataDialog.inspection && metadataDialog.inspection.target.track !== undefined; enabled: !window.metadataState.busy && Object.keys(metadataDialog.edits).length===0; onClicked: window.openMetadata("album",metadataDialog.inspection.album_id) }
+            Label { text: metadataDialog.inspection ? metadataDialog.inspection.track_count + " Tracks · " + metadataDialog.inspection.files.length + " attached local files" : ""; Layout.fillWidth: true }
+            ScrollView {
+                Layout.fillWidth: true; Layout.fillHeight: true
+                contentWidth: availableWidth
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 12
+                    Label { text: "Library values"; font.bold: true }
+                    Repeater {
+                        model: metadataDialog.inspection ? metadataDialog.inspection.fields : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Label { text: modelData.label; Layout.preferredWidth: 170; wrapMode: Text.Wrap }
+                                TextField {
+                                    objectName: "metadataField_" + modelData.key
+                                    Layout.fillWidth: true
+                                    enabled: modelData.editable && !window.metadataState.busy
+                                    placeholderText: "—"
+                                    text: metadataDialog.edits[modelData.key] === undefined || metadataDialog.edits[modelData.key] === null ? modelData.value : metadataDialog.edits[modelData.key]
+                                    onTextEdited: metadataDialog.setEdit(modelData.key,text)
+                                }
+                                Button {
+                                    text: "Use automatic value"
+                                    visible: modelData.editable
+                                    enabled: !window.metadataState.busy && (modelData.overridden || metadataDialog.edits[modelData.key] !== undefined)
+                                    onClicked: metadataDialog.setEdit(modelData.key,null)
+                                }
+                            }
+                            Label { text: metadataDialog.edits[modelData.key] === null ? "Will clear override on Save" : metadataDialog.edits[modelData.key] !== undefined ? "User override (pending Save)" : modelData.effective_source; opacity: 0.7 }
+                        }
+                    }
+                    CheckBox {
+                        objectName: "metadataWriteFiles"
+                        text: "Also update local file metadata" + (metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? " for affected Tracks" : "")
+                        checked: metadataDialog.writeFiles
+                        enabled: !window.metadataState.busy && !!metadataDialog.inspection && metadataDialog.inspection.files.length > 0
+                        onToggled: metadataDialog.writeFiles=checked
+                    }
+                    ColumnLayout {
+                        visible: metadataDialog.writeFiles
+                        Layout.fillWidth: true
+                        Label { text: "Select affected files. Only changed fields will be written. Release type cannot be written to local tags."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                        RowLayout {
+                            Button {
+                                objectName: "metadataSelectAllFiles"
+                                text: "Select all"
+                                enabled: !window.metadataState.busy
+                                onClicked: { const files={}; for(const file of metadataDialog.inspection.files) files[file.source_id]=true; metadataDialog.selectedFiles=files; }
+                            }
+                            Button { objectName: "metadataClearFiles"; text: "Clear selection"; enabled: !window.metadataState.busy; onClicked: metadataDialog.selectedFiles=({}) }
+                        }
+                        Repeater {
+                            model: metadataDialog.inspection ? metadataDialog.inspection.files : []
+                            delegate: CheckBox {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                text: modelData.path + (modelData.available ? "" : " (unavailable)")
+                                checked: !!metadataDialog.selectedFiles[modelData.source_id]
+                                enabled: !window.metadataState.busy
+                                onToggled: {const copy=Object.assign({},metadataDialog.selectedFiles); copy[modelData.source_id]=checked; metadataDialog.selectedFiles=copy;}
+                            }
+                        }
+                        Label { text: "Update local tags for " + Object.keys(metadataDialog.selectedFiles).filter(key=>metadataDialog.selectedFiles[key]).length + " files" }
+                    }
+                    Label { text: "Source evidence · read-only"; font.bold: true }
+                    Label { text: metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? "Tracks are ordered by disc and album position, with each Track’s sources together. Shared Album and Release evidence follows." : "Each file/provider object is shown separately. Differences remain evidence; editing does not reassign identities."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Repeater {
+                        model: metadataDialog.inspection ? metadataDialog.inspection.track_evidence : []
+                        delegate: GroupBox {
+                            required property var modelData
+                            objectName: "metadataTrackGroup_" + modelData.track_id
+                            title: "Disc " + (modelData.disc_number || "—") + " · Track " + (modelData.track_number || "—") + " · " + modelData.title
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                width: parent.width
+                                Repeater {
+                                    model: modelData.evidence
+                                    delegate: Frame {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        ColumnLayout {
+                                            width: parent.width
+                                            Label { text: modelData.source; font.bold: true }
+                                            Label { text: modelData.label; wrapMode: Text.Wrap; Layout.fillWidth: true; opacity: 0.7 }
+                                            Label { text: Object.keys(modelData.values).map(key=>key + ": " + modelData.values[key]).join("\n") || "—"; wrapMode: Text.Wrap; Layout.fillWidth: true; textFormat: Text.PlainText }
+                                            Button {
+                                                objectName: "metadataConnectSpotify_" + modelData.track_id + "_" + modelData.candidate_id
+                                                text: "Connect this Spotify candidate"
+                                                visible: !!modelData.candidate_id
+                                                enabled: !window.metadataState.busy && Object.keys(metadataDialog.edits).length===0
+                                                onClicked: window.bridge.metadata_action("connect-spotify","track",modelData.track_id,modelData.candidate_id)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Label { visible: !!metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined; text: "Shared Album / exact Release evidence"; font.bold: true }
+                    Repeater {
+                        model: metadataDialog.inspection ? metadataDialog.inspection.evidence : []
+                        delegate: Frame {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                width: parent.width
+                                Label { text: modelData.source; font.bold: true }
+                                Label { text: modelData.label; wrapMode: Text.Wrap; Layout.fillWidth: true; opacity: 0.7 }
+                                Label { text: Object.keys(modelData.values).map(key=>key + ": " + modelData.values[key]).join("\n") || "—"; wrapMode: Text.Wrap; Layout.fillWidth: true; textFormat: Text.PlainText }
+                                Button {
+                                    objectName: "metadataConnectSpotify_" + modelData.track_id + "_" + modelData.candidate_id
+                                    text: "Connect this Spotify candidate"
+                                    visible: !!modelData.candidate_id
+                                    enabled: !window.metadataState.busy && Object.keys(metadataDialog.edits).length===0
+                                    onClicked: window.bridge.metadata_action("connect-spotify","track",modelData.track_id,modelData.candidate_id)
+                                }
+                            }
+                        }
+                    }
+                    Label { id:localWarning; color: "#c65b52"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    GroupBox {
+                        title: "Advanced · attached provider identities (read-only)"
+                        Layout.fillWidth: true
+                        Label { width: parent.width; text: metadataDialog.inspection ? metadataDialog.inspection.identities.join("\n") || "—" : "—"; wrapMode: Text.Wrap; textFormat: Text.PlainText }
+                    }
+                }
+            }
+            Label { objectName: "metadataResult"; text: window.metadataState.message; wrapMode: Text.Wrap; Layout.fillWidth: true; textFormat: Text.PlainText }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                Button { text: "Cancel"; enabled: !window.metadataState.busy; onClicked: metadataDialog.close() }
+                Button { objectName: "metadataSave"; text: metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? "Save Album Metadata" : "Save"; enabled: !!metadataDialog.inspection && !window.metadataState.busy && Object.keys(metadataDialog.edits).length>0; onClicked: metadataDialog.save() }
+            }
+        }
+        Connections {
+            target: bridge
+            function onMetadata_changed() { if ((window.metadataState.renameMatches || []).length) metadataRenameDialog.open(); else metadataRenameDialog.close(); if(!window.metadataState.busy && window.metadataState.message.startsWith("Library metadata saved")) metadataDialog.reload();}
+        }
+    }
+
+    Dialog {
+        id: metadataRenameDialog
+        objectName: "metadataRenameDialog"
+        title: "An Album with this name already exists"
+        modal: true
+        anchors.centerIn: parent
+        width: Math.min(620, window.width - 40)
+        property var matches: window.metadataState.renameMatches || []
+        property var chosen: matches[renameChoice.currentIndex] || null
+        onRejected: bridge.metadata_action("rename-cancel", "", "", "")
+        contentItem: ColumnLayout {
+            Label { text: "Move the " + (metadataDialog.inspection ? metadataDialog.inspection.track_count : 0) + " affected Tracks to an existing Album?"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            ComboBox {
+                id: renameChoice
+                objectName: "metadataRenameChoice"
+                Layout.fillWidth: true
+                model: metadataRenameDialog.matches.map(m => m.title + " · " + m.artist + " · " + (m.year || "Unknown year") + " · " + m.track_count + " Tracks · " + m.release_count + " Releases")
+            }
+            Label { text: "Moving uses the destination Album’s shared metadata. Track titles, individual overrides and exact Releases are preserved. Selected local files are updated only after saving."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Label { text: metadataRenameDialog.chosen ? metadataRenameDialog.chosen.blocked_reason : ""; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            RowLayout {
+                Button { text: "Cancel"; objectName: "metadataRenameCancel"; onClicked: { bridge.metadata_action("rename-cancel", "", "", ""); metadataRenameDialog.close(); } }
+                Button { text: "Keep separate"; objectName: "metadataRenameKeep"; onClicked: { metadataRenameDialog.close(); bridge.metadata_action("rename-keep", "", "", ""); } }
+                Button { text: "Move Tracks"; objectName: "metadataRenameMove"; enabled: !!metadataRenameDialog.chosen && !metadataRenameDialog.chosen.blocked_reason; onClicked: { const id = metadataRenameDialog.chosen.album_id; metadataRenameDialog.close(); bridge.metadata_action("rename-move", "", id, ""); } }
+            }
+        }
+    }
     property int contextPane: 0
     property string contextId: ""
     property string contextTrackId: ""
@@ -1250,6 +1452,8 @@ ApplicationWindow {
         MenuItem { objectName: "reviewThisAlbum"; text: "Review this Album"; visible: window.library.view === "Spotify Connections" && window.contextPane === 2; onTriggered: { const row = window.library.panes[2].rows.find(r => r.id === window.contextTrackId); if(row) window.bridge.browse_action("review-album",2,row.albumId); } }
         MenuItem { objectName: "spotifyMarkUnavailable"; text: "Mark as not on Spotify"; visible: window.library.view === "Spotify Connections" && !window.library.reviewMarked && window.contextPane === 2; onTriggered: window.bridge.browse_action("spotify-mark-selection",2,window.contextTrackId) }
         MenuItem { objectName: "spotifyCheckAgain"; text: "Check Spotify again"; visible: window.library.view === "Spotify Connections" && window.library.reviewMarked && window.contextPane === 2; onTriggered: window.bridge.browse_action("spotify-check",2,window.contextTrackId) }
+        MenuItem { id: trackMetadataMenuAction; objectName: "trackMetadataAction"; text: "Metadata…"; visible: window.contextPane === 2; enabled: !window.library.pending && window.contextTrackId.length > 0; onTriggered: window.openMetadata("track",window.contextTrackId) }
+        MenuItem { id: albumMetadataMenuAction; objectName: "albumMetadataAction"; text: "Metadata…"; visible: window.contextPane === 1 && window.library.view !== "Playlists"; enabled: !window.library.pending && window.contextId.length > 0; onTriggered: window.openMetadata("album",window.contextId) }
         MenuItem { objectName: "songSpotifyConnection"; text: "Spotify connection…"; visible: window.contextPane === 2; enabled: !window.library.pending && window.contextTrackId.length > 0; onTriggered: window.openSpotifyConnection(window.contextTrackId) }
         MenuSeparator {}
         MenuItem { text: "Remove from library"; visible: window.library.view !== "Playlists"; enabled: !window.library.pending && !window.bridge.local_import_snapshot.busy; onTriggered: window.bridge.browse_action("remove-preview", window.contextPane, window.contextId) }

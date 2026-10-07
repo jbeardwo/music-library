@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     browse::{Pane, Request},
@@ -619,6 +621,7 @@ fn provenance_copy_migration_preserves_existing_snapshot_and_is_atomic() {
         let id = imported(&mut library, &p);
         drop(library);
         let db = Connection::open(&path).unwrap();
+        metadata_schema::downgrade(&db);
         db.execute_batch(include_str!("support/drop_playlist_revision.sql"))
             .unwrap();
         db.execute_batch("DROP INDEX playlist_source_external; ALTER TABLE playlist_source RENAME TO saved_source;").unwrap();
@@ -657,7 +660,7 @@ fn provenance_copy_migration_preserves_existing_snapshot_and_is_atomic() {
             assert_eq!(
                 db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                     .unwrap(),
-                29
+                30
             );
             assert_eq!(
                 db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r

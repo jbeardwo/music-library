@@ -738,7 +738,7 @@ pub(crate) fn local_tracks(
     album: &AlbumId,
 ) -> Result<(Vec<LocalTrackEvidence>, Vec<TrackId>)> {
     let mut artist_conflicts = vec![];
-    let mut tracks=db.prepare("SELECT t.id,t.recording_id,t.disc_number,t.track_number,e.title,e.duration_ms,e.artist_names,e.duration_approximate FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 ORDER BY r.id,t.disc_number,t.track_number,t.id")?
+    let mut tracks=db.prepare("SELECT t.id,t.recording_id,e.disc_number,e.track_number,e.title,e.duration_ms,e.artist_names,e.duration_approximate FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 ORDER BY r.id,t.disc_number,t.track_number,t.id")?
         .query_map([album.as_ref()],|r|Ok((LocalTrackEvidence{track_id:TrackId(r.get(0)?),recording_id:RecordingId(r.get(1)?),evidence:TrackEvidence{disc:r.get(2)?,number:r.get(3)?,title:r.get(4)?,duration_ms:r.get::<_,Option<i64>>(5)?.and_then(|v|u64::try_from(v).ok()),duration_approximate:r.get(7)?,..Default::default()}},r.get::<_,String>(6)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
     let names: Vec<_> = tracks.iter().map(|t| t.1.clone()).collect();
     let mut tracks: Vec<_> = tracks.drain(..).map(|t| t.0).collect();

@@ -289,9 +289,9 @@ fn query_projection(
     };
     // Gather small Genres; stream large Genres in indexed display order.
     let large_genre = if let Some(genre) = &request.genre {
-        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM file_genre_observation WHERE genre=?1 LIMIT 1001)", [genre], |r| r.get::<_, bool>(0))?
+        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM effective_track_genre WHERE genre=?1 LIMIT 1001)", [genre], |r| r.get::<_, bool>(0))?
     } else if !request.genres.is_empty() {
-        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM file_genre_observation WHERE genre IN (SELECT value FROM json_each(?1)) LIMIT 1001)",[json_ids(&request.genres)],|r|r.get::<_,bool>(0))?
+        connection.query_row("SELECT count(*)>1000 FROM (SELECT 1 FROM effective_track_genre WHERE genre IN (SELECT value FROM json_each(?1)) LIMIT 1001)",[json_ids(&request.genres)],|r|r.get::<_,bool>(0))?
     } else {
         false
     };
@@ -320,11 +320,13 @@ fn query_projection(
     };
     if request.genre.is_some() {
         if large_genre {
-            scope.push_str(" AND EXISTS(SELECT 1 FROM track_source gs CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id AND g.genre=?14)");
-            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN track_source gs ON gs.track_id=gt.id CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gr.album_id=a.album_id AND g.genre=?14)");
+            scope.push_str(" AND EXISTS(SELECT 1 FROM effective_track_genre g WHERE g.track_id=t.id AND g.genre=?14)");
+            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN effective_track_genre g ON g.track_id=gt.id WHERE gr.album_id=a.album_id AND g.genre=?14)");
         } else {
-            scope.push_str(" AND t.id IN (SELECT gs.track_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id WHERE g.genre=?14)");
-            album_scope.push_str(" AND a.album_id IN (SELECT gr.album_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id JOIN library_membership gl ON gl.track_id=gs.track_id JOIN track gt ON gt.id=gs.track_id JOIN release gr ON gr.id=gt.release_id WHERE g.genre=?14)");
+            scope.push_str(
+                " AND t.id IN (SELECT g.track_id FROM effective_track_genre g WHERE g.genre=?14)",
+            );
+            album_scope.push_str(" AND a.album_id IN (SELECT gr.album_id FROM effective_track_genre g JOIN library_membership gl ON gl.track_id=g.track_id JOIN track gt ON gt.id=g.track_id JOIN release gr ON gr.id=gt.release_id WHERE g.genre=?14)");
         }
     }
     if !request.artists.is_empty() {
@@ -341,10 +343,10 @@ fn query_projection(
         }
     }
     if !request.genres.is_empty() {
-        let tracks = "SELECT gs.track_id FROM file_genre_observation g JOIN track_source gs ON gs.source_id=g.source_id WHERE g.genre IN (SELECT value FROM json_each(?16))";
+        let tracks = "SELECT g.track_id FROM effective_track_genre g WHERE g.genre IN (SELECT value FROM json_each(?16))";
         if large_genre && !queue {
-            scope.push_str(" AND EXISTS(SELECT 1 FROM track_source gs CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id AND g.genre IN (SELECT value FROM json_each(?16)))");
-            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN track_source gs ON gs.track_id=gt.id CROSS JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gr.album_id=a.album_id AND g.genre IN (SELECT value FROM json_each(?16)))");
+            scope.push_str(" AND EXISTS(SELECT 1 FROM effective_track_genre g WHERE g.track_id=t.id AND g.genre IN (SELECT value FROM json_each(?16)))");
+            album_scope.push_str(" AND EXISTS(SELECT 1 FROM release gr CROSS JOIN track gt ON gt.release_id=gr.id CROSS JOIN library_membership gl ON gl.track_id=gt.id CROSS JOIN effective_track_genre g ON g.track_id=gt.id WHERE gr.album_id=a.album_id AND g.genre IN (SELECT value FROM json_each(?16)))");
         } else {
             scope.push_str(&format!(" AND t.id IN ({tracks})"));
             album_scope.push_str(&format!(" AND a.album_id IN (SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id JOIN library_membership lm ON lm.track_id=t.id WHERE t.id IN ({tracks}))"));
@@ -371,7 +373,7 @@ fn query_projection(
             && request.album.is_some()
             && request.song_column.is_none());
     let sql = match request.pane {
-            Pane::Genres => "SELECT g.genre, g.genre, '', lower(g.genre), '', 0, 0, '', '', '', NULL, '', '' FROM (SELECT DISTINCT genre FROM file_genre_observation) g WHERE EXISTS(SELECT 1 FROM file_genre_observation observation JOIN track_source ts ON ts.source_id=observation.source_id JOIN library_membership lm ON lm.track_id=ts.track_id WHERE observation.genre=g.genre)".into(),
+            Pane::Genres => "SELECT g.genre, g.genre, '', lower(g.genre), '', 0, 0, '', '', '', NULL, '', '' FROM (SELECT DISTINCT genre FROM effective_track_genre) g WHERE EXISTS(SELECT 1 FROM effective_track_genre observation JOIN library_membership lm ON lm.track_id=observation.track_id WHERE observation.genre=g.genre)".into(),
             Pane::Artists => format!("SELECT a.id, a.name, '', lower(a.name), '', 0, 0, '', '', '', NULL, '', ''
                 FROM artist a WHERE (EXISTS(SELECT 1 FROM track_artist_credit c JOIN track t ON t.id=c.track_id {saved} WHERE c.artist_id=a.id)
                 OR EXISTS(SELECT 1 FROM album_artist_credit c JOIN release r ON r.album_id=c.album_id JOIN track t ON t.release_id=r.id {saved} WHERE c.artist_id=a.id)
@@ -390,13 +392,13 @@ fn query_projection(
                     }
                 } else { "album_browse_order b" };
                 format!("SELECT b.album_id, a.title, {album_credit}, {keys}, '', '', '', b.year, b.year_key || char(31) || b.title_key, ''
-                FROM {from} CROSS JOIN album_application_metadata a ON a.album_id=b.album_id WHERE EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id {saved} WHERE r.album_id=a.album_id) {album_scope}")
+                FROM {from} CROSS JOIN effective_album_metadata a ON a.album_id=b.album_id WHERE EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id {saved} WHERE r.album_id=a.album_id) {album_scope}")
             },
             Pane::Songs => {
                 let (title, release, disc, position) = if album_order && request.album_sort == Sort::Title {
-                    ("b.title_key", "''", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
+                    ("b.title_key", "''", "COALESCE(e.disc_number, 1)", "COALESCE(e.track_number, 2147483647)")
                 } else if album_order {
-                    ("b.year_key", "b.title_key", "COALESCE(t.disc_number, 1)", "COALESCE(t.track_number, 2147483647)")
+                    ("b.year_key", "b.title_key", "COALESCE(e.disc_number, 1)", "COALESCE(e.track_number, 2147483647)")
                 } else { (match request.song_column {Some(SongColumn::Artist)=>"lower(e.artist_names)",Some(SongColumn::Album)=>"lower(e.release_title)",Some(SongColumn::Genre)=>"lower(e.genre_names)",Some(SongColumn::Reason)=>"lower(review.reason)",_=>"lower(e.title)"}, "''", "0", "0") };
                 let album_filter = if request.album.is_some() { " AND r.album_id=?2" }
                     else if album_order && target.is_some() { " AND b.album_id=(SELECT r2.album_id FROM track t2 JOIN release r2 ON r2.id=t2.release_id WHERE t2.id=?11)" }
@@ -408,9 +410,9 @@ fn query_projection(
                 } else if reason_stream {
                     "spotify_connection_review review INDEXED BY spotify_connection_reason CROSS JOIN track t ON t.id=review.track_id JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id"
                 } else if album_order && request.album.is_none() && target.is_none() && request.album_sort == Sort::Title {
-                    "album_browse_order b INDEXED BY album_order_title CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
+                    "album_browse_order b INDEXED BY album_order_title CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id"
                 } else if album_order {
-                    "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id"
+                    "album_browse_order b CROSS JOIN release r ON r.album_id=b.album_id CROSS JOIN track t ON t.release_id=r.id JOIN effective_track_metadata e ON e.track_id=t.id"
                 } else if (stream_titles || (request.artist.is_none() && request.genre.is_none() && request.album.is_none() && request.track.is_none() && request.artists.is_empty() && request.genres.is_empty() && request.albums.is_empty() && request.tracks.is_empty())) && target.is_none() {
                     match request.song_column {Some(SongColumn::Artist)=>"effective_track_metadata e INDEXED BY song_details_artist CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",Some(SongColumn::Album)=>"effective_track_metadata e INDEXED BY song_details_album CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",Some(SongColumn::Genre)=>"effective_track_metadata e INDEXED BY song_details_genre CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id",_=>"effective_track_metadata e INDEXED BY track_browse_title CROSS JOIN track t ON t.id=e.track_id JOIN release r ON r.id=t.release_id"}
                 } else if request.album.is_some() || !request.albums.is_empty() {
@@ -424,7 +426,7 @@ fn query_projection(
                 let (display_title, display_year) = if album_order { ("''", "NULL") } else { ("e.title", "e.year") };
                 let (album_title, album_key, edition, metadata_join) = if album_order {
                     ("''", "b.album_id", "r.id", "")
-                } else { ("a.title", if request.unresolved_spotify {"r.album_id"} else {"''"}, "''", "JOIN album_application_metadata a ON a.album_id=r.album_id") };
+                } else { ("a.title", if request.unresolved_spotify {"r.album_id"} else {"''"}, "''", "JOIN effective_album_metadata a ON a.album_id=r.album_id") };
                 let track_id = if request.song_column == Some(SongColumn::Reason) { "review.track_id" } else if album_order { "t.id" } else { "e.track_id" };
                 format!("SELECT {track_id}, {display_title}, '', {title}, {release}, {disc}, {position}, t.release_id, {album_title}, '', {display_year}, {album_key}, {edition}
                     FROM {from} {metadata_join} {saved}
@@ -514,9 +516,9 @@ fn query_projection(
     let joins = if ids_only {
         ""
     } else if request.pane == Pane::Songs && queue {
-        "JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
+        "JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN effective_album_metadata a ON a.album_id=r.album_id"
     } else if request.pane == Pane::Songs {
-        "JOIN track display_track ON display_track.id=chosen.id JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
+        "JOIN track display_track ON display_track.id=chosen.id JOIN effective_track_metadata e ON e.track_id=chosen.id JOIN release r ON r.id=chosen.release_id JOIN effective_album_metadata a ON a.album_id=r.album_id"
     } else if grouped {
         "LEFT JOIN artist group_artist ON group_artist.id=chosen.release_key"
     } else {
@@ -539,9 +541,9 @@ fn query_projection(
         "WITH rows(id,title,subtitle,sort_title,release_key,disc,position,release_id,album_title,artist,year,album_key,edition) AS ({sql}), chosen AS MATERIALIZED (SELECT * FROM rows {cursor} {target_filter} AND (?19 IS NULL OR id IN (SELECT value FROM json_each(?19))) ORDER BY {order} LIMIT ?13) SELECT {projection}, {} FROM chosen {joins} WHERE (?14 IS NULL OR 1) AND (?15 IS NULL OR 1) AND (?16 IS NULL OR 1) AND (?17 IS NULL OR 1) AND (?18 IS NULL OR 1) ORDER BY {final_order}",
         if request.pane == Pane::Songs && !queue {
             if request.unresolved_spotify {
-                "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names,CASE WHEN EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=chosen.id AND x.provider='spotify') THEN 'Manually marked not on Spotify' WHEN review_display.state='needs_retry' THEN 'Needs retry · ' || review_display.reason ELSE review_display.reason END,review_display.reason_code"
+                "e.track_number, e.disc_number, EXISTS(SELECT 1 FROM track other_disc JOIN effective_track_metadata other_metadata ON other_metadata.track_id=other_disc.id WHERE other_disc.release_id=chosen.release_id AND other_metadata.disc_number>1),e.genre_names,CASE WHEN EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=chosen.id AND x.provider='spotify') THEN 'Manually marked not on Spotify' WHEN review_display.state='needs_retry' THEN 'Needs retry · ' || review_display.reason ELSE review_display.reason END,review_display.reason_code"
             } else {
-                "display_track.track_number, display_track.disc_number, EXISTS(SELECT 1 FROM track other_disc WHERE other_disc.release_id=chosen.release_id AND other_disc.disc_number>1),e.genre_names,'',''"
+                "e.track_number, e.disc_number, EXISTS(SELECT 1 FROM track other_disc JOIN effective_track_metadata other_metadata ON other_metadata.track_id=other_disc.id WHERE other_disc.release_id=chosen.release_id AND other_metadata.disc_number>1),e.genre_names,'',''"
             }
         } else {
             "NULL, NULL, 0, '', '', ''"
@@ -731,7 +733,7 @@ impl QueueReader {
 /// Shared display-only fallback. SQL aliases e/a are canonical Track/Album metadata.
 /// Explicit Track display credit wins; ordered Album credits are used only if absent.
 pub(crate) fn album_artist_credit_sql() -> &'static str {
-    "COALESCE((SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')"
+    "COALESCE(a.artist_credit,(SELECT group_concat(name, '') FROM (SELECT COALESCE(c.credited_name, ar.name) || COALESCE(c.join_phrase, CASE WHEN EXISTS(SELECT 1 FROM album_artist_credit next WHERE next.album_id=c.album_id AND next.position>c.position) THEN ' / ' ELSE '' END) AS name FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id WHERE c.album_id=a.album_id ORDER BY c.position)), '')"
 }
 pub(crate) fn song_artist_credit_sql() -> String {
     format!(

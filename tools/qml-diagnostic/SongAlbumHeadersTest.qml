@@ -61,7 +61,8 @@
             bridge.browse_action("playlist-create",0,"Header selection");wait();
             const dest=library.playlistChoices.find(p=>p.name==="Header selection");
             bridge.browse_action("picker-add",0,dest.id);done();
-            while(library.panes[2].page<3) {bridge.browse_action("next",2,"");wait();} list.forceLayout();
+            for(let attempt=0;attempt<10 && library.panes[2].page<3;attempt++) {bridge.browse_action("next",2,"");wait();}
+            check(library.panes[2].page>=3,"third Song page is reachable");list.forceLayout();
             check(library.panes[2].rows.length===2 && headers().length===1,"last page retains one continuation header");
             bridge.browse_action("previous",2,"");wait();list.forceLayout();
             check(headers().length===2,"return to boundary page has neither missing nor duplicated headers"); connection(180);

@@ -90,6 +90,14 @@
             albumLayoutTest.mouseClick(nextVisible,30,30,Qt.LeftButton,Qt.ShiftModifier);
             for(let n=0;n<250 && library.pending;n++) albumLayoutTest.wait(10);
             waitLayout();check(library.panes[1].selectionCount===2 && Math.abs(albumList.contentY-viewport)<1,"visible Shift Album range retains viewport");
+            const refreshAnchor=albumsPane.viewportAnchor();
+            albumsPane.rememberViewport();
+            for(let repeat=0;repeat<3;repeat++) {
+                window.bridge.browse_action("refresh",0,"");waitLayout();
+                const refreshed=albumsPane.viewportAnchor();
+                check(refreshed && refreshed.id===refreshAnchor.id && Math.abs(refreshed.pixel-refreshAnchor.pixel)<1,"background refresh preserves Album viewport");
+                check(library.panes[1].selectionCount===2,"background refresh preserves Album selection");
+            }
             window.bridge.browse_action("sort",1,"");waitLayout();
             check(library.panes[1].sort==="Artist","Artist sections remain available");
             const sectionTile=tile(10), sectionRequests=layoutArtworkRequests;

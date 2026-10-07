@@ -287,11 +287,16 @@ For filesystem sources, observations may include:
 
 User edits are sparse overrides.
 
-No override should be distinguishable from an explicit override.
+The absence of an override must be distinguishable from an explicit override.
 
 Where blank displayed values are allowed, an intentional blank should also be distinguishable from absence of an override.
 
 Deleting/clearing an override reveals the underlying effective value.
+
+The implemented offline [metadata editor](metadata-editor.md) provides per-field
+Track and shared Album overrides, persisted source comparisons, targeted effective
+metadata/index updates, and explicit selected-file tag write-back. Library saves
+commit before external file work; a file failure does not roll back the correction.
 
 ### Effective Metadata
 
@@ -945,7 +950,7 @@ Likewise, a local-first Track may later gain MusicBrainz, ISRC, Spotify, Apple M
 
 Matching is best-effort enrichment. Failure to find a catalog match is a normal state and must not prevent local files from entering or functioning in the library.
 
-The initial implementation deliberately does not attempt to recover severely incomplete or incorrect metadata. It does not require acoustic fingerprinting, aggressive fuzzy matching, filename inference, automatic tag repair, or automatic metadata rewriting. Users may manage poor source metadata externally, and more sophisticated recovery tools can be added later if demonstrated to be valuable.
+The initial implementation deliberately does not attempt to recover severely incomplete or incorrect metadata. It does not require acoustic fingerprinting, aggressive fuzzy matching, filename inference, automatic tag repair, or automatic metadata rewriting. Users can inspect persisted observations and correct Library fields through the manual metadata editor, with optional selected-file tag write-back. Automatic recovery remains deferred.
 
 ### Local import and automatic matching workflow
 

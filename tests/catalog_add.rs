@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     catalog::{Credit, Medium, Release, Track},
@@ -332,7 +334,7 @@ fn credit_migration_upgrades_v2_and_retains_legacy_display() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        29
+        30
     );
 }
 
@@ -878,7 +880,8 @@ fn catalog_playlist_identity_membership_reload_and_duplicates() {
     let rows = library.playlist_entries(&playlist, None, 200).unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].title, "Song - Remix");
-    assert_eq!(rows[0].subtitle, "");
+    // Missing Track credits use the established Album display-credit fallback.
+    assert_eq!(rows[0].subtitle, "Artist A feat. Artist B");
     assert!(!rows[0].track.as_ref().unwrap().available);
     assert_ne!(rows[1].id, rows[2].id);
     let entry_ids = rows.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
@@ -1044,8 +1047,10 @@ fn duration_migration_backfills_persisted_evidence_without_library_membership() 
         rusqlite::params![track.as_ref(), serde_json::to_string(&candidate).unwrap()],
     )
     .unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_playlist_revision.sql"))
         .unwrap();
     db.execute_batch("DROP TABLE playlist_source; PRAGMA user_version=21")

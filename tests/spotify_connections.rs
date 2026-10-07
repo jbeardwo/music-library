@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     browse::{Request, SongColumn},
@@ -254,6 +256,7 @@ fn v25_upgrade_backfills_review_without_changing_membership_or_trust() {
     .unwrap();
     drop(l);
     let db = rusqlite::Connection::open(&path).unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch("DROP TRIGGER IF EXISTS spotify_exclusion_unconnected;
 DROP TRIGGER IF EXISTS lifecycle_track_provider_evidence_insert;
 DROP TRIGGER IF EXISTS lifecycle_track_provider_evidence_update;

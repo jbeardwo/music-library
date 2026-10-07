@@ -99,6 +99,14 @@ impl Selection {
 }
 impl Input {
     pub fn search_artist(&self) -> &str {
+        if self
+            .evidence
+            .artist_credits
+            .iter()
+            .any(|o| matches!(o.origin, crate::canonical_evidence::Origin::UserOverride))
+        {
+            return &self.artist;
+        }
         self.primary_artist
             .as_ref()
             .filter(|a| !a.name.trim().is_empty())
@@ -107,10 +115,10 @@ impl Input {
 }
 pub(crate) fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<Input> {
     let (mut input, album) = db.query_row(
-            "SELECT e.title,e.artist_names,e.release_title,r.album_id,e.duration_ms,t.disc_number,t.track_number FROM track t JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
+            "SELECT e.title,e.artist_names,e.release_title,r.album_id,e.duration_ms,e.disc_number,e.track_number FROM track t JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
             [track.as_ref()], |r| Ok((Input { track_id: track.clone(), spotify_excluded:false, evidence:Default::default(), association_providers:vec![], album_date:None, album_artists:vec![], album_required_tracks:0, primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
     let year: Option<i32> = db.query_row(
-        "SELECT year FROM album_application_metadata WHERE album_id=?1",
+        "SELECT year FROM effective_album_metadata WHERE album_id=?1",
         [&album],
         |r| r.get(0),
     )?;
@@ -198,6 +206,18 @@ pub(crate) fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<I
         input.album = title;
     }
     input.album_date = crate::canonical_evidence::agreed_date(&input.evidence.dates);
+    if let Some(value) = crate::metadata::override_value(
+        db,
+        &crate::metadata::Target::Track(track.0.clone()),
+        "year",
+    )?
+    .or(crate::metadata::override_value(
+        db,
+        &crate::metadata::Target::Album(album.clone()),
+        "year",
+    )?) {
+        input.album_date = crate::catalog_date::Date::parse(&value);
+    }
     let mut q = db.prepare("SELECT provider FROM track_external_identity WHERE track_id=?1 UNION SELECT album_provider FROM manual_track_association WHERE track_id=?1 UNION SELECT album_provider FROM provider_track_association WHERE track_id=?1 ORDER BY 1")?;
     input.association_providers = q
         .query_map([track.as_ref()], |r| r.get(0))?

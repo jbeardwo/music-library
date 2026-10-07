@@ -6,6 +6,7 @@ mod library_search;
 #[cfg(feature = "gstreamer")]
 mod local;
 mod local_import;
+mod metadata;
 mod playback_route;
 mod player_controls;
 mod sample;
@@ -588,6 +589,14 @@ struct Bridge {
             );
         }
     ),
+    metadata_state: metadata::State,
+    metadata_snapshot: qt_property!(QString; READ metadata_value NOTIFY metadata_changed),
+    metadata_changed: qt_signal!(),
+    metadata_action: qt_method!(
+        fn metadata_action(&mut self, action: String, kind: String, id: String, payload: String) {
+            self.metadata_action_impl(&action, &kind, id, payload);
+        }
+    ),
     browser: browser::Browser,
     browse_snapshot: qt_property!(QVariantMap; READ browse_value NOTIFY browse_changed),
     browse_changed: qt_signal!(),
@@ -918,6 +927,10 @@ impl Bridge {
             artwork_changed: Default::default(),
             artwork_retry: Default::default(),
             artwork_batch: Default::default(),
+            metadata_state: Default::default(),
+            metadata_snapshot: Default::default(),
+            metadata_changed: Default::default(),
+            metadata_action: Default::default(),
             browser: Default::default(),
             browse_snapshot: Default::default(),
             browse_changed: Default::default(),
@@ -6860,5 +6873,365 @@ mod library_ui_tests {
         assert!(b.spotify_resolution_worker.is_none());
         assert!(b.spotify_playback_worker.is_none());
         assert!(b.matcher.is_none());
+    }
+}
+
+#[cfg(test)]
+mod metadata_ui_tests {
+    use super::*;
+    use music_library::{domain::*, metadata::Target};
+    #[test]
+    #[ignore = "explicit offscreen Qt metadata interaction test"]
+    fn metadata_context_actions_use_clicked_canonical_ids_and_keep_queue() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut library = music_library::Library::open(temp.path().join("db")).unwrap();
+        let release = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Album".into(),
+                year: Some(2012),
+                artists: vec![],
+                tracks: (1..=3)
+                    .map(|n| CatalogTrackInput {
+                        title: format!("Song {n}"),
+                        artists: vec![],
+                        disc_number: Some(1),
+                        track_number: Some(n),
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        for t in &release.track_ids {
+            library.add_to_library(t).unwrap();
+        }
+        let release = if std::env::var_os("METADATA_REAL_FIXTURE").is_some() {
+            let root = temp.path().join("real-audio");
+            std::fs::create_dir(&root).unwrap();
+            for entry in std::fs::read_dir("../../test-media/Get Disowned").unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().is_some_and(|e| e == "mp3") {
+                    std::fs::copy(&path, root.join(path.file_name().unwrap())).unwrap();
+                }
+            }
+            library
+                .ingest_local(
+                    &music_library::local_ingestion::Request::Folder(root),
+                    &mut music_library::filesystem::LoftyMetadataExtractor,
+                    &mut |_| {},
+                )
+                .unwrap();
+            let rows = library
+                .browse(&music_library::browse::Request {
+                    pane: music_library::browse::Pane::Songs,
+                    limit: 200,
+                    ..Default::default()
+                })
+                .unwrap();
+            let rows: Vec<_> = rows
+                .into_iter()
+                .filter(|r| {
+                    r.track
+                        .as_ref()
+                        .is_some_and(|t| t.release_title == "Get Disowned")
+                })
+                .collect();
+            assert_eq!(rows.len(), 10);
+            ImportedRelease {
+                release_id: rows[0].track.as_ref().unwrap().release_id.clone(),
+                track_ids: rows
+                    .iter()
+                    .map(|r| r.track.as_ref().unwrap().track_id.clone())
+                    .collect(),
+            }
+        } else {
+            release
+        };
+        let album = library
+            .album_for_release(&release.release_id)
+            .unwrap()
+            .album_id;
+        let playlist = library.create_playlist("P").unwrap();
+        let entry = library
+            .append_playlist_track(&playlist, &release.track_ids[2])
+            .unwrap();
+        let cached = serde_json::json!({"items":[{
+            "identity":{"provider":"spotify","kind":"track","external_id":"metadata-ui-candidate"},
+            "album_identity":null,"title":"Persisted song","artist":"Band","artists":[],
+            "album":"Album","date":"2012","album_artists":[],"album_type":"album",
+            "album_total_tracks":3,"duration_ms":120000,"disc":1,"number":2
+        }],"next_offset":null});
+        rusqlite::Connection::open(temp.path().join("db")).unwrap().execute(
+            "INSERT INTO spotify_reconciliation_cache(track_id,input_json,page_json) VALUES(?1,?2,?3)",
+            rusqlite::params![release.track_ids[1].as_ref(), serde_json::to_string(&library.song_resolution_input(&release.track_ids[1]).unwrap()).unwrap(), cached.to_string()]
+        ).unwrap();
+        let mut session = Session::new(library);
+        session
+            .playback
+            .set_queue(vec![release.track_ids[0].clone()])
+            .unwrap();
+        let bridge = QObjectBox::new(Bridge::new(session));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml=include_str!("../Main.qml").replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1).replace("    function ready() {",r#"
+    TestCase { id: metadataTest; when: false }
+    Timer { id: metadataTimeout; interval: 10000; onTriggered: Qt.quit() }
+    Connections { target: window.bridge; function onMetadata_changed() { if(metadataTimeout.running && !window.metadataState.busy) {metadataTimeout.stop(); Qt.quit();} } }
+    function testTrackMetadata(track,entry) {
+        if(entry.length) {window.bridge.browse_action("view",0,"Playlists");window.openSongContext(2,{id:entry,track:{trackId:track}});}
+        else {window.openSongContext(2,{id:track});}
+        trackMetadataMenuAction.triggered();libraryMenu.close();
+        metadataTest.wait(30);
+        metadataTest.grabImage(window.contentItem).save("/tmp/metadata-dialog.png");
+        return JSON.stringify(metadataDialog.inspection);
+    }
+    function testAlbumMetadata(album) {window.bridge.browse_action("view",0,"Artists");window.contextPane=1;window.contextId=album;albumMetadataMenuAction.triggered();metadataTest.wait(30);metadataTest.grabImage(window.contentItem).save("/tmp/metadata-album-dialog.png");return JSON.stringify(metadataDialog.inspection);}
+    function testMetadataSave(field,value) {
+        const input=metadataTest.findChild(metadataDialog.contentItem,"metadataField_"+field);
+        input.forceActiveFocus();metadataTest.keyClick(Qt.Key_A,Qt.ControlModifier);
+        for(const character of value) metadataTest.keyClick(character);
+        metadataTimeout.start();metadataDialog.save();
+    }
+    function testMetadataSelectAll() {
+        metadataDialog.writeFiles=true;
+        const select=metadataTest.findChild(metadataDialog.contentItem,"metadataSelectAllFiles");
+        const clear=metadataTest.findChild(metadataDialog.contentItem,"metadataClearFiles");
+        select.clicked();
+        const count=Object.keys(metadataDialog.selectedFiles).filter(key=>metadataDialog.selectedFiles[key]).length;
+        clear.clicked();
+        return Object.keys(metadataDialog.selectedFiles).length===0 ? count : -1;
+    }
+    function testMetadataWriteAlbum() {
+        metadataDialog.setEdit("title","Correct Album files");
+        metadataDialog.setEdit("artist_credit","Hop Along, Queen Ansleis");
+        metadataDialog.writeFiles=true;
+        metadataTest.findChild(metadataDialog.contentItem,"metadataSelectAllFiles").clicked();
+        metadataTimeout.start();metadataDialog.save();
+    }
+    function testMetadataConnect(track) {
+        const button=metadataTest.findChild(metadataDialog.contentItem,"metadataConnectSpotify_"+track+"_metadata-ui-candidate");
+        if(!button || !button.visible || !button.enabled) return "candidate button unavailable";
+        button.clicked();
+        return window.metadataState.message;
+    }
+    function testRenameDraft(title) { metadataDialog.setEdit("title",title); metadataDialog.save(); return metadataRenameDialog.visible; }
+    function testRenameChoice(action) {
+        const button=metadataTest.findChild(metadataRenameDialog.contentItem,"metadataRename"+action);
+        if(action!=="Cancel") metadataTimeout.start();
+        button.clicked();
+        return Object.keys(metadataDialog.edits).length;
+    }
+    function testMetadataClose() {metadataDialog.close();}
+    function ready() {
+"#);
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        let snapshot = engine
+            .invoke_method(
+                "testTrackMetadata".into(),
+                &[string(release.track_ids[1].as_ref()), string("")],
+            )
+            .to_qstring()
+            .to_string();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["target"]["track"], release.track_ids[1].0);
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "testMetadataConnect".into(),
+                    &[string(release.track_ids[1].as_ref())]
+                )
+                .to_qstring()
+                .to_string(),
+            "Spotify candidate connected ✓"
+        );
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .list_track_external_identities(&release.track_ids[1])
+                .unwrap()[0]
+                .external_id,
+            "metadata-ui-candidate"
+        );
+        engine.invoke_method(
+            "testMetadataSave".into(),
+            &[string("title"), string("Correct Song")],
+        );
+        engine.exec();
+        let snapshot = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .inspect_metadata(&Target::Track(release.track_ids[1].0.clone()))
+            .unwrap();
+        assert_eq!(snapshot.fields[0].value, "Correct Song");
+        assert_eq!(
+            bridge.pinned().borrow().session.playback.state().queue,
+            vec![release.track_ids[0].clone()]
+        );
+        engine.invoke_method("testMetadataClose".into(), &[]);
+        let snapshot = engine
+            .invoke_method(
+                "testTrackMetadata".into(),
+                &[string(release.track_ids[2].as_ref()), string(&entry)],
+            )
+            .to_qstring()
+            .to_string();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["target"]["track"], release.track_ids[2].0);
+        engine.invoke_method("testMetadataClose".into(), &[]);
+        let snapshot = engine
+            .invoke_method("testAlbumMetadata".into(), &[string(album.as_ref())])
+            .to_qstring()
+            .to_string();
+        let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(snapshot["target"]["album"], album.0);
+        assert_eq!(snapshot["track_count"], release.track_ids.len());
+        let groups = snapshot["track_evidence"].as_array().unwrap();
+        assert_eq!(groups.len(), release.track_ids.len());
+        assert!(
+            groups
+                .iter()
+                .all(|group| group["evidence"][0]["source"] == "Library")
+        );
+        engine.invoke_method(
+            "testMetadataSave".into(),
+            &[string("title"), string("Correct Album")],
+        );
+        engine.exec();
+        for t in &release.track_ids {
+            let i = bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .inspect_metadata(&Target::Track(t.0.clone()))
+                .unwrap();
+            assert_eq!(
+                i.fields.iter().find(|f| f.key == "album").unwrap().value,
+                "Correct Album"
+            );
+        }
+        if std::env::var_os("METADATA_REAL_FIXTURE").is_some() {
+            assert_eq!(
+                engine
+                    .invoke_method("testMetadataSelectAll".into(), &[])
+                    .to_int(),
+                10
+            );
+            engine.invoke_method("testMetadataWriteAlbum".into(), &[]);
+            engine.exec();
+            let snapshot = bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .inspect_metadata(&Target::Album(album.0.clone()))
+                .unwrap();
+            use music_library::filesystem::MetadataExtractor;
+            for file in snapshot.files {
+                let tags = music_library::filesystem::LoftyMetadataExtractor
+                    .read(std::path::Path::new(&file.path))
+                    .unwrap();
+                assert_eq!(tags.release_title.as_deref(), Some("Correct Album files"));
+                assert_eq!(tags.release_artists, vec!["Hop Along, Queen Ansleis"]);
+            }
+        }
+        let destination = bridge
+            .pinned()
+            .borrow_mut()
+            .session
+            .library
+            .create_catalog_release(&music_library::domain::CatalogReleaseInput {
+                title: "Existing rename destination".into(),
+                year: Some(2000),
+                artists: vec![],
+                tracks: vec![music_library::domain::CatalogTrackInput {
+                    title: "Destination Track".into(),
+                    artists: vec![],
+                    disc_number: Some(1),
+                    track_number: Some(99),
+                }],
+            })
+            .unwrap();
+        let destination_album = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .album_id_for_track(&destination.track_ids[0])
+            .unwrap();
+        assert!(
+            engine
+                .invoke_method(
+                    "testRenameDraft".into(),
+                    &[string("Existing rename destination")]
+                )
+                .to_bool()
+        );
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .album_id_for_track(&release.track_ids[0])
+                .unwrap(),
+            album
+        );
+        assert!(
+            engine
+                .invoke_method("testRenameChoice".into(), &[string("Cancel")])
+                .to_int()
+                > 0
+        );
+        assert!(
+            engine
+                .invoke_method(
+                    "testRenameDraft".into(),
+                    &[string("Existing rename destination")]
+                )
+                .to_bool()
+        );
+        engine.invoke_method("testRenameChoice".into(), &[string("Keep")]);
+        engine.exec();
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .album_id_for_track(&release.track_ids[0])
+                .unwrap(),
+            album
+        );
+        assert!(
+            engine
+                .invoke_method(
+                    "testRenameDraft".into(),
+                    &[string("Existing rename destination")]
+                )
+                .to_bool()
+        );
+        engine.invoke_method("testRenameChoice".into(), &[string("Move")]);
+        engine.exec();
+        for track in &release.track_ids {
+            assert_eq!(
+                bridge
+                    .pinned()
+                    .borrow()
+                    .session
+                    .library
+                    .album_id_for_track(track)
+                    .unwrap(),
+                destination_album
+            );
+        }
+        assert_eq!(
+            bridge.pinned().borrow().session.playback.state().queue,
+            vec![release.track_ids[0].clone()]
+        );
     }
 }

@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     album_program::{Outcome, Program, Programs, Reply, TrackOutcome},
@@ -583,6 +585,7 @@ fn chooser_requires_current_known_album_and_valid_explicit_selection() {
 fn migration_and_reconstruction_use_targeted_indexes() {
     let f = Fixture::new();
     let db = f.db();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_manual_schema.sql"))
         .unwrap();
     db.execute_batch("PRAGMA user_version=10").unwrap();
@@ -593,7 +596,7 @@ fn migration_and_reconstruction_use_targeted_indexes() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i32>(0))
             .unwrap(),
-        29
+        30
     );
     let plan:Vec<String>=db.prepare("EXPLAIN QUERY PLAN SELECT m.track_id FROM release r CROSS JOIN track t ON t.release_id=r.id JOIN manual_track_association m ON m.track_id=t.id WHERE r.album_id=?1").unwrap().query_map([f.album.as_ref()],|r|r.get(3)).unwrap().map(Result::unwrap).collect();
     assert!(plan.iter().any(|s| s.contains("release_album")));

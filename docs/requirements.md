@@ -997,3 +997,17 @@ Provider candidates must be evaluated against accumulated trusted Track/Album ev
 ### Reconciliation lifecycle and negative provider knowledge
 
 Unresolved Spotify decisions must become stale after matcher upgrades or relevant canonical evidence changes. Automatic reconsideration is persisted/local-only and bounded; fresh provider discovery requires explicit user retry. Current-version failures, trusted successes and user exclusions must not repeatedly run. Users can mark an unresolved canonical Track Not on Spotify and reverse that decision with Check Spotify again. Provider-specific negative knowledge is durable, does not change membership/sources/other identities/playlists, and is cleared by an explicit trusted connection. The shared management table exposes separate actionable and marked views/counts and retains interaction state during targeted updates.
+
+## Manual metadata inspection and editing
+
+Tracks and Albums expose Metadata context actions using canonical IDs. Users can
+compare persisted local/provider evidence offline and set or clear durable field-level
+Library overrides. Overrides take precedence without replacing source evidence or
+changing entities, membership, provider identities, playlists, or playback state.
+Shared Album edits preserve distinct featured Track credits and Track-specific fields.
+
+Optional local tag write-back is unchecked by default and requires an explicit file
+selection with a visible scope. The Library edit commits transactionally before file
+writes; failures are reported per path and cannot undo the Library correction.
+Effective display, search, sorting, and Genre membership update for affected entities.
+See [implemented fields, precedence, safety, and limitations](metadata-editor.md).

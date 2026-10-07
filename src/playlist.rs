@@ -272,12 +272,12 @@ fn read_selected_entries_direction(
     // Page contents and its prefix rank must observe the same persisted order.
     let read_tx = connection.unchecked_transaction()?;
     let connection = &*read_tx;
-    let sql = "SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5";
+    let sql = "SELECT p.id,p.position,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),p.playlist_id,pl.name,e.track_number,e.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p CROSS JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN effective_album_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.playlist_id IN (SELECT value FROM json_each(?1)) AND (p.playlist_id,p.position,p.id)>(?2,?3,?4) AND (?6 IS NULL OR p.id IN (SELECT value FROM json_each(?6))) ORDER BY p.playlist_id,p.position,p.id LIMIT ?5";
     let sql = sql.replace("e.artist_names", &crate::browse::song_artist_credit_sql());
     // Full queue snapshots need Track metadata and entry order, not display positions.
     let sql = if limit.is_none() {
         sql.replace(
-            "pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names",
+            "pl.name,e.track_number,e.disc_number,e.duration_ms,e.duration_approximate,e.genre_names",
             "pl.name",
         )
     } else {
@@ -791,7 +791,7 @@ fn ensure_view_cache(connection: &Connection, playlists: &[String], sort: ViewSo
     }
     connection.execute_batch("DROP TABLE IF EXISTS temp.playlist_view_cache; CREATE TEMP TABLE playlist_view_cache(id TEXT PRIMARY KEY,playlist_id TEXT,position INTEGER,ordinal INTEGER,sort_key COLLATE NOCASE); DELETE FROM playlist_view_cache_state;")?;
     let album_join = if matches!(sort.column, Column::Album | Column::Artist) {
-        "JOIN track t ON t.id=p.track_id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id"
+        "JOIN track t ON t.id=p.track_id JOIN release r ON r.id=t.release_id JOIN effective_album_metadata a ON a.album_id=r.album_id"
     } else {
         ""
     };
@@ -901,7 +901,7 @@ fn read_view(
         return Ok(Vec::new());
     }
     // Fetch canonical metadata in the same read snapshot.
-    let sql = "SELECT p.id,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),pl.name,t.track_number,t.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN album_application_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.id IN (SELECT value FROM json_each(?1))";
+    let sql = "SELECT p.id,t.id,t.release_id,e.title,a.title,e.artist_names,e.year,EXISTS(SELECT 1 FROM track_source s JOIN local_file_observation l ON l.source_id=s.source_id WHERE s.track_id=t.id AND l.available=1),pl.name,e.track_number,e.disc_number,e.duration_ms,e.duration_approximate,e.genre_names FROM playlist_entry p JOIN track t ON t.id=p.track_id JOIN effective_track_metadata e ON e.track_id=t.id JOIN release r ON r.id=t.release_id JOIN effective_album_metadata a ON a.album_id=r.album_id JOIN playlist pl ON pl.id=p.playlist_id WHERE p.id IN (SELECT value FROM json_each(?1))";
     let sql = sql.replace("e.artist_names", &crate::browse::song_artist_credit_sql());
     let mut query = tx.prepare(&sql)?;
     let mut metadata = query

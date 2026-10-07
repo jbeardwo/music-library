@@ -19,6 +19,9 @@ mod artist_equivalence;
 #[path = "../src/artist_identity.rs"]
 mod artist_identity;
 #[allow(dead_code)]
+#[path = "../src/browse.rs"]
+mod browse;
+#[allow(dead_code)]
 #[path = "../src/output.rs"]
 mod output;
 use music_library::playback;
@@ -66,6 +69,8 @@ use application::Library;
 use rusqlite::{Connection, StatementStatus, params};
 use std::hint::black_box;
 use std::time::Instant;
+use storage::Error;
+type Result<T, E = Error> = std::result::Result<T, E>;
 
 #[allow(dead_code)]
 mod storage {
@@ -688,3 +693,7 @@ mod canonical_evidence;
 #[allow(dead_code)]
 #[path = "../src/spotify_lifecycle.rs"]
 mod spotify_lifecycle;
+
+#[allow(dead_code)]
+#[path = "../src/metadata.rs"]
+mod metadata;

@@ -69,6 +69,9 @@ fn search(c: &Connection, text: &str, kind: Kind) -> Result<Vec<Hit>> {
     let normalized = text.trim().to_lowercase();
     let common = r#"
 WITH
+credit_hits AS MATERIALIZED (
+ SELECT e.track_id AS id,r.album_id FROM track_search f CROSS JOIN effective_track_metadata e ON e.rowid=f.rowid CROSS JOIN track t ON t.id=e.track_id CROSS JOIN release r ON r.id=t.release_id CROSS JOIN library_membership lm ON lm.track_id=t.id WHERE track_search MATCH :credit_query LIMIT 40
+),
 am AS MATERIALIZED (
  SELECT a.id,a.name,CASE WHEN lower(a.name)=:text THEN 0 WHEN substr(lower(a.name),1,length(:text))=:text THEN 1 ELSE 2 END AS score
  FROM artist_lookup f CROSS JOIN artist a ON a.rowid=f.rowid WHERE artist_lookup MATCH :query AND :title_query IS NOT NULL
@@ -79,7 +82,7 @@ am AS MATERIALIZED (
 ),
 bm AS MATERIALIZED (
  SELECT a.album_id AS id,a.title,CASE WHEN lower(a.title)=:text THEN 0 WHEN substr(lower(a.title),1,length(:text))=:text THEN 1 ELSE 2 END AS score
- FROM album_lookup f CROSS JOIN album_application_metadata a ON a.rowid=f.rowid WHERE album_lookup MATCH :query
+ FROM album_lookup f CROSS JOIN effective_album_metadata a ON a.rowid=f.rowid WHERE album_lookup MATCH :query
  AND EXISTS(SELECT 1 FROM release r CROSS JOIN track t ON t.release_id=r.id CROSS JOIN library_membership lm ON lm.track_id=t.id WHERE r.album_id=a.album_id)
  ORDER BY score,lower(a.title),a.album_id LIMIT 40
 ),
@@ -102,7 +105,7 @@ artist_tracks AS MATERIALIZED (
         ),
         (
             Kind::Album,
-            "album_application_metadata a ON a.album_id=h.id",
+            "effective_album_metadata a ON a.album_id=h.id",
             "a.title",
             "a.album_id",
             "NULL",
@@ -121,10 +124,10 @@ artist_tracks AS MATERIALIZED (
         let candidates = match section {
             Kind::Artist => "SELECT id,score FROM am",
             Kind::Album => {
-                "SELECT id,score FROM bm UNION ALL SELECT r.album_id,4 FROM artist_tracks at CROSS JOIN track t ON t.id=at.id CROSS JOIN release r ON r.id=t.release_id"
+                "SELECT id,score FROM bm UNION ALL SELECT album_id,4 FROM credit_hits UNION ALL SELECT r.album_id,4 FROM artist_tracks at CROSS JOIN track t ON t.id=at.id CROSS JOIN release r ON r.id=t.release_id"
             }
             _ => {
-                "SELECT e.track_id AS id,CASE WHEN lower(e.title)=:text THEN 0 WHEN substr(lower(e.title),1,length(:text))=:text THEN 1 ELSE 2 END AS score FROM track_search f CROSS JOIN effective_track_metadata e ON e.rowid=f.rowid CROSS JOIN library_membership lm ON lm.track_id=e.track_id WHERE track_search MATCH :title_query UNION ALL SELECT id,4 FROM artist_tracks UNION ALL SELECT t.id,4 FROM bx bm CROSS JOIN release r ON r.album_id=bm.id CROSS JOIN track t ON t.release_id=r.id CROSS JOIN library_membership lm ON lm.track_id=t.id"
+                "SELECT e.track_id AS id,CASE WHEN lower(e.title)=:text THEN 0 WHEN substr(lower(e.title),1,length(:text))=:text THEN 1 ELSE 2 END AS score FROM track_search f CROSS JOIN effective_track_metadata e ON e.rowid=f.rowid CROSS JOIN library_membership lm ON lm.track_id=e.track_id WHERE track_search MATCH :title_query UNION ALL SELECT id,4 FROM credit_hits UNION ALL SELECT id,4 FROM artist_tracks UNION ALL SELECT t.id,4 FROM bx bm CROSS JOIN release r ON r.album_id=bm.id CROSS JOIN track t ON t.release_id=r.id CROSS JOIN library_membership lm ON lm.track_id=t.id"
             }
         };
         let display_credit = if section == Kind::Song {
@@ -137,7 +140,7 @@ artist_tracks AS MATERIALIZED (
         );
         let mut stmt = c.prepare(&sql)?;
         let rows = stmt.query_map(
-            named_params! {":text":normalized,":query":q,":title_query":title_q},
+            named_params! {":text":normalized,":query":q,":title_query":title_q,":credit_query":format!("artist_names : ({q})")},
             |r| {
                 Ok(Hit {
                     kind: section,
@@ -170,7 +173,7 @@ artist_tracks AS MATERIALIZED (
               SELECT ac.album_id,ac.artist_id,ac.position,COALESCE(ac.credited_name,a.name) AS name,ac.join_phrase,0 AS priority FROM album_artist_credit ac JOIN artist a ON a.id=ac.artist_id WHERE ac.album_id IN ({placeholders})
               UNION ALL SELECT r.album_id,rc.artist_id,rc.position,COALESCE(rc.credited_name,a.name),rc.join_phrase,1 FROM release_artist_credit rc JOIN release r ON r.id=rc.release_id JOIN artist a ON a.id=rc.artist_id WHERE r.album_id IN ({placeholders}) AND NOT EXISTS(SELECT 1 FROM album_artist_credit ac WHERE ac.album_id=r.album_id) AND EXISTS(SELECT 1 FROM track st JOIN library_membership sl ON sl.track_id=st.id WHERE st.release_id=r.id)
               UNION ALL SELECT r.album_id,tc.artist_id,tc.position,COALESCE(tc.credited_name,a.name),tc.join_phrase,2 FROM track_artist_credit tc JOIN track t ON t.id=tc.track_id JOIN release r ON r.id=t.release_id JOIN artist a ON a.id=tc.artist_id JOIN library_membership lm ON lm.track_id=t.id WHERE r.album_id IN ({placeholders}) AND NOT EXISTS(SELECT 1 FROM album_artist_credit ac WHERE ac.album_id=r.album_id) AND NOT EXISTS(SELECT 1 FROM release_artist_credit rc JOIN release rr ON rr.id=rc.release_id JOIN track rt ON rt.release_id=rr.id JOIN library_membership rm ON rm.track_id=rt.id WHERE rr.album_id=r.album_id)
-            ) SELECT m.album_id,m.title,c.artist_id,c.name,c.priority,c.position,c.join_phrase FROM album_application_metadata m LEFT JOIN credits c ON c.album_id=m.album_id WHERE m.album_id IN ({placeholders}) ORDER BY m.album_id,c.priority,c.position,c.artist_id"#
+            ) SELECT m.album_id,m.title,c.artist_id,c.name,c.priority,c.position,c.join_phrase,m.artist_credit FROM effective_album_metadata m LEFT JOIN credits c ON c.album_id=m.album_id WHERE m.album_id IN ({placeholders}) ORDER BY m.album_id,c.priority,c.position,c.artist_id"#
             );
             let mut stmt = c.prepare(&sql)?;
             let rows = stmt.query_map(rusqlite::params_from_iter(ids), |r| {
@@ -182,11 +185,12 @@ artist_tracks AS MATERIALIZED (
                     r.get::<_, Option<i32>>(4)?.unwrap_or(3),
                     r.get::<_, Option<i64>>(5)?.unwrap_or(0),
                     r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
                 ))
             })?;
             let mut context = std::collections::HashMap::new();
             for row in rows {
-                let (id, title, artist, name, priority, position, join) = row?;
+                let (id, title, artist, name, priority, position, join, override_credit) = row?;
                 let entry = context.entry(id).or_insert_with(|| Context {
                     title,
                     artist,
@@ -194,6 +198,7 @@ artist_tracks AS MATERIALIZED (
                     priority,
                     position: -1,
                     join: None,
+                    override_credit,
                 });
                 if priority == entry.priority && position > entry.position {
                     if !entry.name.is_empty() {
@@ -208,7 +213,10 @@ artist_tracks AS MATERIALIZED (
                 if let Some(context) = h.album_id.as_ref().and_then(|a| context.get(a.as_ref())) {
                     h.album = context.title.clone();
                     if h.artist.is_empty() {
-                        h.artist = context.name.clone();
+                        h.artist = context
+                            .override_credit
+                            .clone()
+                            .unwrap_or_else(|| context.name.clone());
                     }
                     h.artist_id = context.artist.clone().map(ArtistId);
                 }
@@ -225,4 +233,5 @@ struct Context {
     priority: i32,
     position: i64,
     join: Option<String>,
+    override_credit: Option<String>,
 }

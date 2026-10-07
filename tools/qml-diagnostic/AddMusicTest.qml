@@ -101,7 +101,7 @@
             const rendered=songs.itemAtIndex(0);
             check(musicTest.findChild(rendered,"songTitle").text === "Second Song", "canonical title rendered");
             const subtitle=musicTest.findChild(rendered,"playlistArtist").text;
-            check(subtitle.indexOf("Unknown artist") >= 0 && !library.panes[2].rows[0].track.available, "missing metadata and source degrade safely");
+            check(subtitle.indexOf("tricot") >= 0 && !library.panes[2].rows[0].track.available, "missing Track credit uses Album fallback and unavailable source stays unavailable");
             check(library.panes[2].rows.map(r=>r.number).join(",") === "1,2", "playlist positions replace album numbers");
             check(addMusicPanel.view.tracks.every(r=>!r.saved), "playlist add does not save");
             window.bridge.add_music_action("playlist","1:1,2:1");

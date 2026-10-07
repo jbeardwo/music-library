@@ -253,7 +253,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 29 {
+        } else if version > 30 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -421,6 +421,10 @@ impl Store {
             connection.execute_batch(include_str!(
                 "../migrations/0029_spotify_reconciliation_lifecycle.sql"
             ))?;
+        }
+
+        if version < 30 {
+            connection.execute_batch(include_str!("../migrations/0030_metadata_editor.sql"))?;
         }
 
         Ok(Self {
@@ -632,7 +636,7 @@ impl Store {
                 ) THEN ', ' ELSE '' END) AS name
                 FROM album_artist_credit c JOIN artist ar ON ar.id=c.artist_id
                 WHERE c.album_id=a.album_id ORDER BY c.position)), '')
-             FROM release r JOIN album_application_metadata a ON a.album_id=r.album_id WHERE r.id=?1",
+             FROM release r JOIN effective_album_metadata a ON a.album_id=r.album_id WHERE r.id=?1",
             [release_id.as_ref()], |r| Ok(crate::domain::Album {
                 album_id: crate::domain::AlbumId(r.get(0)?), title:r.get(1)?, year:r.get(2)?, artist_names:r.get(3)?
             })).map_err(Into::into)
@@ -1755,7 +1759,7 @@ fn refresh_album_match_key_impl(
     album_id: &str,
     credited: bool,
 ) -> Result<()> {
-    let title: String = tx.query_row(
+    let mut title: String = tx.query_row(
         "SELECT title FROM album_application_metadata WHERE album_id=?1",
         [album_id],
         |r| r.get(0),
@@ -1779,6 +1783,21 @@ fn refresh_album_match_key_impl(
         } else {
             ""
         }));
+    }
+    // Older migrations call this before the override schema exists.
+    let overrides: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='album_metadata_override')",
+        [],
+        |r| r.get(0),
+    )?;
+    if overrides {
+        let target = crate::metadata::Target::Album(album_id.into());
+        if let Some(value) = crate::metadata::override_value(tx, &target, "title")? {
+            title = value;
+        }
+        if let Some(value) = crate::metadata::override_value(tx, &target, "artist_credit")? {
+            display = value;
+        }
     }
     tx.execute("UPDATE album_application_metadata SET match_title=?1, match_artist_credit=?2 WHERE album_id=?3", params![crate::matching::normalize(&title), crate::matching::normalize(&display), album_id])?;
     Ok(())
@@ -1898,7 +1917,7 @@ fn split_artist_names(names: String) -> Vec<String> {
     }
 }
 
-fn write_file_metadata(
+pub(crate) fn write_file_metadata(
     tx: &Transaction<'_>,
     source_id: &SourceId,
     metadata: &ObservedMetadata,
@@ -2050,7 +2069,10 @@ pub(crate) fn bytes_to_path(bytes: Vec<u8>) -> PathBuf {
     PathBuf::from(OsString::from_wide(&wide))
 }
 
-fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> Result<()> {
+pub(crate) fn refresh_effective_track_impl(
+    connection: &Connection,
+    track_id: &TrackId,
+) -> Result<()> {
     let _refresh = crate::catalog::Timing::detail("persistence.effective_fts");
     let changed = connection.execute(
         "INSERT INTO effective_track_metadata(
@@ -2059,7 +2081,7 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
          SELECT t.id,
                 COALESCE(o.value, f.track_title, app.title, ''),
                 r.title,
-                COALESCE((
+                COALESCE(mo.artist_credit,(
                     SELECT group_concat(name, '') FROM (
                         SELECT COALESCE(c.credited_name, a.name) || COALESCE(c.join_phrase,
                             CASE WHEN EXISTS (SELECT 1 FROM track_artist_credit next
@@ -2070,12 +2092,14 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
                         WHERE c.track_id = t.id ORDER BY c.position
                     )
                 ), ''),
-                COALESCE(f.year, r.year), COALESCE(CASE WHEN f.duration_ms>=0 THEN f.duration_ms END,(SELECT d.duration_ms FROM track_duration_observation d WHERE d.track_id=t.id ORDER BY d.quality,d.provider,d.source_key LIMIT 1)), f.format,
+                CASE WHEN mo.year_set THEN mo.year WHEN ao.year_set THEN ao.year ELSE COALESCE(f.year, r.year) END, COALESCE(CASE WHEN f.duration_ms>=0 THEN f.duration_ms END,(SELECT d.duration_ms FROM track_duration_observation d WHERE d.track_id=t.id ORDER BY d.quality,d.provider,d.source_key LIMIT 1)), f.format,
                 CASE WHEN f.duration_ms>=0 THEN 0 ELSE COALESCE((SELECT d.quality=2 FROM track_duration_observation d WHERE d.track_id=t.id ORDER BY d.quality,d.provider,d.source_key LIMIT 1),0) END,
-                COALESCE((SELECT group_concat(genre,' · ') FROM (SELECT DISTINCT g.genre FROM track_source gs JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id ORDER BY g.genre COLLATE NOCASE,g.genre)),'')
+                COALESCE(mo.genre,ao.genre,(SELECT group_concat(genre,' · ') FROM (SELECT DISTINCT g.genre FROM track_source gs JOIN file_genre_observation g ON g.source_id=gs.source_id WHERE gs.track_id=t.id ORDER BY g.genre COLLATE NOCASE,g.genre)),'')
          FROM track t
          JOIN release edition ON edition.id = t.release_id
-         JOIN album_application_metadata r ON r.album_id = edition.album_id
+         JOIN effective_album_metadata r ON r.album_id = edition.album_id
+         LEFT JOIN track_metadata_override mo ON mo.track_id=t.id
+         LEFT JOIN album_metadata_override ao ON ao.album_id=edition.album_id
          LEFT JOIN track_application_metadata app ON app.track_id = t.id
          LEFT JOIN track_title_override o ON o.track_id = t.id
          LEFT JOIN track_source ts ON ts.track_id = t.id
@@ -2099,6 +2123,7 @@ fn refresh_effective_track_impl(connection: &Connection, track_id: &TrackId) -> 
     if changed == 0 {
         return Err(Error::Invalid(format!("unknown Track {}", track_id.0)));
     }
+    crate::metadata::refresh_track_fields(connection, track_id)?;
     connection.execute(
         "DELETE FROM track_search
          WHERE rowid = (SELECT rowid FROM effective_track_metadata WHERE track_id = ?1)",
@@ -2120,7 +2145,7 @@ fn prepare_album_match(
 ) -> Result<crate::album_matching::Preparation> {
     use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
     let (title, artist, year, raw_title): (String, String, Option<i32>, String) = db.query_row(
-        "SELECT match_title,match_artist_credit,year,title FROM album_application_metadata WHERE album_id=?1",
+        "SELECT match_title,match_artist_credit,year,title FROM effective_album_metadata WHERE album_id=?1",
         [id.as_ref()],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
@@ -2134,8 +2159,13 @@ fn prepare_album_match(
     let [(artist_id, name, phrase)] = credits.as_slice() else {
         return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
     };
+    let display_override = crate::metadata::override_value(
+        db,
+        &crate::metadata::Target::Album(id.0.clone()),
+        "artist_credit",
+    )?;
     if phrase.as_deref().is_some_and(|s| !s.trim().is_empty())
-        || crate::matching::normalize(name) != artist
+        || display_override.is_none() && crate::matching::normalize(name) != artist
     {
         return Ok(Preparation::Done(MatchOutcome::ArtistAmbiguous(vec![])));
     }

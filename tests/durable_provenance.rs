@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library, Result,
     domain::*,
@@ -370,6 +372,7 @@ fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
     let mut f = Fixture::new(vec![promotable(X)]);
     drop(f.library.take());
     let db = f.db();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_manual_schema.sql"))
         .unwrap();
     db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; PRAGMA user_version=9;").unwrap();
@@ -380,7 +383,7 @@ fn v9_upgrade_protects_prior_canonical_rows_and_ownership_is_cascaded() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        29
+        30
     );
     assert_eq!(
         db.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
@@ -397,6 +400,7 @@ fn failed_ownership_migration_rolls_back_without_changing_prior_identities() {
     let mut f = Fixture::new(vec![promotable(X)]);
     drop(f.library.take());
     let db = f.db();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_manual_schema.sql"))
         .unwrap();
     db.execute_batch("DROP TRIGGER album_identity_confirmation; DROP TRIGGER recording_identity_confirmation; DROP TABLE album_provenance_identity; DROP TABLE recording_provenance_identity; CREATE TABLE recording_provenance_identity(sentinel TEXT); PRAGMA user_version=9;").unwrap();
@@ -824,6 +828,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     let mut f = Fixture::new(vec![file(1, 1, 1, 1)]);
     drop(f.library.take());
     let db = f.db();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_manual_schema.sql"))
         .unwrap();
     db.execute_batch(
@@ -846,7 +851,7 @@ fn v8_upgrade_preserves_existing_metadata_and_never_invents_provenance() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
             .unwrap(),
-        29
+        30
     );
     f.scan();
     assert_eq!(f.extractor.reads, 2); // Genre extraction upgrades older observations once on scan.

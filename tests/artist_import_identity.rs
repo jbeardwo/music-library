@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     browse::{Pane, Request},
@@ -184,6 +186,7 @@ fn migration_preserves_conflicting_artist_ids_and_unrelated_equal_names() {
         ],
     )
     .unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
     db.execute_batch(

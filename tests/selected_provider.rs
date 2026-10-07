@@ -1,4 +1,6 @@
 //! A simpler provider ontology exercises the real application worker and SQLite.
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     album_matching::{AlbumMatcher, AutoMatchPolicy, CircuitState, MatchOutcome, MatchReply},
@@ -555,6 +557,7 @@ fn migration_preserves_existing_manual_recording_ownership_and_clear() {
     let track = lib.local_album_tracks(&album).unwrap().remove(0);
     drop(lib);
     let db = rusqlite::Connection::open(&path).unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_manual_schema.sql"))
         .unwrap();
     db.execute_batch(include_str!(

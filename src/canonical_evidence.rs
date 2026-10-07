@@ -270,6 +270,41 @@ pub(crate) fn load(db: &Connection, track: &TrackId, album: &str) -> Result<Trac
             e.durations.push(Observation { value, origin });
         }
     }
+    use crate::metadata::{Target, override_value};
+    let track_target = Target::Track(track.0.clone());
+    let album_target = Target::Album(album.into());
+    if let Some(value) = override_value(db, &track_target, "artist_credit")? {
+        e.artist_credits.push(Observation {
+            value: vec![value],
+            origin: Origin::UserOverride,
+        });
+    }
+    if let Some(value) = override_value(db, &album_target, "title")? {
+        e.album_titles.push(Observation {
+            value,
+            origin: Origin::UserOverride,
+        });
+    }
+    if let Some(value) = override_value(db, &album_target, "artist_credit")? {
+        e.artist_credits.push(Observation {
+            value: vec![value],
+            origin: Origin::UserOverride,
+        });
+    }
+    if let Some(value) =
+        override_value(db, &track_target, "year")?.or(override_value(db, &album_target, "year")?)
+    {
+        e.dates.push(Observation {
+            value,
+            origin: Origin::UserOverride,
+        });
+    }
+    if let Some(value) = override_value(db, &album_target, "release_type")? {
+        e.release_types.push(Observation {
+            value,
+            origin: Origin::UserOverride,
+        });
+    }
     Ok(e)
 }
 

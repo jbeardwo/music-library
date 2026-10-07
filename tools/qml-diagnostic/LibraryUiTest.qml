@@ -197,6 +197,8 @@
     function exercisePagedProgram() {
         window.bridge.browse_action("select", 0, "");
         window.bridge.browse_action("refresh", 0, "");
+        // Wait for the asynchronous scope change before navigating its page.
+        for (let n = 0; n < 250 && library.pending; ++n) uiTest.wait(20);
         window.bridge.browse_action("next", 2, "");
         uiTest.wait(30);
         const list = uiTest.findChild(window.contentItem, "libraryPane2");
@@ -206,7 +208,7 @@
         uiTest.mouseDoubleClickSequence(row, 30, row.height / 2, Qt.LeftButton);
         for (let n = 0; n < 250 && library.pending; ++n) uiTest.wait(20);
         if (library.pending || view.queueTotal !== 496 || view.position !== 203 || view.currentId !== selected)
-            return "later-page program/start mismatch";
+            return "later-page program/start mismatch: " + JSON.stringify({pending:library.pending,total:view.queueTotal,position:view.position,current:view.currentId,selected:selected,rows:library.panes[2].rows.length});
         if (library.panes[2].rows.length !== 200 || view.queueOffset !== 200 || view.queue.length !== 200 || !view.queue[3].current)
             return "bounded drawer/current occurrence mismatch";
         return "ok";

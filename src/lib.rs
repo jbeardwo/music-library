@@ -22,6 +22,7 @@ mod local_attachment;
 pub mod local_ingestion;
 pub mod manual_track;
 pub mod matching;
+pub mod metadata;
 pub mod output;
 pub mod playback;
 pub mod playback_resolver;

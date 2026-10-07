@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     catalog::Page,
@@ -164,11 +166,16 @@ fn diagnostics_explain_real_acceptance_gates_in_identical_field_order() {
     let e = evaluate(&input, &p, 0, &[]).unwrap();
     assert!(e.primary_blocker.is_none());
     assert_eq!(e.fields[0].status, "normalized");
-    p.items[0].duration_ms += 4000;
+    // Exceed the established Spotify-specific 10-second tolerance.
+    p.items[0].duration_ms += 11_000;
     let e = evaluate(&input, &p, 0, &[]).unwrap();
     assert_eq!(e.primary_code, Some("duration_threshold"));
     assert!(!e.warnings.is_empty());
-    assert!(e.primary_blocker.unwrap().contains("3-second"));
+    assert!(
+        e.primary_blocker
+            .unwrap()
+            .contains("automatic acceptance tolerance")
+    );
     p = page(c.clone());
     p.next_offset = Some(10);
     assert_eq!(
@@ -286,6 +293,7 @@ fn equivalence_migration_failure_rolls_back_version() {
     let path = tmp.path().join("library.sqlite");
     drop(Library::open(&path).unwrap());
     let db = rusqlite::Connection::open(&path).unwrap();
+    metadata_schema::downgrade(&db);
     db.execute_batch("DROP TABLE artist_equivalence; CREATE TABLE artist_equivalence(sentinel TEXT); PRAGMA user_version=26;").unwrap();
     assert!(Library::open(&path).is_err());
     assert_eq!(

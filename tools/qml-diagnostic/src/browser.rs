@@ -1843,6 +1843,109 @@ impl Bridge {
             self.refresh_selection();
         }
     }
+    pub(crate) fn metadata_move_album_context(&mut self, source: &str, destination: &str) {
+        fn remap(s: &mut music_library::selection::Selection, source: &str, destination: &str) {
+            if s.ids.remove(source) {
+                s.ids.insert(destination.to_owned());
+            }
+            if s.anchor.as_deref() == Some(source) {
+                s.anchor = Some(destination.to_owned());
+            }
+            if s.focus.as_deref() == Some(source) {
+                s.focus = Some(destination.to_owned());
+            }
+        }
+        remap(&mut self.browser.selections[1], source, destination);
+        if self.browser.album == source {
+            self.browser.album = destination.to_owned();
+        }
+        for view in &mut self.browser.views {
+            remap(&mut view.selections[1], source, destination);
+            if view.album == source {
+                view.album = destination.to_owned();
+            }
+        }
+    }
+    pub(crate) fn metadata_refresh_browse(&mut self) {
+        // Inactive windows keep their identity anchor and reload on navigation.
+        for state in &mut self.browser.views {
+            for page in &mut state.pages {
+                page.seek = if page.scroll_id.is_empty() {
+                    page.rows.first().map(|r| r.id.clone())
+                } else {
+                    Some(page.scroll_id.clone())
+                };
+                page.loaded = false;
+            }
+        }
+        if self.browser.view == 4 {
+            self.refresh_selection_with_details(false);
+            return;
+        }
+        for pane in 0..3 {
+            if self.browser.pages[pane].rows.is_empty() {
+                self.load_pane(pane, false);
+                continue;
+            }
+            let page = &self.browser.pages[pane];
+            let anchor = if page.scroll_id.is_empty() {
+                page.rows[0].id.clone()
+            } else {
+                page.scroll_id.clone()
+            };
+            let request = self.browser.pane_request(pane);
+            let first = &page.rows[0];
+            // Preserve an unchanged window boundary and its paging history.
+            // Center around the viewport only if sorting/removal moved that boundary.
+            let stable = (|| -> music_library::Result<Option<Vec<Row>>> {
+                if page.cursors.len() == 1 && page.seek.is_none() && !page.before {
+                    let rows = self.session.library.browse(&request)?;
+                    return Ok(rows.iter().any(|row| row.id == anchor).then_some(rows));
+                }
+                let mut rows = self.session.library.browse(&Request {
+                    ids: vec![first.id.clone()],
+                    limit: 1,
+                    ..request.clone()
+                })?;
+                if rows.first().is_none_or(|row| row.cursor != first.cursor) {
+                    return Ok(None);
+                }
+                let cursor = rows[0].cursor.clone();
+                rows.extend(self.session.library.browse(&Request {
+                    after: Some(cursor),
+                    limit: PAGE as u32,
+                    ..request.clone()
+                })?);
+                Ok(rows.iter().any(|row| row.id == anchor).then_some(rows))
+            })();
+            let (rows, preserve_paging) = match stable {
+                Ok(Some(rows)) => (Ok(rows), true),
+                _ => (
+                    self.session
+                        .library
+                        .browse_around(&request, &anchor)
+                        .or_else(|_| self.session.library.browse(&request)),
+                    false,
+                ),
+            };
+            match rows {
+                Ok(mut rows) => {
+                    let page = &mut self.browser.pages[pane];
+                    page.more = rows.len() > PAGE;
+                    rows.truncate(PAGE);
+                    page.rows = rows;
+                    if !preserve_paging {
+                        page.cursors = vec![None];
+                        page.before = true;
+                        page.seek = Some(anchor);
+                    }
+                }
+                Err(e) => self.browser.error = e.to_string(),
+            }
+        }
+        self.refresh_spotify_review();
+        self.browse_changed();
+    }
     fn refresh_selection(&mut self) {
         self.refresh_selection_with_details(true);
     }
@@ -2049,29 +2152,35 @@ impl Bridge {
             self.load_pane(0, false);
             return;
         }
-        if self.browser.view < 2 {
-            match self
-                .session
-                .library
-                .library_queue_reader()
-                .and_then(|reader| {
-                    reader.browse_ids(
-                        &self.browser.pane_request(0),
-                        &self.browser.selections[0]
-                            .ids
-                            .iter()
-                            .cloned()
-                            .collect::<Vec<_>>(),
-                    )
-                }) {
-                Ok(ids) => self.browser.selections[0].retain(&ids.into_iter().collect()),
-                Err(e) => self.browser.error = e.to_string(),
-            }
+        if self.browser.view == 4 {
+            self.load_pane(0, true);
+            self.selection_changed(0);
+            return;
         }
-        self.browser.sync_selection_focus();
-        self.load_pane(0, true);
-        self.selection_changed(0);
+        // Refreshing evidence is not navigation. Keep each visible window anchored
+        // while pruning selections whose canonical objects are no longer visible.
+        match self.session.library.library_queue_reader() {
+            Ok(reader) => {
+                for pane in 0..3 {
+                    let selected = self.browser.selections[pane]
+                        .ids
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    match reader.browse_ids(&self.browser.pane_request(pane), &selected) {
+                        Ok(valid) => {
+                            self.browser.selections[pane].retain(&valid.into_iter().collect())
+                        }
+                        Err(e) => self.browser.error = e.to_string(),
+                    }
+                    self.browser.sync_selection_focus();
+                }
+            }
+            Err(e) => self.browser.error = e.to_string(),
+        }
+        self.metadata_refresh_browse();
     }
+
     fn select_items(&mut self, action: &str, pane: usize, id: String) {
         self.browser.selection_revision = self.browser.selection_revision.wrapping_add(1);
         if action == "select-range" && !id.is_empty() {

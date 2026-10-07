@@ -1,3 +1,5 @@
+#[path = "support/metadata_schema.rs"]
+mod metadata_schema;
 use music_library::{
     Library,
     domain::{ArtistId, ExternalIdentity},
@@ -173,6 +175,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
     for fail in [false, true] {
         let (tmp, lib, db) = setup();
         drop(lib);
+        metadata_schema::downgrade(&db);
         db.execute_batch(include_str!("support/drop_manual_schema.sql"))
             .unwrap();
         for table in [
@@ -194,7 +197,7 @@ fn v6_backfills_presentation_and_failed_v7_upgrade_is_atomic() {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, u32>(0))
                 .unwrap(),
-            if fail { 6 } else { 29 }
+            if fail { 6 } else { 30 }
         );
         for table in [
             "album_artist_credit",
