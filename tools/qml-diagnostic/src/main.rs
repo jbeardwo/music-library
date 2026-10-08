@@ -7073,6 +7073,89 @@ mod metadata_ui_tests {
     use super::*;
     use music_library::{domain::*, metadata::Target};
     #[test]
+    #[ignore = "requires ARTIST_ASSIGNMENT_REAL_COPY disposable real-library backup and offscreen Qt"]
+    fn freshman_year_artist_assignment_ui() {
+        let path = std::env::var("ARTIST_ASSIGNMENT_REAL_COPY").unwrap();
+        assert!(path.starts_with("/tmp/"));
+        let library = music_library::Library::open(&path).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let album: String = db
+            .query_row(
+                "SELECT album_id FROM album_application_metadata WHERE title='Freshman Year'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let target = Target::Album(album.clone());
+        let before = library.inspect_metadata(&target).unwrap();
+        assert_eq!(before.assigned_artist.as_ref().unwrap().name, "Hop Along");
+        let track = TrackId(before.files[0].track_id.clone());
+        let mut session = Session::new(library);
+        session.playback.set_queue(vec![track.clone()]).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(session));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml=include_str!("../Main.qml").replacen("import QtQuick\n","import QtQuick\nimport QtTest\n",1).replace("    function ready() {", r#"
+    TestCase { id: assignmentTest; when: false }
+    Timer { id: assignmentTimeout; interval: 10000; onTriggered: Qt.quit() }
+    Connections { target: window.bridge; function onMetadata_changed() { if(assignmentTimeout.running && !window.metadataState.busy) { assignmentTimeout.stop(); Qt.quit(); } } }
+    function testRealAssignment(album) {
+        window.bridge.browse_action("view",0,"Artists");
+        window.contextPane=1; window.contextId=album; albumMetadataMenuAction.triggered();
+        assignmentTest.wait(30);
+        assignedArtistInput.forceActiveFocus(); assignmentTest.keyClick(Qt.Key_A,Qt.ControlModifier);
+        for(const ch of "Hop Along, Queen Ansleis") assignmentTest.keyClick(ch);
+        metadataDialog.save();
+        if(!artistConfirmation.visible) return false;
+        assignmentTimeout.start(); artistConfirmation.accept(); return true;
+    }
+    function testRealArtistVisible() { return window.library.panes[0].rows.some(row => row.title === "Hop Along, Queen Ansleis"); }
+    function ready() {
+"#);
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert!(
+            engine
+                .invoke_method("testRealAssignment".into(), &[string(&album)])
+                .to_bool()
+        );
+        engine.exec();
+        assert!(
+            engine
+                .invoke_method("testRealArtistVisible".into(), &[])
+                .to_bool(),
+            "Saved Artist must appear in refreshed Artists pane"
+        );
+        let pinned_bridge = bridge.pinned();
+        let b = pinned_bridge.borrow();
+        assert!(
+            b.metadata_state
+                .message
+                .starts_with("Library metadata saved"),
+            "{}",
+            b.metadata_state.message
+        );
+        let after = b.session.library.inspect_metadata(&target).unwrap();
+        assert_eq!(
+            after.assigned_artist.unwrap().name,
+            "Hop Along, Queen Ansleis"
+        );
+        assert_eq!(after.album_id, before.album_id);
+        assert_eq!(
+            after
+                .files
+                .iter()
+                .map(|f| (&f.track_id, &f.source_id))
+                .collect::<Vec<_>>(),
+            before
+                .files
+                .iter()
+                .map(|f| (&f.track_id, &f.source_id))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(b.session.playback.state().queue, vec![track]);
+    }
+    #[test]
     #[ignore = "explicit offscreen Qt metadata interaction test"]
     fn metadata_context_actions_use_clicked_canonical_ids_and_keep_queue() {
         let temp = tempfile::tempdir().unwrap();
@@ -7182,6 +7265,14 @@ mod metadata_ui_tests {
         for(const character of value) metadataTest.keyClick(character);
         metadataTimeout.start();metadataDialog.save();
     }
+    function testArtistAssignment(value) {
+        assignedArtistInput.forceActiveFocus(); metadataTest.keyClick(Qt.Key_A,Qt.ControlModifier);
+        for(const character of value) metadataTest.keyClick(character);
+        metadataDialog.save();
+        if(!artistConfirmation.visible) return false;
+        metadataTimeout.start(); artistConfirmation.accept();
+        return true;
+    }
     function testMetadataSelectAll() {
         metadataDialog.writeFiles=true;
         const select=metadataTest.findChild(metadataDialog.contentItem,"metadataSelectAllFiles");
@@ -7281,6 +7372,49 @@ mod metadata_ui_tests {
         let snapshot: serde_json::Value = serde_json::from_str(&snapshot).unwrap();
         assert_eq!(snapshot["target"]["album"], album.0);
         assert_eq!(snapshot["track_count"], release.track_ids.len());
+        assert!(
+            engine
+                .invoke_method("testArtistAssignment".into(), &[string("Alpha, Beta")])
+                .to_bool()
+        );
+        engine.exec();
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .inspect_metadata(&Target::Album(album.0.clone()))
+                .unwrap()
+                .assigned_artist
+                .unwrap()
+                .name,
+            "Alpha, Beta"
+        );
+        // A second assignment in the still-open dialog must survive autocomplete notifications.
+        assert!(
+            engine
+                .invoke_method("testArtistAssignment".into(), &[string("Gamma, Delta")])
+                .to_bool()
+        );
+        engine.exec();
+        assert_eq!(
+            bridge
+                .pinned()
+                .borrow()
+                .session
+                .library
+                .inspect_metadata(&Target::Album(album.0.clone()))
+                .unwrap()
+                .assigned_artist
+                .unwrap()
+                .name,
+            "Gamma, Delta"
+        );
+        assert_eq!(
+            bridge.pinned().borrow().session.playback.state().queue,
+            vec![release.track_ids[0].clone()]
+        );
         let groups = snapshot["track_evidence"].as_array().unwrap();
         assert_eq!(groups.len(), release.track_ids.len());
         assert!(

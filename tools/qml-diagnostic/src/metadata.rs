@@ -7,16 +7,27 @@ pub struct State {
     pub inspection: Option<Inspection>,
     pub message: String,
     pub busy: bool,
+    pub save_revision: u64,
     pub rename_matches: Vec<RenameMatch>,
+    pub artist_choices: Vec<music_library::metadata::ArtistChoice>,
     pending_save: Option<String>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Bridge {
     pub fn metadata_value(&self) -> qmetaobject::QString {
-        serde_json::json!({"inspection":self.metadata_state.inspection,"message":self.metadata_state.message,"busy":self.metadata_state.busy,"renameMatches":self.metadata_state.rename_matches}).to_string().into()
+        serde_json::json!({"inspection":self.metadata_state.inspection,"message":self.metadata_state.message,"busy":self.metadata_state.busy,"saveRevision":self.metadata_state.save_revision,"renameMatches":self.metadata_state.rename_matches,"artistChoices":self.metadata_state.artist_choices}).to_string().into()
     }
     pub fn metadata_action_impl(&mut self, action: &str, kind: &str, id: String, payload: String) {
         if self.metadata_state.busy {
+            return;
+        }
+        if action == "artist-lookup" {
+            self.metadata_state.artist_choices = self
+                .session
+                .library
+                .metadata_artist_choices(&payload)
+                .unwrap_or_default();
+            self.metadata_changed();
             return;
         }
         if action.starts_with("rename-") {
@@ -213,6 +224,7 @@ impl Bridge {
         self.metadata_state.busy = false;
         match result {
             Ok(outcome) => {
+                self.metadata_state.save_revision += 1;
                 let updated = outcome.files.iter().filter(|f| f.error.is_none()).count();
                 let failures: Vec<_> = outcome
                     .files

@@ -1152,10 +1152,16 @@ ApplicationWindow {
         property var inspection: window.metadataState.inspection
         property var edits: ({})
         property var selectedFiles: ({})
+        property var artistNameDraft: null
+        property int saveRevision: 0
         property bool writeFiles: false
-        function reload() { edits = ({}); selectedFiles = ({}); writeFiles = false; }
+        function reload() { saveRevision = window.metadataState.saveRevision || 0; artistNameDraft = null; edits = ({}); selectedFiles = ({}); writeFiles = false; }
         function setEdit(key,value) { const copy=Object.assign({},edits); copy[key]=value; edits=copy; }
         function save() {
+            if (edits.artist_assignment !== undefined || edits.artist_assignment_id !== undefined) { artistConfirmation.open(); return; }
+            saveConfirmed();
+        }
+        function saveConfirmed() {
             const changes=Object.keys(edits).map(key=>({field:key,value:edits[key]}));
             const files=writeFiles ? Object.keys(selectedFiles).filter(key=>selectedFiles[key]) : [];
             if(writeFiles && files.length===0) { localWarning.text="Select the files to update."; return; }
@@ -1173,7 +1179,34 @@ ApplicationWindow {
                 ColumnLayout {
                     width: parent.width
                     spacing: 12
-                    Label { text: "Library values"; font.bold: true }
+                    Label { text: "Artist (Library assignment)"; font.bold: true }
+                    TextField {
+                        id: assignedArtistInput
+                        objectName: "metadataAssignedArtist"
+                        Layout.fillWidth: true
+                        enabled: !window.metadataState.busy
+                        text: metadataDialog.artistNameDraft !== null ? metadataDialog.artistNameDraft : metadataDialog.inspection && metadataDialog.inspection.assigned_artist ? metadataDialog.inspection.assigned_artist.name : ""
+                        onTextEdited: {
+                            metadataDialog.artistNameDraft=text;
+                            const copy=Object.assign({},metadataDialog.edits); delete copy.artist_assignment_id;
+                            copy.artist_assignment=text; metadataDialog.edits=copy;
+                            bridge.metadata_action("artist-lookup","","",text);
+                        }
+                    }
+                    Repeater {
+                        model: metadataDialog.edits.artist_assignment !== undefined ? window.metadataState.artistChoices || [] : []
+                        delegate: Button {
+                            required property var modelData
+                            text: modelData.name + " · " + modelData.id
+                            onClicked: {
+                                const copy=Object.assign({},metadataDialog.edits); delete copy.artist_assignment;
+                                copy.artist_assignment_id=modelData.id; metadataDialog.edits=copy;
+                                metadataDialog.artistNameDraft=modelData.name;
+                            }
+                        }
+                    }
+                    Label { text: "Select an existing Artist above, or save to create/reuse the exact entered name. Punctuation stays part of one name. Other Artist credits are preserved."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Label { text: "Display metadata and credits"; font.bold: true }
                     Repeater {
                         model: metadataDialog.inspection ? metadataDialog.inspection.fields : []
                         delegate: ColumnLayout {
@@ -1234,7 +1267,7 @@ ApplicationWindow {
                         Label { text: "Update local tags for " + Object.keys(metadataDialog.selectedFiles).filter(key=>metadataDialog.selectedFiles[key]).length + " files" }
                     }
                     Label { text: "Source evidence · read-only"; font.bold: true }
-                    Label { text: metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? "Tracks are ordered by disc and album position, with each Track’s sources together. Shared Album and Release evidence follows." : "Each file/provider object is shown separately. Differences remain evidence; editing does not reassign identities."; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    Label { text: metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? "Tracks are ordered by disc and album position, with each Track’s sources together. Shared Album and Release evidence follows." : "Each file/provider object is shown separately. Differences remain evidence; Assigned Artist changes Library grouping."; wrapMode: Text.Wrap; Layout.fillWidth: true }
                     Repeater {
                         model: metadataDialog.inspection ? metadataDialog.inspection.track_evidence : []
                         delegate: GroupBox {
@@ -1303,9 +1336,18 @@ ApplicationWindow {
                 Button { objectName: "metadataSave"; text: metadataDialog.inspection && metadataDialog.inspection.target.album !== undefined ? "Save Album Metadata" : "Save"; enabled: !!metadataDialog.inspection && !window.metadataState.busy && Object.keys(metadataDialog.edits).length>0; onClicked: metadataDialog.save() }
             }
         }
-        Connections {
+        Dialog {
+        id: artistConfirmation
+        modal: true
+        anchors.centerIn: parent
+        title: "Change assigned Artist?"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        Label { text: "From: " + (metadataDialog.inspection && metadataDialog.inspection.assigned_artist ? metadataDialog.inspection.assigned_artist.name : "—") + "\nTo: " + assignedArtistInput.text + "\nThis changes how these Tracks are grouped in the Library." }
+        onAccepted: metadataDialog.saveConfirmed()
+    }
+    Connections {
             target: bridge
-            function onMetadata_changed() { if ((window.metadataState.renameMatches || []).length) metadataRenameDialog.open(); else metadataRenameDialog.close(); if(!window.metadataState.busy && window.metadataState.message.startsWith("Library metadata saved")) metadataDialog.reload();}
+            function onMetadata_changed() { if ((window.metadataState.renameMatches || []).length) metadataRenameDialog.open(); else metadataRenameDialog.close(); if((window.metadataState.saveRevision || 0) !== metadataDialog.saveRevision) metadataDialog.reload();}
         }
     }
 

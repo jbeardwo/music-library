@@ -908,6 +908,7 @@ fn matching_stales_unresolved_only_and_genre_does_not_stale() {
         &[
             change("title", Some("Correct Album")),
             change("artist_credit", Some("Correct Credit")),
+            change("artist_assignment", Some("Canonical correction")),
         ],
         &[],
     )
@@ -1629,4 +1630,468 @@ fn album_rename_requires_explicit_move_and_preserves_tracks_releases_and_playlis
         1
     );
     assert_eq!(db.query_row("SELECT count(*) FROM library_membership WHERE track_id IN (SELECT id FROM track WHERE release_id=?1)", [&source.release_id.0], |r| r.get::<_,i64>(0)).unwrap(), 3);
+}
+
+#[test]
+fn canonical_artist_assignment_preserves_identity_and_credits() {
+    let (temp, mut l, r) = fixture();
+    let album = Target::Album(
+        l.inspect_metadata(&Target::Track(r.track_ids[0].0.clone()))
+            .unwrap()
+            .album_id,
+    );
+    let old = l.inspect_metadata(&album).unwrap().assigned_artist.unwrap();
+    let db = Connection::open(temp.path().join("db")).unwrap();
+    let snapshot = |db: &Connection| -> Vec<(String, String)> {
+        db.prepare("SELECT id,release_id FROM track ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    db.execute(
+        "INSERT INTO artist(id,name) VALUES('secondary-guest','Guest')",
+        [],
+    )
+    .unwrap();
+    db.execute("INSERT INTO track_artist_credit(track_id,position,artist_id,role,credited_name) VALUES(?1,1,'secondary-guest','featured','Guest')",[r.track_ids[0].as_ref()]).unwrap();
+    let before = snapshot(&db);
+    let playlist = l.create_playlist("Keep").unwrap();
+    let entry = l.append_playlist_track(&playlist, &r.track_ids[0]).unwrap();
+    db.execute(
+        "INSERT INTO ignored_track_preference(profile_id,track_id) VALUES('local',?1)",
+        [r.track_ids[0].as_ref()],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO hidden_artist_preference(profile_id,artist_id) VALUES('local',?1)",
+        [&old.id],
+    )
+    .unwrap();
+    l.save_metadata(&album, &[change("artist_credit", Some("Credit only"))], &[])
+        .unwrap();
+    assert_eq!(
+        l.inspect_metadata(&album)
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        old.id
+    );
+    l.save_metadata(
+        &album,
+        &[
+            change("artist_credit", None),
+            change("artist_assignment", Some("  Alpha, Beta  ")),
+        ],
+        &[],
+    )
+    .unwrap();
+    let new = l.inspect_metadata(&album).unwrap().assigned_artist.unwrap();
+    assert_eq!(new.name, "Alpha, Beta");
+    assert_ne!(new.id, old.id);
+    assert_eq!(db.query_row("SELECT artist_id||':'||role||':'||credited_name FROM track_artist_credit WHERE track_id=?1 AND position=1",[r.track_ids[0].as_ref()],|r|r.get::<_,String>(0)).unwrap(),"secondary-guest:featured:Guest");
+    assert!(
+        l.local_search("Alpha", music_library::library_search::Kind::Artist)
+            .unwrap()
+            .iter()
+            .any(|a| a.id == new.id)
+    );
+    assert_eq!(snapshot(&db), before);
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM artist WHERE name='Alpha, Beta'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM track_artist_credit WHERE artist_id=?1",
+            [&new.id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        2
+    );
+    assert_eq!(
+        value(
+            &l.inspect_metadata(&Target::Track(r.track_ids[2].0.clone()))
+                .unwrap(),
+            "artist_credit"
+        ),
+        "Band feat. Guest"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM ignored_track_preference WHERE track_id=?1",
+            [r.track_ids[0].as_ref()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM hidden_artist_preference WHERE artist_id=?1",
+            [&new.id],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM playlist_entry WHERE id=?1",
+            [entry.as_str()],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM library_membership", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        3
+    );
+    assert!(
+        l.browse(&Request {
+            pane: Pane::Artists,
+            ..Default::default()
+        })
+        .unwrap()
+        .iter()
+        .any(|a| a.id == new.id)
+    );
+    assert!(
+        l.local_search("Alpha", music_library::library_search::Kind::Song)
+            .unwrap()
+            .iter()
+            .any(|a| a.id == r.track_ids[0].0)
+    );
+    // Reuse by exact name, and Track assignment does not move siblings or the Album.
+    l.save_metadata(
+        &Target::Track(r.track_ids[2].0.clone()),
+        &[change("artist_assignment", Some("Alpha, Beta"))],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        l.inspect_metadata(&Target::Track(r.track_ids[2].0.clone()))
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        new.id
+    );
+    l.save_metadata(
+        &Target::Track(r.track_ids[0].0.clone()),
+        &[change("artist_assignment_id", Some(&old.id))],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        l.inspect_metadata(&album)
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        new.id
+    );
+    assert_eq!(
+        l.inspect_metadata(&Target::Track(r.track_ids[1].0.clone()))
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        new.id
+    );
+    db.execute(
+        "INSERT INTO artist(id,name) VALUES('ambiguous','Alpha, Beta')",
+        [],
+    )
+    .unwrap();
+    assert!(
+        l.save_metadata(
+            &album,
+            &[change("artist_assignment", Some("Alpha, Beta"))],
+            &[]
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn assignment_writeback_is_explicit_and_rescan_preserves_sources() {
+    let (temp, mut l, r) = fixture();
+    let source = copied_source(&mut l, &temp, &r.track_ids[0], "assignment.mp3");
+    let file = temp.path().join("audio/assignment.mp3");
+    let original = std::fs::read(&file).unwrap();
+    let target = Target::Album(
+        l.inspect_metadata(&Target::Track(r.track_ids[0].0.clone()))
+            .unwrap()
+            .album_id,
+    );
+    l.save_metadata(
+        &target,
+        &[change("artist_assignment", Some("Alpha, Beta"))],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(std::fs::read(&file).unwrap(), original);
+    let outcome = l
+        .save_metadata(
+            &target,
+            &[change("artist_assignment", Some("Gamma, Delta"))],
+            std::slice::from_ref(&source),
+        )
+        .unwrap();
+    assert!(
+        outcome.files[0].error.is_none(),
+        "{:?}",
+        outcome.files[0].error
+    );
+    let tags = LoftyMetadataExtractor.read(&file).unwrap();
+    assert_eq!(tags.track_artists[0], "Gamma, Delta");
+    assert_eq!(tags.release_artists[0], "Gamma, Delta");
+    let root = l.register_local_root(temp.path().join("audio")).unwrap();
+    l.scan_local_root(&root, &mut LoftyMetadataExtractor)
+        .unwrap();
+    let db = Connection::open(temp.path().join("db")).unwrap();
+    assert_eq!(
+        db.query_row(
+            "SELECT track_id FROM track_source WHERE source_id=?1",
+            [&source],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        r.track_ids[0].0
+    );
+}
+
+#[test]
+#[ignore = "requires ARTIST_ASSIGNMENT_REAL_COPY containing a disposable real-library backup"]
+fn freshman_year_artist_assignment_on_real_library_copy() {
+    let path = std::env::var("ARTIST_ASSIGNMENT_REAL_COPY").unwrap();
+    assert!(path.starts_with("/tmp/"));
+    let mut l = Library::open(&path).unwrap();
+    let db = Connection::open(&path).unwrap();
+    let album: String = db
+        .query_row(
+            "SELECT album_id FROM album_application_metadata WHERE title='Freshman Year'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let target = Target::Album(album.clone());
+    let before = l.inspect_metadata(&target).unwrap();
+    assert_eq!(before.assigned_artist.as_ref().unwrap().name, "Hop Along");
+    let rows = |sql: &str| {
+        db.prepare(sql)
+            .unwrap()
+            .query_map([&album], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+    };
+    let tracks = rows(
+        "SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 ORDER BY t.id",
+    );
+    let identities = rows(
+        "SELECT i.track_id||':'||i.provider||':'||i.external_id FROM release r JOIN track t ON t.release_id=r.id JOIN track_external_identity i ON i.track_id=t.id WHERE r.album_id=?1 ORDER BY 1",
+    );
+    let files: Vec<_> = before
+        .files
+        .iter()
+        .map(|f| (&f.source_id, std::fs::read(&f.path).unwrap()))
+        .collect();
+    let start = std::time::Instant::now();
+    l.save_metadata(
+        &target,
+        &[change(
+            "artist_assignment",
+            Some("Hop Along, Queen Ansleis"),
+        )],
+        &[],
+    )
+    .unwrap();
+    eprintln!(
+        "Real Freshman Year assignment: {} Tracks, {:.1} ms",
+        tracks.len(),
+        start.elapsed().as_secs_f64() * 1000.
+    );
+    let after = l.inspect_metadata(&target).unwrap();
+    let new = after.assigned_artist.as_ref().unwrap();
+    assert_eq!(new.name, "Hop Along, Queen Ansleis");
+    assert_eq!(
+        rows(
+            "SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 ORDER BY t.id"
+        ),
+        tracks
+    );
+    assert_eq!(
+        rows(
+            "SELECT i.track_id||':'||i.provider||':'||i.external_id FROM release r JOIN track t ON t.release_id=r.id JOIN track_external_identity i ON i.track_id=t.id WHERE r.album_id=?1 ORDER BY 1"
+        ),
+        identities
+    );
+    for (source, bytes) in files {
+        let f = after.files.iter().find(|f| &f.source_id == source).unwrap();
+        assert_eq!(std::fs::read(&f.path).unwrap(), bytes);
+    }
+    let artists = l
+        .browse(&Request {
+            pane: Pane::Artists,
+            limit: 200,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(artists.iter().any(|a| a.id == new.id));
+    assert!(
+        artists
+            .iter()
+            .any(|a| a.id == before.assigned_artist.as_ref().unwrap().id)
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT artist_id FROM album_browse_order WHERE album_id=?1",
+            [&album],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        new.id
+    );
+    assert_eq!(db.query_row("SELECT count(*) FROM release r JOIN track t ON t.release_id=r.id JOIN track_artist_credit c ON c.track_id=t.id WHERE r.album_id=?1 AND c.artist_id=?2",params![album,before.assigned_artist.as_ref().unwrap().id],|r|r.get::<_,i64>(0)).unwrap(),0);
+    // Exercise the same assignment write-back on a copied attached file only.
+    let temp = tempfile::tempdir().unwrap();
+    let original = &after.files[0];
+    let copy = temp.path().join("copy.mp3");
+    std::fs::copy(&original.path, &copy).unwrap();
+    db.execute(
+        "UPDATE local_file_observation SET path=?2 WHERE source_id=?1",
+        params![original.source_id, copy.as_os_str().as_encoded_bytes()],
+    )
+    .unwrap();
+    let result = l
+        .save_metadata(
+            &target,
+            &[change("artist_assignment_id", Some(&new.id))],
+            std::slice::from_ref(&original.source_id),
+        )
+        .unwrap();
+    assert!(
+        result.files[0].error.is_none(),
+        "{:?}",
+        result.files[0].error
+    );
+    assert_eq!(
+        LoftyMetadataExtractor.read(&copy).unwrap().track_artists,
+        vec![new.name.clone()]
+    );
+}
+
+#[test]
+fn ten_track_album_assignment_reuses_exact_artist_and_rolls_back_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Library::open(temp.path().join("db")).unwrap();
+    let r = l
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Ten".into(),
+            year: None,
+            artists: vec![ArtistCreditInput {
+                name: "Alpha".into(),
+                role: None,
+            }],
+            tracks: (0..10)
+                .map(|n| CatalogTrackInput {
+                    title: format!("Track {n}"),
+                    artists: vec![ArtistCreditInput {
+                        name: "Alpha".into(),
+                        role: None,
+                    }],
+                    disc_number: Some(1),
+                    track_number: Some(n + 1),
+                })
+                .collect(),
+        })
+        .unwrap();
+    let db = Connection::open(temp.path().join("db")).unwrap();
+    db.execute(
+        "INSERT INTO artist(id,name) VALUES('existing','Alpha, Beta')",
+        [],
+    )
+    .unwrap();
+    let album = Target::Album(l.album_for_release(&r.release_id).unwrap().album_id.0);
+    let old = l.inspect_metadata(&album).unwrap().assigned_artist.unwrap();
+    db.execute_batch("CREATE TRIGGER prevent_assignment BEFORE UPDATE ON track_artist_credit WHEN new.artist_id='existing' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+    assert!(
+        l.save_metadata(
+            &album,
+            &[change("artist_assignment", Some("Alpha, Beta"))],
+            &[]
+        )
+        .is_err()
+    );
+    assert_eq!(
+        l.inspect_metadata(&album)
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        old.id
+    );
+    db.execute_batch("DROP TRIGGER prevent_assignment").unwrap();
+    let outcome = l
+        .save_metadata(
+            &album,
+            &[change("artist_assignment", Some("Alpha, Beta"))],
+            &[],
+        )
+        .unwrap();
+    assert_eq!(outcome.tracks, 10);
+    assert_eq!(
+        outcome.track_ids,
+        r.track_ids
+            .iter()
+            .map(|t| t.0.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        l.inspect_metadata(&album)
+            .unwrap()
+            .assigned_artist
+            .unwrap()
+            .id,
+        "existing"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM track_artist_credit WHERE artist_id='existing'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        10
+    );
+    assert_eq!(
+        db.query_row("SELECT name FROM artist WHERE id=?1", [old.id], |r| r
+            .get::<_, String>(0))
+            .unwrap(),
+        "Alpha"
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM artist WHERE name='Alpha, Beta'",
+            [],
+            |r| r.get::<_, i64>(0)
+        )
+        .unwrap(),
+        1
+    );
 }

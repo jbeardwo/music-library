@@ -259,6 +259,15 @@ Identity matching can evolve independently.
 
 ## Metadata Architecture
 
+The Metadata editor exposes canonical primary Artist assignment separately from sparse
+credit overrides. Its existing save transaction updates ordered relationship rows,
+reuses an unambiguous exact canonical name or an explicitly selected Artist ID, and
+creates UUID Artists when needed. Album corrections cover corresponding Track/Release
+relationships, including legacy inherited credits; other Artist relationships remain.
+No Artist merge, equivalence or provider reassociation is inferred. Existing indexes,
+effective metadata refresh and reconciliation lifecycle/snapshot machinery apply;
+there is no new identity schema. See [assignment semantics](metadata-editor.md).
+
 Metadata must preserve provenance where it affects behavior.
 
 Potential sources include:

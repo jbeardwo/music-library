@@ -17,7 +17,7 @@ blanks the field. Numeric overrides use checked integer columns plus `*_set` fla
 a set flag and NULL value mean explicitly unknown. Unset fields keep following
 underlying metadata. Clearing an override removes just that field's manual choice.
 
-Override records have update timestamps, but no history or undo log. Editing never
+Override records have update timestamps, but no history or undo log. Ordinary credit-text editing never
 changes Track/Album/Release/Artist IDs, credit relationships, provider identity
 associations, membership, PlaylistEntries, queue order, or source ownership.
 
@@ -100,7 +100,8 @@ The existing **Lofty 0.25** dependency writes MP3, FLAC, M4A/MP4, Ogg Vorbis, an
 Other discovery formats are conservatively unsupported for writing. Supported fields
 map to title, Track artist, Album title, Album artist, Genre, recording year, disc,
 and Track-number tags. Album writes map title/credit to Album tags and never Track
-title/artist/number tags. Release type has no supported round-trip tag mapping;
+title/number tags. Explicit assignment additionally writes Track Artist for Tracks
+assigned to the new Artist; distinct featured Track artists retain their tags. Release type has no supported round-trip tag mapping;
 requesting it reports a per-file failure. Clearing a mixed/missing automatic Album
 Genre cannot silently erase individual Genres through bulk write-back.
 
@@ -150,3 +151,44 @@ and evidence remain available at the destination; conflicting trusted Album
 identities block the move. Filesystem writes follow the committed database change
 and only affect the originally selected source files. Selection and Album context
 follow the destination without changing playback. No provider requests run.
+
+
+## Explicit canonical Artist assignment
+
+**Artist (Library assignment)** appears first in the editor and is separate from
+**Displayed Artist credit**. Display credit
+continues to be a sparse override. Assignment chooses an existing canonical ID or
+creates/reuses one exact trimmed name with a generated UUID. Commas, ampersands,
+slashes, semicolons and `and` are never parsed. Lookup uses the existing indexed
+name order with at most 20 results, including IDs to distinguish duplicate names.
+Multiple exact-name entities require explicit ID selection; no arbitrary owner,
+fuzzy match, equivalence, provider Artist reassociation or merge is inferred.
+A lightweight confirmation describes the grouping change before Save. Successful
+saves carry a revision counter; only a new save resets the draft. Autocomplete
+notifications cannot clear another assignment entered in the still-open dialog.
+
+Track assignment replaces its first ordered Artist relationship, leaving siblings,
+Album and Release relationships intact. A Track inheriting its Artist from its
+Release/Album receives its own primary relationship. Album assignment replaces
+its first relationship and the old Artist's relationships within its Releases and
+Tracks. Legacy imports may have separate IDs with the same exact primary name;
+those primary relationships follow this explicit bulk correction too. Other
+primary names and secondary Artists remain intact. Missing relationships that
+inherit the corrected Album/Release receive explicit primary rows. Existing custom
+credited names, roles, ordering and sparse overrides survive; default credited
+names follow the new Artist. Original local and provider observations stay visible.
+
+Assignment, targeted effective metadata/FTS refresh, Album ordering/matching keys
+and unresolved Spotify staleness commit together. Existing lifecycle triggers
+invalidate affected Album context; trusted connections and exclusions remain.
+MusicBrainz preparation reads the corrected Artist ID and matching keys through
+its existing snapshot machinery. Saving performs no provider calls.
+Track, Release, Album, source and PlaylistEntry IDs, membership, queue and ignored
+Track preferences remain stable. Hidden Artist preferences stay on their original
+Artist ID; new Artists begin with no hidden preference. Empty Artist visibility
+uses existing membership-derived browsing.
+
+Write-back remains opt-in with explicit file selection and per-file failure results.
+Assignment writes Album Artist and eligible Track Artist tags using the existing
+atomic-copy writer; plain displayed-credit edits retain their original tag mappings.
+Rescanning updates observations against existing source and Track IDs.

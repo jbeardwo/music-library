@@ -1006,6 +1006,14 @@ Library overrides. Overrides take precedence without replacing source evidence o
 changing entities, membership, provider identities, playlists, or playback state.
 Shared Album edits preserve distinct featured Track credits and Track-specific fields.
 
+Canonical Artist assignment is an explicit structural operation separate from displayed
+credit text. Users may select an existing Artist ID or create/reuse an exact name,
+including punctuation. Ambiguous exact names require selection; assignment must not
+merge Artists or alter provider identities. Track assignment affects that Track;
+Album assignment updates the corresponding relationships in its Tracks/Releases
+transactionally, preserving other Artists and all durable music/user state. Matching
+invalidation and browse/search refresh remain targeted and offline.
+
 Optional local tag write-back is unchecked by default and requires an explicit file
 selection with a visible scope. The Library edit commits transactionally before file
 writes; failures are reported per path and cannot undo the Library correction.

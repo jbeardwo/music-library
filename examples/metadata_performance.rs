@@ -70,6 +70,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap(),
         );
     });
+    measure("canonical Artist assignment + targeted refresh", 30, || {
+        n += 1;
+        l.save_metadata(
+            &a,
+            &[Change {
+                field: "artist_assignment".into(),
+                value: Some(format!("Artist assignment {n}")),
+            }],
+            &[],
+        )
+        .unwrap();
+    });
+    measure("Artist lookup", 100, || {
+        black_box(l.metadata_artist_choices("Artist assignment").unwrap());
+    });
     assert_eq!(
         before,
         db.query_row("SELECT count(*) FROM track_search", [], |r| r

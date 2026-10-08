@@ -135,3 +135,59 @@ Cancel/draft preservation, Keep separate and Move choices, including a second ru
 using disposable copies of the real Get Disowned Album and local tag write-back.
 Core and desktop Clippy with warnings denied passed; desktop build and diff check
 passed. Original media and the user's live database were not modified.
+
+
+## Canonical Artist assignment follow-up
+
+Focused regression coverage separates displayed-credit overrides from canonical
+assignment, preserves comma names as one Artist, reuses exact existing IDs, rejects
+ambiguous exact names, creates new Artists, preserves featured credits, limits Track
+assignment to that Track, and rolls back a failed 10-Track Album update. Coverage
+checks stable Track/Release/Album/PlaylistEntry/source identity, membership, ignored
+Track and Artist-specific hidden preferences, immediate browse/search, trusted
+provider identity preservation and unresolved staleness. Disposable MP3 tests cover
+unchecked file bytes, checked Track/Album Artist tags and rescan source reuse.
+
+The real Freshman Year case was tested on a SQLite backup of the real Library,
+with 16 known Tracks and Hop Along as its original canonical Artist. The corrected
+Artist was created/reused, both Artists remained browse-visible due to the rest of
+the Library, and Freshman Year's Album ordering points to Hop Along, Queen Ansleis.
+Track IDs, Album ID, attached provider IDs and original audio bytes were preserved.
+Assignment took about 29 ms. Write-back was exercised on a copied attached MP3,
+never original media. An offscreen Qt test also opens the real Album Metadata action,
+types the complete name, accepts its structural confirmation, and checks saved
+assignment, stable attachments and queue IDs on another disposable database backup.
+The user's live database was not edited.
+
+On the deterministic 200,000-Track fixture (10-Track target), canonical assignment
+plus inspection/targeted refresh measured median 40.6 ms, p95 86.2 ms; bounded Artist
+lookup measured median 0.104 ms, p95 0.243 ms in a debug build. Existing Album/Track
+attachment indexes remain in use. No full-library refresh or provider requests are
+introduced. Reproduction uses the updated `metadata_performance` example on a
+**disposable** backup.
+
+Validation commands:
+
+```sh
+cargo test --offline --test metadata_editor
+ARTIST_ASSIGNMENT_REAL_COPY=/tmp/artist-assignment-real.sqlite cargo test --offline --test metadata_editor freshman_year_artist_assignment -- --ignored --nocapture
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software cargo test --offline --manifest-path tools/qml-diagnostic/Cargo.toml --all-features metadata_context_actions_use_clicked_canonical_ids_and_keep_queue -- --ignored --test-threads=1
+ARTIST_ASSIGNMENT_REAL_COPY=/tmp/artist-assignment-ui-real.sqlite QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software cargo test --offline --manifest-path tools/qml-diagnostic/Cargo.toml --all-features freshman_year_artist_assignment_ui -- --ignored --test-threads=1
+cargo clippy --offline --all-targets -- -D warnings
+cargo clippy --offline --manifest-path tools/qml-diagnostic/Cargo.toml --all-features --all-targets -- -D warnings
+```
+
+The broad `cargo test --offline` run stops at the pre-existing
+`matching_upgrade_backfills_unicode_credit_display_without_changing_entities`
+assertion in `album_matching_migration`: it expects schema version 31 while existing
+Hidden Artists migration 32 is installed. This focused change adds no migration.
+
+
+Follow-up: the user's real database contained only a displayed Album credit override,
+with Freshman Year still assigned to Hop Along and no corrected Artist entity.
+The assignment control now appears first, labelled **Artist (Library assignment)**.
+A repeat-edit regression reproduced a second bug: autocomplete notifications reused
+the preceding success message and cleared the next draft. Draft reset now depends
+on a successful-save revision, and two consecutive assignments in the same modal
+pass. Real-library Qt validation also asserts that the corrected Artist appears in
+the refreshed Artists pane. The desktop executable was rebuilt for this follow-up.

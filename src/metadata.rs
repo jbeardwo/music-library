@@ -53,7 +53,13 @@ pub struct LocalFile {
     pub available: bool,
 }
 #[derive(Clone, Debug, Serialize)]
+pub struct ArtistChoice {
+    pub id: String,
+    pub name: String,
+}
+#[derive(Clone, Debug, Serialize)]
 pub struct Inspection {
+    pub assigned_artist: Option<ArtistChoice>,
     pub target: Target,
     pub album_id: String,
     pub fields: Vec<Field>,
@@ -90,7 +96,7 @@ pub struct RenameMatch {
 
 const TRACK_FIELDS: &[(&str, &str)] = &[
     ("title", "Track title"),
-    ("artist_credit", "Artist credit"),
+    ("artist_credit", "Displayed Artist credit"),
     ("genre", "Genre"),
     ("year", "Year"),
     ("disc_number", "Disc number"),
@@ -98,7 +104,7 @@ const TRACK_FIELDS: &[(&str, &str)] = &[
 ];
 const ALBUM_FIELDS: &[(&str, &str)] = &[
     ("title", "Album title"),
-    ("artist_credit", "Album artist credit"),
+    ("artist_credit", "Displayed Album artist credit"),
     ("genre", "Genre"),
     ("year", "Year"),
     ("release_type", "Release type"),
@@ -182,6 +188,12 @@ fn number(value: Option<i64>) -> Option<String> {
 }
 
 impl Library {
+    /// Indexed, bounded canonical name lookup; callers select IDs when names are ambiguous.
+    pub fn metadata_artist_choices(&self, name: &str) -> Result<Vec<ArtistChoice>> {
+        let name = name.trim();
+        Ok(self.store.connection.prepare("SELECT id,name FROM artist WHERE lower(name)>=lower(?1) AND lower(name)<lower(?1)||char(1114111) ORDER BY lower(name),id LIMIT 20")?.query_map([name], |r| Ok(ArtistChoice { id:r.get(0)?, name:r.get(1)? }))?.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Suggestions only: title equality never moves anything without an explicit choice.
     pub fn metadata_album_rename_matches(
         &self,
@@ -291,6 +303,9 @@ impl Library {
         let tracks = list(&tx, target)?;
         let matching = changes.iter().any(|c| c.field != "genre");
         for c in &changes {
+            if c.field == "artist_assignment" || c.field == "artist_assignment_id" {
+                continue;
+            }
             if matches!(target, Target::Track(_)) && c.field == "title" {
                 if let Some(value) = &c.value {
                     tx.execute("INSERT INTO track_title_override(track_id,value) VALUES(?1,?2) ON CONFLICT(track_id) DO UPDATE SET value=excluded.value,updated_at=unixepoch()",params![id(target),value])?;
@@ -317,6 +332,7 @@ impl Library {
                 }
             }
         }
+        reassign_artist(&tx, target, &changes)?;
         if let Some(destination) = destination_album {
             let Target::Album(source) = target else {
                 return Err(invalid("Only an Album rename can move its Tracks"));
@@ -332,7 +348,7 @@ impl Library {
             }
         }
         if let Target::Album(album) = target {
-            // Matching keys use overrides, never modify canonical credit relationships.
+            // Refresh matching keys after either credit or relationship edits.
             let title: String = tx.query_row(
                 "SELECT title FROM effective_album_metadata WHERE album_id=?1",
                 [album],
@@ -356,7 +372,7 @@ impl Library {
             .map(|a| Target::Album(a.into()))
             .unwrap_or_else(|| target.clone());
         let current = self.inspect_metadata(&display_target)?;
-        let write_values = changes
+        let mut write_values = changes
             .iter()
             .map(|c| {
                 (
@@ -370,6 +386,15 @@ impl Library {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        write_values.remove("artist_assignment_id");
+        write_values.remove("artist_assignment");
+        if changes
+            .iter()
+            .any(|c| c.field == "artist_assignment" || c.field == "artist_assignment_id")
+            && let Some(artist) = &current.assigned_artist
+        {
+            write_values.insert("artist_assignment".into(), artist.name.clone());
+        }
         for file in selected {
             let result = (|| -> std::result::Result<(), String> {
                 if !file.available {
@@ -394,7 +419,23 @@ impl Library {
                     )
                     .map_err(|e| e.to_string())?;
                 let path = crate::storage::bytes_to_path(bytes);
-                write_tags(&path, target, &write_values)?;
+                let mut file_values = write_values.clone();
+                if matches!(target, Target::Album(_))
+                    && file_values.contains_key("artist_assignment")
+                {
+                    let track_artist = assigned_artist(
+                        &self.store.connection,
+                        &Target::Track(file.track_id.clone()),
+                    )
+                    .map_err(|e| e.to_string())?;
+                    if track_artist.as_ref().map(|a| &a.id)
+                        != current.assigned_artist.as_ref().map(|a| &a.id)
+                    {
+                        let value = file_values.remove("artist_assignment").unwrap();
+                        file_values.insert("artist_assignment_album_only".into(), value);
+                    }
+                }
+                write_tags(&path, target, &file_values)?;
                 // Re-read with the normal parser and persist evidence against the SAME source ID.
                 use crate::filesystem::MetadataExtractor;
                 let observation = crate::filesystem::LoftyMetadataExtractor
@@ -433,6 +474,119 @@ impl Library {
             destination_album: destination_album.map(str::to_owned),
         })
     }
+}
+fn assigned_artist(db: &Connection, target: &Target) -> Result<Option<ArtistChoice>> {
+    let scope = if matches!(target, Target::Track(_)) {
+        "track"
+    } else {
+        "album"
+    };
+    let direct = db.query_row(&format!("SELECT a.id,a.name FROM {scope}_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.{scope}_id=?1 ORDER BY position LIMIT 1"), [id(target)], |r| Ok(ArtistChoice { id:r.get(0)?, name:r.get(1)? })).optional()?;
+    if direct.is_some() || matches!(target, Target::Album(_)) {
+        return Ok(direct);
+    }
+    let release = db.query_row("SELECT a.id,a.name FROM track t JOIN release_artist_credit c ON c.release_id=t.release_id JOIN artist a ON a.id=c.artist_id WHERE t.id=?1 ORDER BY c.position LIMIT 1",[id(target)],|r|Ok(ArtistChoice{id:r.get(0)?,name:r.get(1)?})).optional()?;
+    if release.is_some() {
+        return Ok(release);
+    }
+    let album: String = db.query_row(
+        "SELECT r.album_id FROM track t JOIN release r ON r.id=t.release_id WHERE t.id=?1",
+        [id(target)],
+        |r| r.get(0),
+    )?;
+    assigned_artist(db, &Target::Album(album))
+}
+fn reassign_artist(db: &Connection, target: &Target, changes: &[Change]) -> Result<()> {
+    let name = changes
+        .iter()
+        .find(|c| c.field == "artist_assignment")
+        .and_then(|c| c.value.as_deref());
+    let selected = changes
+        .iter()
+        .find(|c| c.field == "artist_assignment_id")
+        .and_then(|c| c.value.as_deref());
+    if name.is_none() && selected.is_none() {
+        return Ok(());
+    }
+    let artist = if let Some(selected) = selected {
+        db.query_row("SELECT id,name FROM artist WHERE id=?1", [selected], |r| {
+            Ok(ArtistChoice {
+                id: r.get(0)?,
+                name: r.get(1)?,
+            })
+        })
+        .optional()?
+        .ok_or_else(|| invalid("Selected Artist no longer exists"))?
+    } else {
+        let name = name.unwrap();
+        let matches = db
+            .prepare(
+                "SELECT id,name FROM artist WHERE lower(name)=lower(?1) AND name=?1 ORDER BY id LIMIT 2",
+            )?
+            .query_map([name], |r| {
+                Ok(ArtistChoice {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        match matches.len() {
+            0 => {
+                let artist = ArtistChoice {
+                    id: crate::domain::ArtistId::new().0,
+                    name: name.into(),
+                };
+                db.execute(
+                    "INSERT INTO artist(id,name) VALUES(?1,?2)",
+                    params![artist.id, artist.name],
+                )?;
+                artist
+            }
+            1 => matches.into_iter().next().unwrap(),
+            _ => {
+                return Err(invalid(
+                    "Multiple Artists have this exact name; select the intended Artist ID",
+                ));
+            }
+        }
+    };
+    let old = assigned_artist(db, target)?;
+    if old.as_ref().is_some_and(|a| a.id == artist.id) {
+        return Ok(());
+    }
+    let scope = if matches!(target, Target::Track(_)) {
+        "track"
+    } else {
+        "album"
+    };
+    if let Some(old) = old {
+        let updated = db.execute(&format!("UPDATE {scope}_artist_credit SET artist_id=?2,credited_name=CASE WHEN credited_name IS NULL OR credited_name=?3 THEN ?4 ELSE credited_name END WHERE {scope}_id=?1 AND position=(SELECT min(position) FROM {scope}_artist_credit WHERE {scope}_id=?1)"), params![id(target),artist.id,old.name,artist.name])?;
+        if updated == 0 {
+            db.execute(&format!("INSERT INTO {scope}_artist_credit({scope}_id,position,artist_id,credited_name) VALUES(?1,0,?2,?3)"),params![id(target),artist.id,artist.name])?;
+        }
+        if matches!(target, Target::Album(_)) {
+            for (scope, filter) in [
+                (
+                    "track",
+                    "track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1)",
+                ),
+                (
+                    "release",
+                    "release_id IN(SELECT id FROM release WHERE album_id=?1)",
+                ),
+            ] {
+                db.execute(&format!("UPDATE {scope}_artist_credit SET artist_id=?2,credited_name=CASE WHEN credited_name IS NULL OR credited_name=?4 THEN ?5 ELSE credited_name END WHERE {filter} AND (artist_id=?3 OR (position=(SELECT min(other.position) FROM {scope}_artist_credit other WHERE other.{scope}_id={scope}_artist_credit.{scope}_id) AND artist_id IN(SELECT id FROM artist WHERE lower(name)=lower(?4) AND name=?4)))"),params![id(target),artist.id,old.id,old.name,artist.name])?;
+            }
+        }
+    } else {
+        db.execute(&format!("INSERT INTO {scope}_artist_credit({scope}_id,position,artist_id,credited_name) VALUES(?1,0,?2,?3)"),params![id(target),artist.id,artist.name])?;
+    }
+    if matches!(target, Target::Album(_)) {
+        // Missing credits inherit the Album/Release. Materialize only that primary assignment.
+        db.execute("INSERT INTO release_artist_credit(release_id,position,artist_id,credited_name) SELECT id,0,?2,?3 FROM release r WHERE album_id=?1 AND NOT EXISTS(SELECT 1 FROM release_artist_credit c WHERE c.release_id=r.id)",params![id(target),artist.id,artist.name])?;
+        db.execute("INSERT INTO track_artist_credit(track_id,position,artist_id,credited_name) SELECT t.id,0,?2,?3 FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM track_artist_credit c WHERE c.track_id=t.id) AND EXISTS(SELECT 1 FROM release_artist_credit c WHERE c.release_id=r.id AND c.artist_id=?2 AND c.position=(SELECT min(position) FROM release_artist_credit WHERE release_id=r.id))",params![id(target),artist.id,artist.name])?;
+    }
+    Ok(())
 }
 fn rename_title(db: &Connection, source: &str, changes: &[Change]) -> Result<Option<String>> {
     let Some(change) = changes.iter().find(|c| c.field == "title") else {
@@ -504,10 +658,18 @@ fn move_album_releases(
     Ok(())
 }
 fn validate(target: &Target, changes: &[Change]) -> Result<Vec<Change>> {
+    if changes.iter().any(|c| c.field == "artist_assignment")
+        && changes.iter().any(|c| c.field == "artist_assignment_id")
+    {
+        return Err(invalid(
+            "Choose an Artist ID or enter an exact name, not both",
+        ));
+    }
     let mut seen = std::collections::HashSet::new();
     changes.iter().map(|c| {
-        if !specs(target).iter().any(|(k,_)|*k==c.field) || !seen.insert(&c.field) {return Err(invalid("Unknown or repeated metadata field"));}
+        if !specs(target).iter().any(|(k,_)|*k==c.field) && !["artist_assignment","artist_assignment_id"].contains(&c.field.as_str()) || !seen.insert(&c.field) {return Err(invalid("Unknown or repeated metadata field"));}
         let value=c.value.as_ref().map(|v|v.trim().to_owned());
+        if ["artist_assignment","artist_assignment_id"].contains(&c.field.as_str()) && value.as_ref().is_none_or(|v| v.is_empty()) { return Err(invalid("Choose an Artist or enter its exact name")); }
         if let Some(v)=&value {
             if v.len()>4096 || v.contains('\0') {return Err(invalid("Metadata value is too long or contains NUL"));}
             if ["title","artist_credit"].contains(&c.field.as_str()) && v.is_empty() {return Err(invalid("Title and artist-credit overrides cannot be blank; use automatic value to clear an override"));}
@@ -1091,6 +1253,7 @@ fn inspect(db: &Connection, target: &Target) -> Result<Inspection> {
     }
     Ok(Inspection {
         target: target.clone(),
+        assigned_artist: assigned_artist(db, target)?,
         album_id: album,
         fields,
         evidence,
@@ -1165,6 +1328,23 @@ fn write_tags(
                     }
                 } else {
                     tag.set_title(value.clone());
+                }
+            }
+            "artist_assignment" | "artist_assignment_album_only" => {
+                let keys = if matches!(target, Target::Album(_)) {
+                    if field == "artist_assignment_album_only" {
+                        vec![ItemKey::AlbumArtist]
+                    } else {
+                        vec![ItemKey::AlbumArtist, ItemKey::TrackArtist]
+                    }
+                } else {
+                    vec![ItemKey::TrackArtist]
+                };
+                for key in keys {
+                    tag.remove_key(key);
+                    if !tag.insert_text(key, value.clone()) {
+                        return Err("Artist tag unsupported".into());
+                    }
                 }
             }
             "artist_credit" => {
