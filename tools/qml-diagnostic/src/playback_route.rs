@@ -558,6 +558,29 @@ impl Bridge {
             self.session.error = error;
             return;
         }
+        if self.browser.queue_explicit_start_only {
+            self.session.playback.set_entry_intents(&[]);
+            self.session.playback.mark_entry_explicit(position);
+        } else {
+            self.session
+                .playback
+                .set_entry_intents(&self.browser.queue_explicit);
+        }
+        let position = match self.session.playback.eligible_position_from(
+            &self.session.library,
+            position,
+            false,
+        ) {
+            Ok(Some(position)) => position,
+            Ok(None) => {
+                self.clear_resolved_queue();
+                return;
+            }
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
+        };
         if let Err(error) = self.session.playback.select_queue_position(position) {
             self.session.error = error.to_string();
             return;
@@ -621,11 +644,20 @@ impl Bridge {
             return;
         }
         self.playback_generation += 1;
-        let target = if previous {
-            Some(position - 1)
-        } else {
-            (position + 1 < state.queue.len()).then_some(position + 1)
+        let target = match self
+            .session
+            .playback
+            .adjacent_eligible_position(&self.session.library, previous)
+        {
+            Ok(target) => target,
+            Err(error) => {
+                self.session.error = error.to_string();
+                return;
+            }
         };
+        if previous && target.is_none() {
+            return;
+        }
         if matches!(self.active_backend, ActiveBackend::Remote(_)) {
             self.route_pending = Some(Pending::QueueAfterRemote(target));
             if !self.send_remote(Command::ApplicationPause) {
@@ -644,6 +676,25 @@ impl Bridge {
 
     fn start_queue_target(&mut self, target: Option<usize>) {
         self.active_backend = ActiveBackend::None;
+        let target = target.and_then(|position| {
+            let previous = self
+                .session
+                .playback
+                .state()
+                .position
+                .is_some_and(|p| position < p);
+            match self.session.playback.eligible_position_from(
+                &self.session.library,
+                position,
+                previous,
+            ) {
+                Ok(target) => target,
+                Err(e) => {
+                    self.session.error = e.to_string();
+                    None
+                }
+            }
+        });
         let Some(position) = target else {
             self.route_message = "Queue finished".into();
             return;

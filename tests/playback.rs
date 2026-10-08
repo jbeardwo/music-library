@@ -1140,3 +1140,42 @@ fn unreadable_local_candidate_falls_back_without_changing_sources_queue_or_membe
     assert_eq!(playback.state().queue, queue);
     assert_eq!(f.durable_state(), before);
 }
+
+#[test]
+fn ignored_generated_traversal_preserves_current_audio_and_explicit_permission() {
+    use music_library::preferences::IgnoreTarget;
+    let mut f = Fixture::new();
+    for i in 0..3 {
+        f.source(&format!("source-{i}"), i, true);
+    }
+    let (mut p, engine) = controller();
+    p.set_queue(f.tracks.clone()).unwrap();
+    p.set_entry_intents(&[]);
+    p.play(&f.library).unwrap();
+    let before = p.state().clone();
+    let calls = engine.borrow().calls.len();
+    f.library
+        .set_tracks_ignored(&IgnoreTarget::Track(f.tracks[0].0.clone()), true)
+        .unwrap();
+    f.library
+        .set_tracks_ignored(&IgnoreTarget::Track(f.tracks[1].0.clone()), true)
+        .unwrap();
+    assert_eq!(p.state(), &before);
+    assert_eq!(engine.borrow().calls.len(), calls);
+    assert!(p.next(&f.library).unwrap());
+    assert_eq!(p.state().current_track(), Some(&f.tracks[2]));
+    assert!(!p.previous(&f.library).unwrap());
+    p.mark_entry_explicit(1);
+    assert!(p.previous(&f.library).unwrap());
+    assert_eq!(p.state().current_track(), Some(&f.tracks[1]));
+    assert_eq!(p.state().status, PlaybackStatus::Playing);
+    p.enqueue(f.tracks[0].clone());
+    p.select_queue_position(2).unwrap();
+    assert!(p.next(&f.library).unwrap());
+    assert_eq!(p.state().current_track(), Some(&f.tracks[0]));
+    p.set_queue(vec![f.tracks[1].clone()]).unwrap();
+    p.play(&f.library).unwrap();
+    assert_eq!(p.state().status, PlaybackStatus::Playing);
+    let normal = f.library.available_playback_source(&f.tracks[1]).unwrap();
+    assert!(normal.is_some());
+}

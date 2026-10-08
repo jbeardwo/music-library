@@ -2220,3 +2220,37 @@ Song reconciliation has one final structured decision. Explicit diagnostic and a
 Migration 0029 separates portable provider-specific negative user knowledge from versioned review bookkeeping and reconstructible bounded candidate/program caches. Indexed, scoped invalidation reconsiders unresolved current evidence locally in background work units; trusted successes and exclusions are skipped. Missing reusable discovery data requires an explicit bounded retry. User exclusions are reversible and cannot coexist with a current trusted Spotify association. The management UI reuses the review table and diagnostic. See [lifecycle model and validation](spotify-reconciliation-lifecycle.md).
 
 Spotify reconciliation caches successful bounded provider discovery independently of matcher decisions, with selective request fingerprints, a 30-day TTL and a durable shared Retry-After deadline. Batch retry groups canonical Albums and does not fan out automatically into individual Track searches after Album absence. See [provider discovery lifecycle](spotify-provider-discovery.md).
+
+### Library presentation and generated playback preferences
+
+Migration 0032 stores `hidden_artist_preference(profile_id, artist_id)` and
+`ignored_track_preference(profile_id, track_id)`. The current application uses the
+`local` profile. These associations are backupable user state, independent of
+canonical metadata, identity, membership, sources, provider matching, and playlists.
+The profile key leaves room for future preference owners; accounts are not implemented.
+
+Only the normal top-level Artists window requests the hidden-Artist filter. Search,
+credits, explicit navigation, and provider operations do not apply it. The ⋯ menu
+provides bounded, cursor-paged Hidden Artists and Ignored Songs managers; the latter
+includes ignored canonical Tracks even without Library membership.
+
+Album and Artist ignore actions are transactional snapshots of current canonical
+Tracks. Artist membership uses the existing union of Track, Release, and Album
+artist credits, including secondary credits. Album membership follows canonical
+Release→Album relationships. No Album/Artist ignore rules are persisted. New Tracks
+are eligible by default. Fully ignored appearance requires a nonempty current Track
+set; partial sets retain normal appearance. Presentation uses a bounded batch of
+indexed existence checks rather than individual database round trips.
+
+Playback retains its app-authoritative canonical Track queue and adds occurrence
+intent (`ExplicitUserSelection` or `GeneratedContext`). Container playback (Album,
+Artist, Playlist, and Songs snapshots) filters ignored Tracks during background
+queue preparation. An explicitly chosen row permits that occurrence; other entries
+in its snapshot remain generated, including duplicate Playlist occurrences of the
+same Track. Explicit multi-selection and Track enqueue permit the selected entries.
+Next, Previous, and EOS traverse eligible entries deterministically, rechecking
+current preferences; the mixed local/Spotify path rechecks after asynchronous stop.
+Ignoring the currently playing Track makes no transport command. Sources continue
+through the existing resolver. The queue is in memory, so no queue-persistence
+migration is needed. Future shuffle candidate selection can use the same generated
+eligibility boundary; Shuffle is not implemented here.

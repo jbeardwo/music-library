@@ -4413,6 +4413,142 @@ mod library_ui_tests {
     }
 
     #[test]
+    fn library_preferences_context_managers_and_generated_playback() {
+        use music_library::domain::{ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput};
+        let temp = tempfile::tempdir().unwrap();
+        let mut library =
+            music_library::Library::open(temp.path().join("preferences.sqlite")).unwrap();
+        let r = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Test Album".into(),
+                year: None,
+                artists: vec![ArtistCreditInput {
+                    name: "Main Artist".into(),
+                    role: None,
+                }],
+                tracks: (1..=3)
+                    .map(|i| CatalogTrackInput {
+                        title: format!("Song {i}"),
+                        disc_number: Some(1),
+                        track_number: Some(i),
+                        artists: if i == 1 {
+                            vec![ArtistCreditInput {
+                                name: "Featured Person".into(),
+                                role: None,
+                            }]
+                        } else {
+                            vec![]
+                        },
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        for t in &r.track_ids {
+            library.add_to_library(t).unwrap();
+        }
+        // Explicit fixture identity: equal names alone never merge in production.
+        let db = rusqlite::Connection::open(temp.path().join("preferences.sqlite")).unwrap();
+        let album = library.album_for_release(&r.release_id).unwrap().album_id;
+        let canonical: String = db
+            .query_row(
+                "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+                [album.as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let ids = db
+            .prepare("SELECT id FROM artist WHERE name='Main Artist'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        drop(db);
+        for id in ids {
+            if id != canonical {
+                library
+                    .merge_artist(
+                        &music_library::domain::ArtistId(id),
+                        &music_library::domain::ArtistId(canonical.clone()),
+                    )
+                    .unwrap();
+            }
+        }
+        #[cfg(all(feature = "gstreamer", unix))]
+        if std::env::var_os("MUSIC_LIBRARY_PREFERENCES_AUDIO").is_some() {
+            use std::os::unix::ffi::OsStrExt;
+            let data_size = 960000u32;
+            let mut wav = b"RIFF".to_vec();
+            wav.extend((36 + data_size).to_le_bytes());
+            wav.extend(b"WAVEfmt ");
+            wav.extend(16u32.to_le_bytes());
+            wav.extend(1u16.to_le_bytes());
+            wav.extend(1u16.to_le_bytes());
+            wav.extend(8000u32.to_le_bytes());
+            wav.extend(16000u32.to_le_bytes());
+            wav.extend(2u16.to_le_bytes());
+            wav.extend(16u16.to_le_bytes());
+            wav.extend(b"data");
+            wav.extend(data_size.to_le_bytes());
+            wav.resize(44 + data_size as usize, 0);
+            let db = rusqlite::Connection::open(temp.path().join("preferences.sqlite")).unwrap();
+            for (i, track) in r.track_ids.iter().enumerate() {
+                let path = temp.path().join(format!("{i}.wav"));
+                std::fs::write(&path, &wav).unwrap();
+                let source = format!("audio-{i}");
+                db.execute(
+                    "INSERT INTO playable_source(id,kind) VALUES(?1,'local_file')",
+                    [&source],
+                )
+                .unwrap();
+                db.execute(
+                    "INSERT INTO track_source(track_id,source_id) VALUES(?1,?2)",
+                    rusqlite::params![track.as_ref(), source],
+                )
+                .unwrap();
+                db.execute("INSERT INTO local_file_observation(source_id,root_id,path,size_bytes,modified_ns,available) VALUES(?1,NULL,?2,?3,1,1)",rusqlite::params![source,path.as_os_str().as_bytes(),wav.len() as i64]).unwrap();
+            }
+        }
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        #[cfg(feature = "gstreamer")]
+        if std::env::var_os("MUSIC_LIBRARY_PREFERENCES_AUDIO").is_some() {
+            let player =
+                music_library_gstreamer::GStreamerEngine::new(engine_callback(bridge.pinned()))
+                    .unwrap();
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.real_audio = true;
+            b.session.playback =
+                music_library::playback::Playback::new(session::Engine::GStreamer(player));
+        }
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../PreferencesTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method("exercisePreferencesUi".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        #[cfg(feature = "gstreamer")]
+        if std::env::var_os("MUSIC_LIBRARY_PREFERENCES_AUDIO").is_some() {
+            bridge.pinned().borrow_mut().session.shutdown_audio();
+        }
+    }
+
+    #[test]
     fn library_removal_confirmation_and_queue_snapshot() {
         let (_temp, library) = sample::create().unwrap();
         let library = if let Some(path) = std::env::var_os("MUSIC_LIBRARY_REMOVAL_AUDIT_COPY") {

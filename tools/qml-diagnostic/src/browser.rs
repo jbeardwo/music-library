@@ -35,6 +35,14 @@ struct PlaylistViewRequest {
 }
 #[derive(Default)]
 pub struct Browser {
+    pub(crate) queue_explicit: Vec<String>,
+    pub(crate) queue_explicit_start_only: bool,
+    preference_rows: Vec<Row>,
+    preference_cursor: Option<Cursor>,
+    preference_hidden: bool,
+    preference_more: bool,
+    context_hidden: bool,
+    context_ignored: bool,
     playlist_sort: music_library::playlist::ViewSort,
     playlist_view_generation: u64,
     playlist_view_pending: Option<PlaylistViewRequest>,
@@ -144,6 +152,83 @@ impl Browser {
 impl Bridge {
     pub fn browse_action_impl(&mut self, action: &str, pane: usize, id: String) {
         if pane > 2 {
+            return;
+        }
+        if action.starts_with("preference-") {
+            use music_library::preferences::IgnoreTarget;
+            let result = (|| -> music_library::Result<()> {
+                match action {
+                    "preference-context" => {
+                        self.browser.context_hidden = pane == 0
+                            && self.session.library.artist_hidden(&ArtistId(id.clone()))?;
+                        let target = match pane {
+                            0 => IgnoreTarget::Artist(id.clone()),
+                            1 => IgnoreTarget::Album(id.clone()),
+                            _ => IgnoreTarget::Track(id.clone()),
+                        };
+                        let (total, ignored) = self.session.library.ignore_counts(&target)?;
+                        self.browser.context_ignored = total > 0 && total == ignored;
+                    }
+                    "preference-hide" | "preference-unhide" => self
+                        .session
+                        .library
+                        .set_artist_hidden(&ArtistId(id.clone()), action == "preference-hide")?,
+                    "preference-ignore" | "preference-unignore" => {
+                        let target = match pane {
+                            0 => IgnoreTarget::Artist(id.clone()),
+                            1 => IgnoreTarget::Album(id.clone()),
+                            _ => IgnoreTarget::Track(id.clone()),
+                        };
+                        self.session
+                            .library
+                            .set_tracks_ignored(&target, action == "preference-ignore")?;
+                    }
+                    "preference-hidden" | "preference-ignored" => {
+                        self.browser.preference_hidden = action == "preference-hidden";
+                        self.browser.preference_cursor = None;
+                    }
+                    "preference-next" => {
+                        self.browser.preference_cursor = self
+                            .browser
+                            .preference_rows
+                            .last()
+                            .map(|r| r.cursor.clone())
+                    }
+                    "preference-first" => self.browser.preference_cursor = None,
+                    _ => {}
+                }
+                if action != "preference-context" {
+                    let request = Request {
+                        pane: if self.browser.preference_hidden {
+                            Pane::Artists
+                        } else {
+                            Pane::Songs
+                        },
+                        hidden_artists_only: self.browser.preference_hidden,
+                        ignored_tracks_only: !self.browser.preference_hidden,
+                        after: self.browser.preference_cursor.clone(),
+                        limit: 201,
+                        ..Default::default()
+                    };
+                    let mut rows = self.session.library.browse(&request)?;
+                    self.browser.preference_more = rows.len() > 200;
+                    rows.truncate(200);
+                    self.browser.preference_rows = rows;
+                    for state in &mut self.browser.views {
+                        for page in &mut state.pages {
+                            *page = Page::default();
+                        }
+                    }
+                    for pane in 0..3 {
+                        self.load_pane(pane, true);
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(e) = result {
+                self.browser.error = e.to_string();
+            }
+            self.browse_changed();
             return;
         }
         if action.starts_with("picker-") {
@@ -596,7 +681,11 @@ impl Bridge {
                 }
             }
             "select" | "select-toggle" | "select-range" | "context" => {
+                let passive_artists = pane == 0 && self.browser.view == 0 && id.is_empty();
                 self.select_items(action, pane, id);
+                if passive_artists {
+                    self.load_pane(0, true);
+                }
             }
             "scroll-position" => {
                 if let Some((row, pixel)) = id.rsplit_once('\n') {
@@ -643,6 +732,26 @@ impl Bridge {
                 );
             }
             "play" => {
+                if self.browser.pending
+                    || self.route_pending.is_some()
+                    || self.automatic_song_search
+                {
+                    return;
+                }
+                self.browser.queue_explicit_start_only = pane == 2;
+                self.browser.queue_explicit = if pane == 2 {
+                    vec![
+                        self.browser.pages[2]
+                            .rows
+                            .iter()
+                            .find(|r| r.id == id)
+                            .and_then(|r| r.track.as_ref())
+                            .map(|t| t.track_id.0.clone())
+                            .unwrap_or(id.clone()),
+                    ]
+                } else {
+                    vec![]
+                };
                 if self.browser.view == 4 {
                     if self.browser.pending
                         || self.route_pending.is_some()
@@ -681,6 +790,8 @@ impl Bridge {
                         }
                     });
                     self.browser.pending = true;
+                    let explicit = self.browser.queue_explicit.clone();
+                    let explicit_start_only = self.browser.queue_explicit_start_only;
                     self.browser.worker = Some(std::thread::spawn(move || {
                         let result = reader
                             .read_playlists(&playlists, start.as_deref())
@@ -692,7 +803,16 @@ impl Bridge {
                                     (tracks, position)
                                 }
                             });
-                        deliver(result);
+                        deliver(result.and_then(|(tracks, position)| {
+                            reader
+                                .prepare_playback_program(
+                                    tracks,
+                                    position,
+                                    &explicit,
+                                    explicit_start_only,
+                                )
+                                .map_err(|e| e.to_string())
+                        }));
                     }));
                     self.browse_changed();
                     return;
@@ -775,12 +895,24 @@ impl Bridge {
                     });
                     self.browser.pending = true;
                     self.browser.error.clear();
+                    let explicit = self.browser.queue_explicit.clone();
+                    let explicit_start_only = self.browser.queue_explicit_start_only;
                     self.browser.worker = Some(std::thread::spawn(move || {
                         deliver(
                             reader
                                 .read(&request)
                                 .map_err(|e| e.to_string())
-                                .and_then(|tracks| prepare_program(tracks, start.as_ref())),
+                                .and_then(|tracks| prepare_program(tracks, start.as_ref()))
+                                .and_then(|(tracks, position)| {
+                                    reader
+                                        .prepare_playback_program(
+                                            tracks,
+                                            position,
+                                            &explicit,
+                                            explicit_start_only,
+                                        )
+                                        .map_err(|e| e.to_string())
+                                }),
                         );
                     }));
                 }
@@ -794,20 +926,25 @@ impl Bridge {
         if let Some(worker) = self.browser.worker.take() {
             let _ = worker.join();
         }
+        let explicit = self.browser.queue_explicit.clone();
         match result {
             Err(error) => self.browser.error = error,
             Ok((tracks, _)) if append => {
+                let start = self.session.playback.state().queue.len();
                 for row in tracks {
                     self.session.playback.enqueue(row.track_id.clone());
                     self.session.queue_labels.push(row);
                 }
+                self.session.playback.mark_generated_from(start, &explicit);
                 self.session.error.clear();
             }
             Ok(_) if self.route_pending.is_some() || self.automatic_song_search => {
                 self.browser.error = "Playback is switching. Please try Play again.".into();
             }
             Ok((tracks, position)) => {
-                if !tracks.is_empty() {
+                if tracks.is_empty() {
+                    self.clear_resolved_queue();
+                } else {
                     self.replace_library_program(tracks, position);
                 }
             }
@@ -1371,11 +1508,35 @@ impl Bridge {
             .iter()
             .enumerate()
             .map(|(pane, p)| {
+                let targets = p
+                    .rows
+                    .iter()
+                    .map(|r| match pane {
+                        0 => music_library::preferences::IgnoreTarget::Artist(r.id.clone()),
+                        1 => music_library::preferences::IgnoreTarget::Album(r.id.clone()),
+                        _ => music_library::preferences::IgnoreTarget::Track(
+                            r.track
+                                .as_ref()
+                                .map(|t| t.track_id.0.clone())
+                                .unwrap_or_default(),
+                        ),
+                    })
+                    .collect::<Vec<_>>();
+                let ignored = self
+                    .session
+                    .library
+                    .ignored_in_targets(&targets)
+                    .unwrap_or_default();
                 let rows: QVariantList = p
                     .rows
                     .iter()
-                    .map(|r| {
+                    .enumerate()
+                    .map(|(index, r)| {
                         let mut map: QVariantMap = [
+                            (
+                                "ignored",
+                                ignored.get(index).copied().unwrap_or(false).into(),
+                            ),
                             ("id", string(&r.id)),
                             ("title", string(&r.title)),
                             ("subtitle", string(&r.subtitle)),
@@ -1473,6 +1634,38 @@ impl Bridge {
             })
             .collect();
         [
+            ("contextHidden", self.browser.context_hidden.into()),
+            ("contextIgnored", self.browser.context_ignored.into()),
+            ("preferenceMore", self.browser.preference_more.into()),
+            (
+                "preferenceRows",
+                QVariant::from(
+                    self.browser
+                        .preference_rows
+                        .iter()
+                        .map(|r| {
+                            QVariant::from(
+                                [
+                                    ("id", string(&r.id)),
+                                    ("title", string(&r.title)),
+                                    ("artist", string(&r.subtitle)),
+                                    (
+                                        "album",
+                                        string(
+                                            r.track
+                                                .as_ref()
+                                                .map(|t| t.release_title.as_str())
+                                                .unwrap_or(""),
+                                        ),
+                                    ),
+                                ]
+                                .into_iter()
+                                .collect::<QVariantMap>(),
+                            )
+                        })
+                        .collect::<QVariantList>(),
+                ),
+            ),
             (
                 "duplicateMessage",
                 string(
@@ -1754,6 +1947,7 @@ impl Browser {
     fn pane_request(&self, pane: usize) -> Request {
         let ids = |p: usize| self.selections[p].ids.iter().cloned().collect::<Vec<_>>();
         Request {
+            omit_hidden_artists: pane == 0 && self.view == 0 && self.pages[0].seek.is_none(),
             unresolved_spotify: self.view == 5 && pane == 2,
             marked_spotify: self.view == 5 && pane == 2 && self.review_marked,
             song_column: if matches!(self.view, 3 | 5) && pane == 2 {
@@ -2397,6 +2591,22 @@ impl Bridge {
         order: Request,
         append: bool,
     ) {
+        if self.browser.pending || self.route_pending.is_some() || self.automatic_song_search {
+            return;
+        }
+        self.browser.queue_explicit_start_only = false;
+        self.browser.queue_explicit = match &target {
+            music_library::track_container::Target::Songs(ids) => ids.clone(),
+            music_library::track_container::Target::PlaylistEntries { entries, .. } => {
+                self.browser.pages[2]
+                    .rows
+                    .iter()
+                    .filter(|r| entries.contains(&r.id))
+                    .filter_map(|r| r.track.as_ref().map(|t| t.track_id.0.clone()))
+                    .collect()
+            }
+            _ => vec![],
+        };
         if self.browser.pending
             || (!append && (self.route_pending.is_some() || self.automatic_song_search))
         {
@@ -2427,12 +2637,17 @@ impl Bridge {
         });
         self.browser.pending = true;
         self.browser.error.clear();
+        let explicit = self.browser.queue_explicit.clone();
         self.browser.worker = Some(std::thread::spawn(move || {
             deliver(
                 reader
                     .resolve(&target, &order)
-                    .map(|tracks| (tracks, 0))
-                    .map_err(|e| e.to_string()),
+                    .map_err(|e| e.to_string())
+                    .and_then(|tracks| {
+                        reader
+                            .prepare_playback_program(tracks, 0, &explicit, false)
+                            .map_err(|e| e.to_string())
+                    }),
             );
         }));
     }

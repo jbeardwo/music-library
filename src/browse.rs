@@ -33,6 +33,9 @@ pub enum SongColumn {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Request {
+    pub omit_hidden_artists: bool,
+    pub hidden_artists_only: bool,
+    pub ignored_tracks_only: bool,
     /// Explicit Spotify identity review; never performs provider work.
     pub unresolved_spotify: bool,
     pub marked_spotify: bool,
@@ -101,7 +104,7 @@ impl QueueReader {
         Ok(self.0.query_row("SELECT (SELECT count(*) FROM library_membership) - (SELECT count(DISTINCT s.track_id) FROM trusted_spotify_track s JOIN library_membership lm ON lm.track_id=s.track_id) - (SELECT count(*) FROM track_provider_exclusion x JOIN library_membership m ON m.track_id=x.track_id WHERE x.provider='spotify')", [], |r| r.get::<_, i64>(0))? as u64)
     }
 
-    pub fn read(self, request: &Request) -> Result<Vec<TrackSearchResult>> {
+    pub fn read(&self, request: &Request) -> Result<Vec<TrackSearchResult>> {
         self.read_request(request)
     }
     pub(crate) fn read_request(&self, request: &Request) -> Result<Vec<TrackSearchResult>> {
@@ -366,7 +369,21 @@ fn query_projection(
         scope.push_str(" AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track spotify WHERE spotify.track_id=t.id)");
         scope.push_str(if request.marked_spotify { " AND EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify')" } else { " AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify')" });
     }
-    let saved = "JOIN library_membership lm ON lm.track_id=t.id";
+    if request.ignored_tracks_only {
+        scope.push_str(" AND EXISTS(SELECT 1 FROM ignored_track_preference p WHERE p.profile_id='local' AND p.track_id=t.id)");
+    }
+    let artist_preference_filter = if request.hidden_artists_only {
+        " AND EXISTS(SELECT 1 FROM hidden_artist_preference p WHERE p.profile_id='local' AND p.artist_id=a.id)"
+    } else if request.omit_hidden_artists {
+        " AND NOT EXISTS(SELECT 1 FROM hidden_artist_preference p WHERE p.profile_id='local' AND p.artist_id=a.id)"
+    } else {
+        ""
+    };
+    let saved = if request.ignored_tracks_only {
+        ""
+    } else {
+        "JOIN library_membership lm ON lm.track_id=t.id"
+    };
 
     let album_order = request.sort == Sort::Album
         || (request.sort == Sort::Default
@@ -375,9 +392,9 @@ fn query_projection(
     let sql = match request.pane {
             Pane::Genres => "SELECT g.genre, g.genre, '', lower(g.genre), '', 0, 0, '', '', '', NULL, '', '' FROM (SELECT DISTINCT genre FROM effective_track_genre) g WHERE EXISTS(SELECT 1 FROM effective_track_genre observation JOIN library_membership lm ON lm.track_id=observation.track_id WHERE observation.genre=g.genre)".into(),
             Pane::Artists => format!("SELECT a.id, a.name, '', lower(a.name), '', 0, 0, '', '', '', NULL, '', ''
-                FROM artist a WHERE (EXISTS(SELECT 1 FROM track_artist_credit c JOIN track t ON t.id=c.track_id {saved} WHERE c.artist_id=a.id)
+                FROM artist a WHERE ({} OR EXISTS(SELECT 1 FROM track_artist_credit c JOIN track t ON t.id=c.track_id {saved} WHERE c.artist_id=a.id)
                 OR EXISTS(SELECT 1 FROM album_artist_credit c JOIN release r ON r.album_id=c.album_id JOIN track t ON t.release_id=r.id {saved} WHERE c.artist_id=a.id)
-                OR EXISTS(SELECT 1 FROM release_artist_credit c JOIN track t ON t.release_id=c.release_id {saved} WHERE c.artist_id=a.id))"),
+                OR EXISTS(SELECT 1 FROM release_artist_credit c JOIN track t ON t.release_id=c.release_id {saved} WHERE c.artist_id=a.id)){artist_preference_filter}", if request.hidden_artists_only {"1"} else {"0"}),
             Pane::Albums => {
                 let keys: &str = match request.sort {
                     Sort::Year => "b.year_key, b.title_key, 0, 0",

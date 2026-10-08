@@ -215,7 +215,7 @@ impl Library {
 impl crate::browse::QueueReader {
     /// Capture the complete persisted order, including duplicate entry identities.
     pub fn read_playlist(
-        self,
+        &self,
         playlist: &str,
         start: Option<&str>,
     ) -> Result<(Vec<TrackSearchResult>, usize)> {
@@ -662,7 +662,7 @@ impl crate::browse::QueueReader {
 
 impl crate::browse::QueueReader {
     pub fn read_playlists(
-        self,
+        &self,
         playlists: &[String],
         start: Option<&str>,
     ) -> Result<(Vec<TrackSearchResult>, usize)> {

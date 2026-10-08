@@ -1336,6 +1336,32 @@ ApplicationWindow {
             }
         }
     }
+    Dialog {
+        id: preferenceManager; objectName: "preferenceManager"
+        property bool hiddenArtists: false
+        title: hiddenArtists ? "Hidden Artists" : "Ignored Songs"
+        modal: true; anchors.centerIn: parent
+        width: Math.min(820,window.width-40); height: Math.min(600,window.height-60)
+        standardButtons: Dialog.Close
+        contentItem: ColumnLayout {
+            Label { text: preferenceManager.hiddenArtists ? "Artist" : "Song · Artist · Album" }
+            ListView {
+                Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+                model: window.library.preferenceRows || []
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width
+                    Label { text: preferenceManager.hiddenArtists ? modelData.title : [modelData.title,modelData.artist,modelData.album].join(" · "); textFormat: Text.PlainText; elide: Text.ElideRight; Layout.fillWidth: true }
+                    Button { objectName: "preferenceRestore-" + modelData.id; text: preferenceManager.hiddenArtists ? "Unhide" : "Unignore"; onClicked: window.bridge.browse_action(preferenceManager.hiddenArtists ? "preference-unhide" : "preference-unignore",preferenceManager.hiddenArtists ? 0 : 2,modelData.id) }
+                }
+                ScrollBar.vertical: ScrollBar {}
+            }
+            RowLayout {
+                Button { text: "First page"; onClicked: window.bridge.browse_action("preference-first",0,"") }
+                Button { text: "Next page"; enabled: window.library.preferenceMore; onClicked: window.bridge.browse_action("preference-next",0,"") }
+            }
+        }
+    }
     property int contextPane: 0
     property string contextId: ""
     property string contextTrackId: ""
@@ -1346,6 +1372,7 @@ ApplicationWindow {
         // Playlist row IDs identify entries; their Track relationship is canonical.
         contextTrackId = paneIndex !== 2 ? "" : window.library.view === "Playlists"
             ? (rowData.track ? rowData.track.trackId : "") : rowData.id;
+        window.bridge.browse_action("preference-context",paneIndex,paneIndex === 2 ? contextTrackId : contextId);
         libraryMenu.popup();
     }
     Dialog {
@@ -1449,6 +1476,9 @@ ApplicationWindow {
     }
     Menu {
         id: libraryMenu
+        onAboutToShow: window.bridge.browse_action("preference-context",window.contextPane,window.contextPane === 2 ? window.contextTrackId : window.contextId)
+        MenuItem { objectName: "hideArtistAction"; text: window.library.contextHidden ? "Unhide this artist" : "Hide this artist"; visible: window.contextPane === 0 && window.library.view === "Artists"; onTriggered: window.bridge.browse_action(window.library.contextHidden ? "preference-unhide" : "preference-hide",0,window.contextId) }
+        MenuItem { objectName: "ignoreAction"; text: (window.library.contextIgnored ? "Unignore " : "Ignore ") + ["artist","album","song"][window.contextPane]; visible: window.contextPane === 2 || (window.library.view !== "Playlists" && (window.contextPane === 1 || window.library.view === "Artists")); onTriggered: window.bridge.browse_action(window.library.contextIgnored ? "preference-unignore" : "preference-ignore",window.contextPane,window.contextPane === 2 ? window.contextTrackId : window.contextId) }
         MenuItem { text: "Play now"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("context-play", window.contextPane, window.contextId) }
         MenuItem { text: "Add to queue"; enabled: !window.library.pending; onTriggered: window.bridge.browse_action("append", window.contextPane, window.contextId) }
         MenuItem { text: "Add to Playlist…"; enabled: !window.library.pending; onTriggered: { window.bridge.browse_action("picker-open",window.contextPane,window.contextId); addPlaylistDialog.open(); } }
@@ -2079,6 +2109,7 @@ ApplicationWindow {
             }
             delegate: Rectangle {
                 id: row
+                opacity: modelData.ignored ? 0.55 : 1
                 required property var rowData
                 readonly property var modelData: rowData
                 required property int index
@@ -2185,6 +2216,7 @@ ApplicationWindow {
                                 border.width: list.activeFocus && pane.logicalIndex === modelData.logicalIndex ? 1 : 0
                                 border.color: "#96506d"
                                 Accessible.role: Accessible.ListItem
+                                opacity: album.ignored ? 0.55 : 1
                                 Accessible.name: album.title + " " + album.subtitle
                                 Accessible.selected: pane.isSelected(album.id)
                                 Column {
@@ -2626,6 +2658,8 @@ ApplicationWindow {
     }
     Menu {
         id: settingsMenu
+        MenuItem { text: "Hidden Artists"; objectName: "hiddenArtistsAction"; onTriggered: { preferenceManager.hiddenArtists=true; window.bridge.browse_action("preference-hidden",0,""); preferenceManager.open(); } }
+        MenuItem { text: "Ignored Songs"; objectName: "ignoredSongsAction"; onTriggered: { preferenceManager.hiddenArtists=false; window.bridge.browse_action("preference-ignored",2,""); preferenceManager.open(); } }
         MenuItem { objectName: "spotifyConnectionsReview"; text: "Spotify Connections"; onTriggered: { artistsPane.rememberViewport(); albumsPane.rememberViewport(); songsPane.rememberViewport(); window.bridge.browse_action("view", 2, "Spotify Connections"); } }
         MenuItem { text: "Output calibration…"; onTriggered: outputCalibration.open() }
         MenuItem { text: "Playback connection…"; onTriggered: window.openSpotifyConnection(window.view.currentId) }

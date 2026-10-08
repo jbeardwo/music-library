@@ -253,7 +253,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 31 {
+        } else if version > 32 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -429,6 +429,11 @@ impl Store {
 
         if version < 31 {
             connection.execute_batch(include_str!("../migrations/0031_spotify_discovery.sql"))?;
+        }
+
+        if version < 32 {
+            connection
+                .execute_batch(include_str!("../migrations/0032_playback_preferences.sql"))?;
         }
 
         Ok(Self {

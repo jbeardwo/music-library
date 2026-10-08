@@ -97,6 +97,12 @@ pub enum PlaybackStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueueIntent {
+    ExplicitUserSelection,
+    GeneratedContext,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlaybackState {
     /// Logical master volume, independent of source calibration and transport.
@@ -104,6 +110,8 @@ pub struct PlaybackState {
     /// Fixed calibration for this engine output; never Track-dependent.
     pub output_trim_db: f64,
     pub queue: Vec<TrackId>,
+    /// Permission belongs to the occurrence, not the Track.
+    pub queue_intent: Vec<QueueIntent>,
     /// Selected queue entry, including an entry whose playback attempt failed.
     pub position: Option<usize>,
     /// Last confirmed state (Stopped for a newly selected input until it starts).
@@ -201,6 +209,7 @@ impl<E: PlaybackEngine> Playback<E> {
     pub fn set_queue(&mut self, queue: Vec<TrackId>) -> Result<(), PlaybackError> {
         self.stop()?;
         self.state.position = (!queue.is_empty()).then_some(0);
+        self.state.queue_intent = vec![QueueIntent::ExplicitUserSelection; queue.len()];
         self.state.queue = queue;
         Ok(())
     }
@@ -209,9 +218,103 @@ impl<E: PlaybackEngine> Playback<E> {
     /// The first append selects position zero without starting playback.
     pub fn enqueue(&mut self, track_id: TrackId) {
         self.state.queue.push(track_id);
+        self.state
+            .queue_intent
+            .push(QueueIntent::ExplicitUserSelection);
         if self.state.position.is_none() {
             self.state.position = Some(0);
         }
+    }
+
+    pub fn mark_entry_explicit(&mut self, position: usize) {
+        self.state.queue_intent[position] = QueueIntent::ExplicitUserSelection;
+    }
+    pub fn set_entry_intents(&mut self, explicit: &[String]) {
+        let explicit = explicit.iter().collect::<std::collections::HashSet<_>>();
+        self.state.queue_intent = self
+            .state
+            .queue
+            .iter()
+            .map(|id| {
+                if explicit.contains(&id.0) {
+                    QueueIntent::ExplicitUserSelection
+                } else {
+                    QueueIntent::GeneratedContext
+                }
+            })
+            .collect();
+    }
+    pub fn mark_generated_from(&mut self, start: usize, explicit: &[String]) {
+        let explicit = explicit.iter().collect::<std::collections::HashSet<_>>();
+        for i in start..self.state.queue.len() {
+            self.state.queue_intent[i] = if explicit.contains(&self.state.queue[i].0) {
+                QueueIntent::ExplicitUserSelection
+            } else {
+                QueueIntent::GeneratedContext
+            };
+        }
+    }
+    pub fn eligible_position(
+        &self,
+        library: &Library,
+        position: usize,
+    ) -> Result<bool, PlaybackError> {
+        Ok(
+            self.state.queue_intent[position] == QueueIntent::ExplicitUserSelection
+                || library.is_track_eligible_for_generated_playback(&self.state.queue[position])?,
+        )
+    }
+    /// Find the first eligible occurrence in traversal order, with bounded preference
+    /// reads even when a bulk ignore affects a large stale queue.
+    pub fn eligible_position_from(
+        &self,
+        library: &Library,
+        start: usize,
+        previous: bool,
+    ) -> Result<Option<usize>, PlaybackError> {
+        if start >= self.state.queue.len() {
+            return Ok(None);
+        }
+        let mut candidates: Box<dyn Iterator<Item = usize>> = if previous {
+            Box::new((0..=start).rev())
+        } else {
+            Box::new(start..self.state.queue.len())
+        };
+        loop {
+            let batch = candidates.by_ref().take(200).collect::<Vec<_>>();
+            if batch.is_empty() {
+                return Ok(None);
+            }
+            let tracks = batch
+                .iter()
+                .filter(|i| self.state.queue_intent[**i] == QueueIntent::GeneratedContext)
+                .map(|i| &self.state.queue[*i])
+                .collect::<Vec<_>>();
+            let ignored = library.ignored_tracks_in(&tracks)?;
+            for i in batch {
+                if self.state.queue_intent[i] == QueueIntent::ExplicitUserSelection
+                    || !ignored.contains(&self.state.queue[i].0)
+                {
+                    return Ok(Some(i));
+                }
+            }
+        }
+    }
+    pub fn adjacent_eligible_position(
+        &self,
+        library: &Library,
+        previous: bool,
+    ) -> Result<Option<usize>, PlaybackError> {
+        let position = self.state.position.ok_or(PlaybackError::EmptyQueue)?;
+        let start = if previous {
+            let Some(start) = position.checked_sub(1) else {
+                return Ok(None);
+            };
+            start
+        } else {
+            position + 1
+        };
+        self.eligible_position_from(library, start, previous)
     }
 
     /// Stop and empty the queue. If the engine cannot stop, retain the queue and report failure.
@@ -230,7 +333,16 @@ impl<E: PlaybackEngine> Playback<E> {
                 self.accept_command(PlaybackStatus::Playing);
                 Ok(())
             }
-            PlaybackStatus::Stopped | PlaybackStatus::Failed => self.start_at(library, position),
+            PlaybackStatus::Stopped | PlaybackStatus::Failed => {
+                if self.eligible_position(library, position)? {
+                    self.start_at(library, position)
+                } else if let Some(target) = self.adjacent_eligible_position(library, false)? {
+                    self.start_at(library, target)
+                } else {
+                    self.stop()?;
+                    Err(PlaybackError::EmptyQueue)
+                }
+            }
         }
     }
 
@@ -288,22 +400,20 @@ impl<E: PlaybackEngine> Playback<E> {
 
     /// Start the next entry. At the end, stop without wrapping and return false.
     pub fn next(&mut self, library: &Library) -> Result<bool, PlaybackError> {
-        let position = self.state.position.ok_or(PlaybackError::EmptyQueue)?;
-        if position + 1 == self.state.queue.len() {
+        let Some(target) = self.adjacent_eligible_position(library, false)? else {
             self.stop()?;
             return Ok(false);
-        }
-        self.start_at(library, position + 1)?;
+        };
+        self.start_at(library, target)?;
         Ok(true)
     }
 
     /// Start the preceding entry; at the first entry return false without changing playback.
     pub fn previous(&mut self, library: &Library) -> Result<bool, PlaybackError> {
-        let position = self.state.position.ok_or(PlaybackError::EmptyQueue)?;
-        if position == 0 {
+        let Some(target) = self.adjacent_eligible_position(library, true)? else {
             return Ok(false);
-        }
-        self.start_at(library, position - 1)?;
+        };
+        self.start_at(library, target)?;
         Ok(true)
     }
 

@@ -1011,3 +1011,17 @@ selection with a visible scope. The Library edit commits transactionally before 
 writes; failures are reported per path and cannot undo the Library correction.
 Effective display, search, sorting, and Genre membership update for affected entities.
 See [implemented fields, precedence, safety, and limitations](metadata-editor.md).
+
+### Browse and playback preferences
+
+- Hide this artist omits a canonical Artist from passive top-level Artists browsing
+  without removing credits, search results, explicit navigation, or matching/playback.
+  Hidden Artists are managed under ⋯ and can be unhidden immediately.
+- Ignore song excludes a canonical Track from generated playback, preserving Library
+  membership, playlists, metadata, sources, and search. Explicit row play, enqueue,
+  and multi-selection override ignore for the corresponding queue occurrences.
+- Ignore album/artist snapshots current canonical Tracks; fully ignored objects are
+  de-emphasized but interactive. Partial objects look normal. Unignore clears current
+  Track preferences; later Tracks are never automatically ignored.
+- Ignored Songs under ⋯ lists and restores individual ignored Tracks. Both manager
+  views are bounded and cursor-paged. Preferences survive restart.
