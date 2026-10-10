@@ -1,13 +1,31 @@
     TestCase { id: reviewTest; when: false }
     function reviewWait() { reviewTest.wait(80); }
     function reviewCheck(v,m) { if(!v) throw new Error(m); }
-    function reviewOpen() {
+    function reviewOpenContext(large) {
         try {
             const entry=reviewTest.findChild(settingsMenu,"spotifyConnectionsReview");
             reviewCheck(entry && entry.text==="Spotify Connections","management entry point");entry.triggered();reviewWait();
             reviewCheck(library.view==="Spotify Connections","review active");
             reviewCheck(!artistsPane.visible && !albumsPane.visible && songsPane.detailsTable,"shared management table");
             reviewCheck(library.panes[2].rows.length===200,"bounded page");
+            const groups=reviewTest.findChild(songsPane,"spotifyAlbumGroups");
+            reviewCheck(groups.visible && groups.count>0 && groups.count<=200,"bounded Album grouping");
+            if (!large) {
+                reviewCheck(groups.count===1,"Album grouping and unresolved context");
+                reviewCheck(groups.model.get(0).group.unresolved===450,"Album unresolved aggregation");
+                const expanded={};expanded[groups.model.get(0).group.id]=true;groups.expanded=expanded;groups.forceLayout();reviewWait();
+                const mark=reviewTest.findChild(groups,"spotifyGroupTrackMark");
+                reviewCheck(mark && mark.text==="Mark as not on Spotify","inline Track marking button");
+                const markedTrack=mark.parent.modelData.id;
+                mark.clicked();reviewWait();
+                reviewCheck(groups.model.get(0).group.unresolved===449,"inline button removes unresolved Track");
+                bridge.browse_action("spotify-check",2,markedTrack);reviewWait();
+                reviewCheck(groups.model.get(0).group.unresolved===450,"inline mark reversible");
+            } else {
+                for(let n=0;n<500 && library.unresolvedCount!=="200000";n++) reviewTest.wait(10);
+                reviewCheck(library.unresolvedCount==="200000","large unresolved aggregation");
+            }
+            songsPane.reviewShowTracks=true;reviewWait();
             const list=reviewTest.findChild(songsPane,"libraryPane2");list.forceLayout();
             const row=list.itemAtIndex(0),id=library.panes[2].rows[0].id;
             const before=JSON.stringify([view.currentId,view.queue,view.status]);
@@ -25,6 +43,8 @@
             return "ok";
         } catch(e){ return String(e); }
     }
+    function reviewOpen() { return reviewOpenContext(false); }
+    function reviewOpenLarge() { return reviewOpenContext(true); }
     property var reviewAnchor: null
     property string reviewSort: ""
     property string reviewFilter: ""
@@ -155,6 +175,26 @@
             reviewCheck(rows.every(r=>!library.panes[2].rows.some(t=>t.id===r.id)),"all selected rows removed");
             bridge.browse_action("review-mode",2,"marked");reviewWait();
             reviewCheck(rows.every(r=>library.panes[2].rows.some(t=>t.id===r.id)),"all selected Tracks in marked view");
+            bridge.browse_action("select",2,rows[0].id);
+            bridge.browse_action("select-toggle",2,rows[1].id);
+            bridge.browse_action("select-toggle",2,rows[2].id);reviewWait();
+            window.openSongContext(2,rows[1]);reviewWait();
+            reviewTest.findChild(libraryMenu,"spotifyCheckAgain").triggered();libraryMenu.close();reviewWait();
+            reviewCheck(rows.every(r=>!library.panes[2].rows.some(t=>t.id===r.id)),"all selected Tracks leave marked view");
+            bridge.browse_action("review-mode",2,"unresolved");reviewWait();
+            reviewCheck(rows.every(r=>library.panes[2].rows.some(t=>t.id===r.id)),"all selected Tracks eligible again");
+            bridge.browse_action("select",2,rows[0].id);
+            bridge.browse_action("select-toggle",2,rows[1].id);
+            bridge.browse_action("select-toggle",2,rows[2].id);
+            bridge.browse_action("spotify-mark-selection",2,rows[1].id);reviewWait();
+            bridge.browse_action("review-mode",2,"marked");reviewWait();
+            bridge.browse_action("select",2,rows[0].id);
+            bridge.browse_action("select-toggle",2,rows[1].id);
+            window.openSongContext(2,rows[2]);reviewWait();
+            reviewTest.findChild(libraryMenu,"spotifyCheckAgain").triggered();libraryMenu.close();reviewWait();
+            reviewCheck(library.panes[2].rows.some(r=>r.id===rows[0].id) && library.panes[2].rows.some(r=>r.id===rows[1].id),"outside-selection check keeps other marked Tracks");
+            reviewCheck(!library.panes[2].rows.some(r=>r.id===rows[2].id),"outside-selection check re-enables only clicked Track");
+            bridge.browse_action("spotify-mark",2,rows[2].id);reviewWait();
             bridge.browse_action("review-mode",2,"unresolved");reviewWait();
             const remaining=library.panes[2].rows.slice(0,3);
             bridge.browse_action("select",2,remaining[0].id);

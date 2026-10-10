@@ -561,6 +561,7 @@ dependencies = [
  "base64",
  "music-library",
  "ring",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

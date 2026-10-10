@@ -59,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for track in &cached {
         let input = l.song_resolution_input(track)?;
         let candidate = music_library::song_resolution::Candidate {
+            recording: Default::default(),
             identity: music_library::domain::ExternalIdentity {
                 provider: "spotify".into(),
                 kind: "track".into(),

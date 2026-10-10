@@ -1,5 +1,6 @@
 //! Spotify catalog client and independent user playback adapter. Provider JSON
 //! and credentials stay here; catalog Client Credentials never authorize playback.
+pub mod album_context;
 pub mod playback;
 pub mod playback_completion;
 pub mod playlists;
@@ -115,6 +116,7 @@ pub struct Spotify {
     cooldown_until: i64,
     refresh_discovery: bool,
     cache_only: bool,
+    inspect_retained: bool,
     cache_miss: bool,
     categories: HashMap<String, u64>,
     request_audit: std::collections::VecDeque<CatalogRequestAudit>,
@@ -154,6 +156,7 @@ impl Spotify {
             cooldown_until: 0,
             refresh_discovery: false,
             cache_only: false,
+            inspect_retained: false,
             cache_miss: false,
             categories: HashMap::new(),
             request_audit: Default::default(),
@@ -201,6 +204,216 @@ impl Spotify {
         } else {
             result.map(Some)
         }
+    }
+    /// Cache-only Album inspection. Programs are optional when discovery found
+    /// an alternative that has never had its program fetched. Never authenticates.
+    pub fn cached_album_review(
+        path: &str,
+        market: &str,
+        input: &music_library::album_matching::MatchInput,
+    ) -> Result<Option<(music_library::album_candidates::Report, Vec<Programs>)>, CatalogError>
+    {
+        let client = Self::new(Config::new(
+            "offline".into(),
+            "offline".into(),
+            market.into(),
+        )?)
+        .with_library(Some(path))?;
+        Self::cached_album_review_with_client(client, input)
+    }
+    fn cached_album_review_with_client(
+        mut client: Self,
+        input: &music_library::album_matching::MatchInput,
+    ) -> Result<Option<(music_library::album_candidates::Report, Vec<Programs>)>, CatalogError>
+    {
+        client.cache_only = true;
+        client.inspect_retained = true;
+        let mut artists = input.equivalent_artists.clone();
+        if let Some(artist) = &input.known_artist {
+            artists.insert(0, artist.clone());
+        }
+        if artists.is_empty() {
+            match client.search_artists(&input.artist) {
+                Ok(page) => {
+                    match music_library::album_matching::resolve_artist(&input.artist, &page) {
+                        Ok(artist) => artists.push(artist),
+                        Err(music_library::album_matching::MatchOutcome::ArtistAmbiguous(
+                            candidates,
+                        )) => artists.extend(candidates.into_iter().map(|c| c.identity)),
+                        _ => return Ok(None),
+                    }
+                }
+                Err(_) if client.cache_miss => return Ok(None),
+                Err(e) => return Err(e),
+            }
+        }
+        let established = input
+            .known_artist
+            .clone()
+            .or_else(|| (artists.len() == 1).then(|| artists[0].clone()));
+        let page = match client.scoped_albums(&artists, &input.title) {
+            Ok(page) => page,
+            Err(_) if client.cache_miss => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let local = client
+            .discovery
+            .as_ref()
+            .unwrap()
+            .local_album_tracks(&input.album_id)
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        let mut report = music_library::album_candidates::initial_report(
+            &client,
+            (&input.raw_title, input.date),
+            established.as_ref(),
+            &page,
+            &local,
+        );
+        let mut programs = vec![];
+        for candidate in &mut report.candidates {
+            if let Ok(p) = client.album_programs(&candidate.identity) {
+                candidate.programs = p
+                    .programs
+                    .iter()
+                    .map(|p| {
+                        music_library::album_program::inspect_album_program(
+                            &local,
+                            p,
+                            &input.raw_title,
+                        )
+                    })
+                    .collect();
+                programs.push(p);
+            }
+        }
+        // Reuse the same evaluator when all required programs are cached. A
+        // missing program remains inspectable, without issuing discovery.
+        client.cache_miss = false;
+        if let Some(artist) = &established
+            && let Ok(resolution) = music_library::album_candidates::resolve_canonical(
+                &mut client,
+                (&input.raw_title, input.date),
+                artist,
+                &page,
+                false,
+                &local,
+                &mut programs,
+                &input.equivalent_artists,
+                &input.evidence,
+            )
+        {
+            report = resolution.report;
+        }
+        for row in &mut report.candidates {
+            if row.programs.is_empty()
+                && let Some(p) = programs.iter().find(|p| p.album == row.identity)
+            {
+                row.programs = p
+                    .programs
+                    .iter()
+                    .map(|p| {
+                        music_library::album_program::inspect_album_program(
+                            &local,
+                            p,
+                            &input.raw_title,
+                        )
+                    })
+                    .collect();
+            }
+        }
+        if report.decision != "Accepted" && report.reasons.is_empty() {
+            report.reasons.push(
+                if report
+                    .candidates
+                    .iter()
+                    .any(|c| c.reasons.is_empty() && c.programs.is_empty())
+                {
+                    music_library::album_candidates::Reason::IncompleteProgram
+                } else {
+                    music_library::album_candidates::Reason::CompetingCandidates
+                },
+            );
+        }
+        for row in &mut report.candidates {
+            if row.decision == "Withheld" && row.reasons.is_empty() {
+                row.reasons = report.reasons.clone();
+            }
+        }
+        report.rank_candidates();
+        Ok(Some((report, programs)))
+    }
+    /// Exact object lookup uses ordinary cache, paging and cooldown protections.
+    pub fn explicit_album(
+        &mut self,
+        value: &str,
+    ) -> Result<(ArtistAlbumCandidate, Programs), CatalogError> {
+        let identity = music_library::spotify_review::parse_spotify_object(value, "album")
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        let album: Album = self.get(&format!("albums/{}", identity.external_id), &[])?;
+        if album.id != identity.external_id {
+            return Err(CatalogError::Other(
+                "Spotify returned a different Album".into(),
+            ));
+        }
+        let candidate = ArtistAlbumCandidate {
+            identity: identity.clone(),
+            title: album.name,
+            artist: display(&album.artists),
+            artist_ids: album.artists.iter().map(|a| id("artist", &a.id)).collect(),
+            date: album.release_date,
+            primary_type: album.album_type,
+            comment: String::new(),
+        };
+        let programs = self.album_programs(&identity)?;
+        Ok((candidate, programs))
+    }
+    pub fn explicit_track(
+        &mut self,
+        value: &str,
+    ) -> Result<music_library::song_resolution::Candidate, CatalogError> {
+        let identity = music_library::spotify_review::parse_spotify_object(value, "track")
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        let entry: SearchSong = self.get(&format!("tracks/{}", identity.external_id), &[])?;
+        if entry.song.id.as_deref() != Some(identity.external_id.as_str()) || entry.song.is_local {
+            return Err(CatalogError::Other(
+                "Spotify returned a different Track".into(),
+            ));
+        }
+        let artists = |values: &[Artist]| {
+            values
+                .iter()
+                .map(|a| ArtistEvidence {
+                    name: a.name.clone(),
+                    identities: vec![id("artist", &a.id)],
+                    join_phrase: String::new(),
+                })
+                .collect()
+        };
+        Ok(music_library::song_resolution::Candidate {
+            recording: music_library::edition::RecordingEvidence {
+                identities: vec![],
+                isrcs: entry
+                    .song
+                    .external_ids
+                    .get("isrc")
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+            },
+            identity,
+            album_identity: Some(id("album", &entry.album.id)),
+            title: entry.song.name,
+            artist: display(&entry.song.artists),
+            artists: artists(&entry.song.artists),
+            album: entry.album.name,
+            date: entry.album.release_date,
+            album_artists: artists(&entry.album.artists),
+            album_type: entry.album.album_type,
+            album_total_tracks: entry.album.total_tracks,
+            duration_ms: entry.song.duration_ms,
+            disc: entry.song.disc_number,
+            number: entry.song.track_number,
+        })
     }
     pub fn refresh_discovery(&mut self, refresh: bool) {
         self.refresh_discovery = refresh;
@@ -374,17 +587,39 @@ impl Spotify {
         url.query_pairs_mut()
             .append_pair("market", &self.config.market)
             .extend_pairs(params.iter().map(|(k, v)| (*k, v.as_str())));
-        let fingerprint = format!(
-            "spotify:{}:{}",
-            music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
-            url
-        );
+        let strategy = if path == "search"
+            && params
+                .iter()
+                .any(|(key, value)| *key == "type" && value == "album")
+        {
+            music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION
+        } else {
+            1
+        };
+        let fingerprint = format!("spotify:{}:{}", strategy, url);
         let now = Self::now();
         if !self.refresh_discovery
             && let Some(db) = &self.discovery
-            && let Some(response) = db
-                .spotify_discovery_response(&fingerprint, now)
-                .map_err(|e| CatalogError::Other(e.to_string()))?
+            && let Some(response) = (if self.cache_only && self.inspect_retained {
+                db.spotify_discovery_observation(&fingerprint)
+                    .and_then(|v| {
+                        if v.is_some() {
+                            return Ok(v);
+                        }
+                        for previous in (1..strategy).rev() {
+                            let cached = db.spotify_discovery_observation(&format!(
+                                "spotify:{previous}:{url}"
+                            ))?;
+                            if cached.is_some() {
+                                return Ok(cached);
+                            }
+                        }
+                        Ok(None)
+                    })
+            } else {
+                db.spotify_discovery_response(&fingerprint, now)
+            })
+            .map_err(|e| CatalogError::Other(e.to_string()))?
         {
             return serde_json::from_str(&response).map_err(|e| CatalogError::Other(e.to_string()));
         }
@@ -503,13 +738,14 @@ impl Spotify {
         {
             let key = format!(
                 "spotify-name:{}:{}:{}",
-                music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
-                self.config.market,
-                artist.external_id
+                1, self.config.market, artist.external_id
             );
-            if let Some(value) = db
-                .spotify_discovery_response(&key, Self::now())
-                .map_err(|e| CatalogError::Other(e.to_string()))?
+            if let Some(value) = (if self.cache_only && self.inspect_retained {
+                db.spotify_discovery_observation(&key)
+            } else {
+                db.spotify_discovery_response(&key, Self::now())
+            })
+            .map_err(|e| CatalogError::Other(e.to_string()))?
             {
                 let name: String =
                     serde_json::from_str(&value).map_err(|e| CatalogError::Other(e.to_string()))?;
@@ -527,13 +763,10 @@ impl Spotify {
         Ok(found.name)
     }
     fn remember_artist(&mut self, a: &Artist) -> Result<(), CatalogError> {
-        if let Some(db) = &self.discovery {
-            let key = format!(
-                "spotify-name:{}:{}:{}",
-                music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
-                self.config.market,
-                a.id
-            );
+        if !self.cache_only
+            && let Some(db) = &self.discovery
+        {
+            let key = format!("spotify-name:{}:{}:{}", 1, self.config.market, a.id);
             db.persist_spotify_discovery(
                 &key,
                 &serde_json::to_string(&a.name).unwrap(),
@@ -591,10 +824,68 @@ impl Spotify {
                 ("offset", "0".into()),
             ],
         )?;
+        let useful = response.albums.items.iter().any(|album| {
+            album
+                .artists
+                .iter()
+                .any(|a| artists.iter().any(|id| id.external_id == a.id))
+                && (music_library::matching::album_representation_title(&album.name)
+                    == music_library::matching::album_representation_title(title)
+                    || names.iter().any(|name| {
+                        music_library::matching::artist_album_title(&album.name, name).is_some_and(
+                            |base| {
+                                music_library::matching::normalize_album_title(base)
+                                    == music_library::matching::normalize_album_title(title)
+                                    || music_library::matching::normalize_album_title(base)
+                                        == format!(
+                                            "{} live",
+                                            music_library::matching::normalize_album_title(title)
+                                        )
+                            },
+                        )
+                    }))
+        });
+        let mut alternate_attempted = false;
+        if !useful
+            && artists.len() == 1
+            && names.len() == 1
+            && let Some(alternate) =
+                music_library::matching::artist_album_discovery_variant(&names[0], title)
+        {
+            alternate_attempted = true;
+            let alternate = self.get::<AlbumSearch>(
+                "search",
+                &[
+                    ("q", alternate),
+                    ("type", "album".into()),
+                    ("limit", "10".into()),
+                    ("offset", "0".into()),
+                ],
+            );
+            match alternate {
+                Ok(mut found) => {
+                    for album in response.albums.items.drain(..) {
+                        if !found.albums.items.iter().any(|other| other.id == album.id) {
+                            found.albums.items.push(album);
+                        }
+                    }
+                    if found.albums.items.len() > 10 {
+                        found.albums.items.truncate(10);
+                        found.albums.total = found.albums.total.max(11);
+                    }
+                    response = found;
+                }
+                Err(_) if self.cache_only && self.cache_miss => {
+                    self.cache_miss = false;
+                }
+                Err(error) => return Err(error),
+            }
+        }
         // Spotify can return no results for a quoted full title it actually
         // indexes. One distinctive token is discovery only: returned Artist IDs
         // and the complete original title still pass the unchanged core matcher.
         if response.albums.items.is_empty()
+            && !alternate_attempted
             && !response.albums.more()
             && names.len() == 1
             && base.split_whitespace().count() > 1
@@ -848,6 +1139,10 @@ impl music_library::song_resolution::SongSearch for Spotify {
                     return None;
                 }
                 Some(music_library::song_resolution::Candidate {
+                    recording: music_library::edition::RecordingEvidence {
+                        identities: vec![],
+                        isrcs: s.external_ids.get("isrc").cloned().into_iter().collect(),
+                    },
                     album_identity: Some(id("album", &entry.album.id)),
                     identity: id("track", &key),
                     title: s.name,

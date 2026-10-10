@@ -1,5 +1,6 @@
-//! Bounded canonical song evaluation and acceptance for diagnostics and Play. Never Album,
-//! Recording, or edition acceptance.
+//! Bounded Track occurrence evaluation for diagnostics and Play. Release-aware
+//! matching and best-available playback are separate; neither infers Recording
+//! identity or canonical Release equivalence.
 use crate::{
     catalog::{CatalogError, Page},
     domain::*,
@@ -9,6 +10,8 @@ use rusqlite::params;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Input {
+    #[serde(default)]
+    pub recording: crate::edition::RecordingEvidence,
     pub track_id: TrackId,
     #[serde(default)]
     pub spotify_excluded: bool,
@@ -32,6 +35,8 @@ pub struct Input {
 }
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Candidate {
+    #[serde(default)]
+    pub recording: crate::edition::RecordingEvidence,
     /// Adapter-declared song/occurrence identity, never Recording identity.
     pub identity: ExternalIdentity,
     pub album_identity: Option<ExternalIdentity>,
@@ -59,6 +64,9 @@ pub struct Selection {
     candidates: Vec<Candidate>,
     show_all: bool,
     assessments: Vec<Feasibility>,
+    album_candidates: Vec<ExternalIdentity>,
+    manual_attachment: bool,
+    trusted: Vec<ExternalIdentity>,
 }
 impl Selection {
     pub fn new(input: Input, candidates: Vec<Candidate>) -> Self {
@@ -68,10 +76,47 @@ impl Selection {
             candidates,
             show_all: false,
             assessments,
+            album_candidates: vec![],
+            manual_attachment: false,
+            trusted: vec![],
         }
     }
     pub fn show_all(&mut self) {
         self.show_all = true;
+    }
+    pub fn set_trusted_identities(&mut self, trusted: Vec<ExternalIdentity>) {
+        self.trusted = trusted;
+    }
+    pub fn inherit_album_candidates(&mut self, candidates: Vec<Candidate>) {
+        for candidate in candidates {
+            if !self.album_candidates.contains(&candidate.identity) {
+                self.album_candidates.push(candidate.identity.clone());
+            }
+            if !self
+                .candidates
+                .iter()
+                .any(|existing| existing.identity == candidate.identity)
+            {
+                self.candidates.push(candidate);
+            }
+        }
+        self.assessments = classify(&self.input, &self.candidates);
+    }
+    pub fn mark_manual_attachment(&mut self) {
+        self.manual_attachment = true;
+    }
+    pub fn candidate_provenance(&self, index: usize) -> &'static str {
+        if self.manual_attachment {
+            "Manual attachment"
+        } else if self
+            .candidates
+            .get(index)
+            .is_some_and(|c| self.album_candidates.contains(&c.identity))
+        {
+            "Found through Album candidate"
+        } else {
+            "Found through Track search"
+        }
     }
     pub fn visible_indices(&self) -> Vec<usize> {
         let mut rows: Vec<_> = self
@@ -79,9 +124,45 @@ impl Selection {
             .iter()
             .enumerate()
             .map(|(i, a)| (i, a.class))
-            .filter(|(_, class)| self.show_all || *class != FeasibilityClass::Infeasible)
+            .filter(|(i, class)| {
+                self.show_all
+                    || *class != FeasibilityClass::Infeasible
+                    || playable_eligible(&self.input, &self.candidates[*i])
+            })
             .collect();
-        rows.sort_by_key(|(_, class)| *class);
+        let page = Page {
+            items: self.candidates.clone(),
+            next_offset: None,
+        };
+        let score = |i: usize| {
+            let c = &self.candidates[i];
+            let decision = evaluate_attempt(&self.input, &self.input, &page, i, &self.trusted)
+                .map(|e| e.final_decision);
+            let class = match decision {
+                Some(FinalDecision::Accept) => 2,
+                Some(FinalDecision::NeedsReview) => 1,
+                _ => 0,
+            };
+            (
+                class,
+                std::cmp::Reverse(self.assessments[i].class),
+                title_agrees(&self.input.title, &self.input.artists, c),
+                credits_compatible(&self.input, c),
+                crate::matching::normalize(&self.input.album)
+                    == crate::matching::normalize(&c.album),
+                ranking_title_overlap(&self.input.title, &c.title),
+                duration_compatible(&self.input, c),
+                self.input.number == Some(c.number),
+            )
+        };
+        rows.sort_by(|(a, _), (b, _)| {
+            score(*b).cmp(&score(*a)).then_with(|| {
+                self.candidates[*a]
+                    .identity
+                    .external_id
+                    .cmp(&self.candidates[*b].identity.external_id)
+            })
+        });
         rows.into_iter().map(|(i, _)| i).collect()
     }
     pub fn assessments(&self) -> &[Feasibility] {
@@ -96,6 +177,22 @@ impl Selection {
     pub fn input(&self) -> &Input {
         &self.input
     }
+}
+// Ranking only: lexical overlap can order rejected/review candidates, never
+// establish identity or relax automatic acceptance.
+fn ranking_title_overlap(a: &str, b: &str) -> usize {
+    let grams = |s: &str| {
+        let chars = crate::album_program::comparison_title(s)
+            .chars()
+            .take(256)
+            .collect::<Vec<_>>();
+        chars
+            .windows(2)
+            .map(|p| (p[0], p[1]))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let (a, b) = (grams(a), grams(b));
+    a.intersection(&b).count() * 100 / a.union(&b).count().max(1)
 }
 impl Input {
     pub fn search_artist(&self) -> &str {
@@ -116,7 +213,17 @@ impl Input {
 pub(crate) fn load_input(db: &rusqlite::Connection, track: &TrackId) -> Result<Input> {
     let (mut input, album) = db.query_row(
             "SELECT e.title,e.artist_names,e.release_title,r.album_id,e.duration_ms,e.disc_number,e.track_number FROM track t JOIN release r ON r.id=t.release_id JOIN effective_track_metadata e ON e.track_id=t.id WHERE t.id=?1",
-            [track.as_ref()], |r| Ok((Input { track_id: track.clone(), spotify_excluded:false, evidence:Default::default(), association_providers:vec![], album_date:None, album_artists:vec![], album_required_tracks:0, primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+            [track.as_ref()], |r| Ok((Input { recording:Default::default(), track_id: track.clone(), spotify_excluded:false, evidence:Default::default(), association_providers:vec![], album_date:None, album_artists:vec![], album_required_tracks:0, primary_artist:None, artists:vec![], title:r.get(0)?, artist:r.get(1)?, album:r.get(2)?, duration_ms:r.get::<_,Option<i64>>(4)?.and_then(|v| u64::try_from(v).ok()), disc:r.get(5)?, number:r.get(6)? },r.get::<_,String>(3)?)))?;
+    input.recording.identities = db.prepare("SELECT i.provider,i.kind,i.external_id FROM recording_external_identity i JOIN track t ON t.recording_id=i.recording_id WHERE t.id=?1")?
+        .query_map([track.as_ref()], |r| Ok(ExternalIdentity { provider:r.get(0)?, kind:r.get(1)?, external_id:r.get(2)? }))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    input.recording.isrcs = input
+        .recording
+        .identities
+        .iter()
+        .filter(|id| id.provider == "isrc")
+        .map(|id| id.external_id.clone())
+        .collect();
     let year: Option<i32> = db.query_row(
         "SELECT year FROM effective_album_metadata WHERE album_id=?1",
         [&album],
@@ -461,10 +568,210 @@ fn context_matches(input: &Input, c: &Candidate) -> bool {
         // Preserve the stricter existing explicit-Play acceptance gate.
         && duration_compatible(input,c)
 }
-/// A complete bounded page, exact musical title/Album context, equivalent
-/// structured credits and no supplied duration/position contradiction. Unknown
-/// contributor relationships in another plausible candidate block auto-acceptance.
-/// No ranking, fuzzy Artist names or unverified title suffix stripping.
+/// Evidence dominance is a partial order, never a provider relevance score.
+/// Comparable but distinct occurrences remain ambiguous. Stronger Artist credits
+/// may win only when every supplied structural observation is at least as strong.
+fn dominates(input: &Input, a: &Candidate, b: &Candidate) -> bool {
+    let evidence = |c: &Candidate| {
+        [
+            credits_compatible(input, c),
+            crate::artist_credit::compare(&input.album_artists, &c.album_artists)
+                == crate::artist_credit::Compatibility::Equivalent,
+            input.title.trim() == c.title.trim(),
+            input.album.trim() == c.album.trim(),
+            input.disc.is_some_and(|d| d == c.disc),
+            input.number.is_some_and(|n| n == c.number),
+        ]
+    };
+    // Replacement contributors are unresolved identity conflicts, unlike an
+    // extra/omitted credit. They cannot be dismissed by exact primary credit.
+    if crate::artist_credit::compare(&input.artists, &b.artists)
+        == crate::artist_credit::Compatibility::DifferentAdditional
+    {
+        return false;
+    }
+    let left = evidence(a);
+    let right = evidence(b);
+    left.iter().zip(right).all(|(a, b)| *a || !b)
+        && left.iter().zip(right).any(|(a, b)| *a && !b)
+        && crate::catalog_date::agreement(
+            input.album_date,
+            crate::catalog_date::Date::parse(&a.date),
+        ) >= crate::catalog_date::agreement(
+            input.album_date,
+            crate::catalog_date::Date::parse(&b.date),
+        )
+}
+
+fn playable_title_base(title: &str) -> String {
+    let title = title.trim();
+    let annotation = title
+        .strip_suffix(')')
+        .and_then(|t| t.rsplit_once(" ("))
+        .or_else(|| title.rsplit_once(" - "));
+    if let Some((base, suffix)) = annotation {
+        let normalized = crate::matching::normalize(suffix);
+        let words: Vec<_> = normalized.split_whitespace().collect();
+        let version = words.iter().any(|w| {
+            matches!(
+                *w,
+                "live" | "acoustic" | "demo" | "remaster" | "remastered" | "remix" | "edit"
+            )
+        });
+        if version
+            && words.iter().all(|w| {
+                matches!(
+                    *w,
+                    "live"
+                        | "acoustic"
+                        | "demo"
+                        | "remaster"
+                        | "remastered"
+                        | "remix"
+                        | "radio"
+                        | "edit"
+                        | "version"
+                ) || (w.len() == 4 && w.chars().all(|c| c.is_ascii_digit()))
+            })
+        {
+            return crate::matching::normalize_album_title(base);
+        }
+    }
+    crate::matching::normalize_album_title(title)
+}
+fn playable_title_matches(input: &Input, c: &Candidate) -> bool {
+    same_title(input, c)
+        || (!input.title.trim().is_empty()
+            && playable_title_base(&input.title) == playable_title_base(&c.title)
+            && input
+                .evidence
+                .titles
+                .iter()
+                .all(|o| playable_title_base(&o.value) == playable_title_base(&c.title)))
+}
+fn equivalent_playable(a: &Candidate, b: &Candidate) -> bool {
+    let recording = a
+        .recording
+        .identities
+        .iter()
+        .any(|id| b.recording.identities.contains(id))
+        || a.recording
+            .isrcs
+            .iter()
+            .any(|id| b.recording.isrcs.contains(id));
+    recording
+        && exact(&a.title, &b.title)
+        && a.duration_ms > 0
+        && b.duration_ms > 0
+        && a.duration_ms.abs_diff(b.duration_ms) <= 100
+        && crate::artist_credit::compare(&a.artists, &b.artists)
+            == crate::artist_credit::Compatibility::Equivalent
+}
+fn recording_conflicts(input: &Input, c: &Candidate) -> bool {
+    input.recording.identities.iter().any(|known| {
+        c.recording.identities.iter().any(|other| {
+            known.provider == other.provider && known.kind == other.kind && known != other
+        })
+    }) || (!input.recording.isrcs.is_empty()
+        && !c.recording.isrcs.is_empty()
+        && !input
+            .recording
+            .isrcs
+            .iter()
+            .any(|id| c.recording.isrcs.contains(id)))
+}
+pub fn established_playable_artist(input: &Input) -> Option<&crate::edition::ArtistEvidence> {
+    let primary = input.primary_artist.as_ref()?;
+    if !primary.identities.is_empty() {
+        return Some(primary);
+    }
+    match input.album_artists.as_slice() {
+        [artist]
+            if !artist.identities.is_empty()
+                && crate::artist_credit::same_artist(primary, artist) =>
+        {
+            Some(artist)
+        }
+        _ => None,
+    }
+}
+/// Playback-only eligibility across releases. Different release titles/types/
+/// positions do not veto it; same-release structural contradictions stay guarded.
+fn playable_eligible(input: &Input, c: &Candidate) -> bool {
+    (!album_compatible(input, c)
+        || !feasibility(input, c).reason_codes.iter().any(|reason| {
+            matches!(
+                reason,
+                crate::album_candidates::Reason::PositionMismatch
+                    | crate::album_candidates::Reason::TrackCountMismatch
+                    | crate::album_candidates::Reason::ReleaseTypeMismatch
+            )
+        }))
+        && c.identity.provider == "spotify"
+        && c.identity.kind == "track"
+        && !c.identity.external_id.is_empty()
+        && established_playable_artist(input).is_some_and(|artist| {
+            c.artists.iter().any(|credit| {
+                artist
+                    .identities
+                    .iter()
+                    .any(|id| credit.identities.contains(id))
+                    && crate::artist_credit::same_artist(artist, credit)
+            })
+        })
+        && (!matches!(
+            crate::artist_credit::compare(&input.artists, &c.artists),
+            crate::artist_credit::Compatibility::Contradictory
+                | crate::artist_credit::Compatibility::DifferentAdditional
+        ) || (!input.artists.is_empty()
+            && input.artists.iter().all(|known| {
+                c.artists
+                    .iter()
+                    .any(|credit| crate::artist_credit::same_artist(known, credit))
+            })))
+        && !recording_conflicts(input, c)
+        && playable_title_matches(input, c)
+        && duration_compatible(input, c)
+}
+
+/// Select a best available playable occurrence without asserting Album identity.
+/// Distinct occurrences remain ambiguous unless one has strictly stronger title
+/// and credit evidence. Provider ordering never breaks a confidence tie.
+pub fn assess_playable(input: &Input, page: &Page<Candidate>) -> Assessment {
+    if input.spotify_excluded || page.next_offset.is_some() {
+        return Assessment::NeedsSelection;
+    }
+    let viable: Vec<_> = page
+        .items
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| playable_eligible(input, c))
+        .collect();
+    let score = |c: &Candidate| (exact(&input.title, &c.title), credits_compatible(input, c));
+    let best = viable.iter().map(|(_, c)| score(c)).max();
+    let mut strongest: Vec<_> = viable
+        .into_iter()
+        .filter(|(_, c)| Some(score(c)) == best)
+        .collect();
+    strongest.sort_by(|(_, a), (_, b)| a.identity.external_id.cmp(&b.identity.external_id));
+    let mut distinct: Vec<(usize, &Candidate)> = vec![];
+    for item in strongest {
+        if !distinct.iter().any(|(_, other)| {
+            item.1.identity == other.identity || equivalent_playable(item.1, other)
+        }) {
+            distinct.push(item);
+        }
+    }
+    let strongest = distinct;
+    match strongest.as_slice() {
+        [(index, _)] => Assessment::Unique(*index),
+        [] => Assessment::NoMatch,
+        _ => Assessment::NeedsSelection,
+    }
+}
+
+/// Evaluate the complete bounded set before choosing its sole undominated,
+/// fully compatible occurrence. Provider ordering has no confidence semantics.
 pub fn assess(input: &Input, page: &Page<Candidate>) -> Assessment {
     let plausible: Vec<_> = page
         .items
@@ -476,7 +783,15 @@ pub fn assess(input: &Input, page: &Page<Candidate>) -> Assessment {
                     != crate::artist_credit::Compatibility::Contradictory
         })
         .collect();
-    if let [(index, candidate)] = plausible.as_slice()
+    let strongest: Vec<_> = plausible
+        .iter()
+        .filter(|(_, c)| {
+            !plausible
+                .iter()
+                .any(|(_, other)| dominates(input, other, c))
+        })
+        .collect();
+    if let [(index, candidate)] = strongest.as_slice()
         && page.next_offset.is_none()
         && credits_compatible(input, candidate)
     {
@@ -547,7 +862,11 @@ pub fn evaluate(
 ) -> Option<CandidateEvaluation> {
     let c = page.items.get(index)?;
     let f = feasibility(input, c);
-    let accepted = assess(input, page) == Assessment::Unique(index);
+    let strict_accepted = assess(input, page) == Assessment::Unique(index);
+    let playable = assess_playable(input, page);
+    let fallback = !matches!(assess(input, page), Assessment::Unique(_))
+        && playable == Assessment::Unique(index);
+    let accepted = strict_accepted || fallback;
     let plausible = page
         .items
         .iter()
@@ -570,12 +889,20 @@ pub fn evaluate(
         || c.identity.external_id.is_empty()
         || c.identity.kind == "recording"
         || c.identity.provider == "spotify" && c.identity.kind != "track";
-    let blocker = if input.spotify_excluded && c.identity.provider == "spotify" {
+    let trusted_here = trusted.contains(&c.identity) && !invalid_identity && !conflict;
+    let blocker = if trusted_here {
+        None
+    } else if input.spotify_excluded && c.identity.provider == "spotify" {
         Some(("manually_excluded", "Manually marked not on Spotify; choose Check Spotify again to re-enable reconciliation.".into()))
     } else if invalid_identity {
         Some((
             "invalid_candidate_identity",
             "Candidate does not supply a valid provider Track occurrence identity.".into(),
+        ))
+    } else if recording_conflicts(input, c) {
+        Some((
+            "recording_identity_conflict",
+            "Trusted Recording identities contradict this provider occurrence.".into(),
         ))
     } else if conflict {
         Some((
@@ -584,6 +911,14 @@ pub fn evaluate(
         ))
     } else if existing && !trusted.contains(&c.identity) {
         Some(("existing_provider_association", "An existing provider association must be reviewed before replacement; it may belong to an earlier Album context.".into()))
+    } else if accepted {
+        None
+    } else if playable_eligible(input, c) && page.next_offset.is_none() {
+        Some((
+            "competing_candidates",
+            "Multiple playable occurrences have comparable evidence; review the alternatives."
+                .into(),
+        ))
     } else if let Some(reason) = f.reasons.first() {
         Some((
             match f.reason_codes.first() {
@@ -619,7 +954,12 @@ pub fn evaluate(
             "More provider results exist; uniqueness is not established on this bounded page."
                 .into(),
         ))
-    } else if plausible > 1 {
+    } else if let Assessment::Unique(other) = assess(input, page)
+        && other != index
+        && dominates(input, &page.items[other], c)
+    {
+        Some(("stronger_candidate","Another candidate has stronger established Artist/title evidence with no weaker Album, position or date evidence.".into()))
+    } else if !accepted && plausible > 1 {
         Some(("competing_candidates","Another candidate has comparable compatible evidence; no unique candidate is established.".into()))
     } else if !credits_compatible(input, c) {
         Some((
@@ -630,6 +970,30 @@ pub fn evaluate(
         None
     };
     let mut warnings: Vec<String> = f.reasons.iter().skip(1).map(|r| (*r).into()).collect();
+    if fallback {
+        if crate::artist_credit::compare(&input.artists, &c.artists)
+            != crate::artist_credit::Compatibility::Equivalent
+        {
+            warnings.push("Established Artist is present; additional, omitted or differently ordered provider credits are retained.".into());
+        }
+        if !same_title(input, c) {
+            warnings.push("Provider Track version differs; accepted for playback only, not Recording identity.".into());
+        }
+        warnings.push(format!("Accepted as best available Spotify Track; canonical Release unchanged. Local album: {}; Spotify album: {}.", input.album, c.album));
+        warnings.extend(
+            f.reasons
+                .iter()
+                .map(|reason| format!("Playable-source contextual difference: {reason}")),
+        );
+    }
+    if trusted_here {
+        warnings.extend(
+            f.reasons
+                .iter()
+                .take(1)
+                .map(|r| format!("Existing trusted association retained: {r}")),
+        );
+    }
     if input
         .evidence
         .titles
@@ -651,8 +1015,9 @@ pub fn evaluate(
     }
     if let Some(d) = known_duration.filter(|d| *d > 0 && c.duration_ms > 0 && *d != c.duration_ms) {
         warnings.push(format!(
-            "Duration differs by {:.1} seconds (automatic tolerance: 3 seconds)",
-            d.abs_diff(c.duration_ms) as f64 / 1000.0
+            "Duration differs by {:.1} seconds (automatic tolerance: {} seconds)",
+            d.abs_diff(c.duration_ms) as f64 / 1000.0,
+            duration_tolerance(c) / 1000
         ));
     }
     if input.album_date.is_some()
@@ -929,9 +1294,32 @@ pub fn evaluate(
         field.evidence="Candidate agrees with a persisted Album observation; differing display/local values are retained under Evidence sources".into();
         field.status = "equivalent";
     }
-    let final_decision = if blocker.is_none() && accepted {
+    if fallback {
+        for field in &mut fields {
+            if matches!(
+                field.label,
+                "Album" | "Release type" | "Disc" | "Track" | "Track count" | "Release date"
+            ) && field.status == "conflict"
+            {
+                field.status = "warning";
+                field.evidence = "Different provider release context; accepted for playback without changing the canonical Release".into();
+            }
+            if matches!(field.label, "Artist credit" | "Artist IDs") && field.status == "conflict" {
+                field.status = "warning";
+                field.evidence = "Established Artist identity is present; provider credit order and additional credits are retained".into();
+            }
+            if field.label == "Song" && !same_title(input, c) {
+                field.status = "warning";
+                field.evidence = "Same musical title with an explicit provider version difference; playback-only acceptance".into();
+            }
+        }
+    }
+    let final_decision = if blocker.is_none() && (accepted || trusted_here) {
         FinalDecision::Accept
-    } else if invalid_identity || conflict || f.class == FeasibilityClass::Infeasible {
+    } else if invalid_identity
+        || conflict
+        || (f.class == FeasibilityClass::Infeasible && !playable_eligible(input, c))
+    {
         FinalDecision::Reject
     } else {
         FinalDecision::NeedsReview
@@ -951,11 +1339,12 @@ pub fn evaluate(
             FinalDecision::Accept if trusted.contains(&c.identity) => {
                 "Connected: trusted association persisted"
             }
+            FinalDecision::Accept if fallback => "Accepted as best available Spotify Track",
             FinalDecision::Accept => "Accept: unique compatible candidate",
             FinalDecision::Reject => "Rejected: automatic association withheld",
             FinalDecision::NeedsReview => "Needs review: automatic association withheld",
         },
-        requirements: "Automatic song acceptance requires a complete bounded page, one compatible candidate, established Album title, equivalent ordered Artist credits, and no supplied position/duration conflict. Album reconciliation additionally checks program structure and anchors.",
+        requirements: "Release reconciliation checks Album identity and program structure. Playback-only fallback requires a complete bounded candidate set, established Artist identity, exact musical title or an explicit version qualifier, one strongest occurrence, compatible duration and no trusted Recording conflict. Different provider releases do not change the canonical Release.",
     })
 }
 
@@ -982,19 +1371,25 @@ pub fn evaluate_attempt(
     }
     Some(evaluation)
 }
-fn persist_occurrence(db: &rusqlite::Connection, track: &TrackId, c: &Candidate) -> Result<()> {
+pub(crate) fn persist_occurrence(
+    db: &rusqlite::Connection,
+    track: &TrackId,
+    c: &Candidate,
+) -> Result<()> {
     db.execute("INSERT INTO track_external_identity(track_id,provider,kind,external_id) VALUES(?1,?2,?3,?4)",params![track.as_ref(),c.identity.provider,c.identity.kind,c.identity.external_id])?;
-    crate::storage::observe_duration(
-        db,
-        track,
-        &c.identity.provider,
-        &c.identity.external_id,
-        crate::catalog::Duration {
-            milliseconds: c.duration_ms,
-            approximate: false,
-        },
-        0,
-    )?;
+    if c.duration_ms > 0 {
+        crate::storage::observe_duration(
+            db,
+            track,
+            &c.identity.provider,
+            &c.identity.external_id,
+            crate::catalog::Duration {
+                milliseconds: c.duration_ms,
+                approximate: false,
+            },
+            0,
+        )?;
+    }
     let persisted: bool=db.query_row("SELECT EXISTS(SELECT 1 FROM track_external_identity WHERE track_id=?1 AND provider=?2 AND kind=?3 AND external_id=?4)",params![track.as_ref(),c.identity.provider,c.identity.kind,c.identity.external_id],|r|r.get(0))?;
     if c.identity.provider == "spotify" {
         db.execute("UPDATE spotify_connection_review SET reason_code='already_associated',reason='Connected to Spotify' WHERE track_id=?1",[track.as_ref()])?;
@@ -1004,6 +1399,20 @@ fn persist_occurrence(db: &rusqlite::Connection, track: &TrackId, c: &Candidate)
             "Database did not retain the accepted association".into(),
         ));
     }
+    Ok(())
+}
+fn clear_spotify_occurrences(db: &rusqlite::Connection, track: &TrackId) -> Result<()> {
+    for table in ["manual_track_association", "provider_track_association"] {
+        db.execute(
+            &format!("DELETE FROM {table} WHERE track_id=?1 AND album_provider='spotify'"),
+            [track.as_ref()],
+        )?;
+    }
+    db.execute(
+        "DELETE FROM track_external_identity WHERE track_id=?1 AND provider='spotify'",
+        [track.as_ref()],
+    )?;
+    db.execute("UPDATE spotify_connection_review SET state='needs_retry',reason_code='not_evaluated',reason='Spotify connection cleared; review or retry',stale=0 WHERE track_id=?1",[track.as_ref()])?;
     Ok(())
 }
 impl Store {
@@ -1056,6 +1465,47 @@ impl Store {
         tx.commit()?;
         Ok(None)
     }
+    /// Explicit correction changes only Spotify playable associations. The
+    /// snapshot guard prevents a late dialog from replacing newer user intent.
+    pub fn replace_spotify_song_resolution(
+        &mut self,
+        selection: &Selection,
+        index: usize,
+    ) -> Result<ExternalIdentity> {
+        let candidate = selection
+            .candidates
+            .get(index)
+            .ok_or_else(|| Error::Invalid("Select a Spotify Track".into()))?;
+        if candidate.identity.provider != "spotify"
+            || candidate.identity.kind != "track"
+            || candidate.identity.external_id.is_empty()
+        {
+            return Err(Error::Invalid("Select a Spotify Track occurrence".into()));
+        }
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if load_input(&tx, &selection.input.track_id)? != selection.input {
+            return Err(Error::ReconciliationEvidenceChanged);
+        }
+        clear_spotify_occurrences(&tx, &selection.input.track_id)?;
+        persist_occurrence(&tx, &selection.input.track_id, candidate)?;
+        tx.execute(
+            "DELETE FROM track_provider_exclusion WHERE track_id=?1 AND provider='spotify'",
+            [selection.input.track_id.as_ref()],
+        )?;
+        tx.commit()?;
+        Ok(candidate.identity.clone())
+    }
+    pub fn clear_spotify_song_resolution(&mut self, track: &TrackId) -> Result<()> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        load_input(&tx, track)?;
+        clear_spotify_occurrences(&tx, track)?;
+        tx.commit()?;
+        Ok(())
+    }
     pub fn confirm_song_resolution(
         &mut self,
         selection: &Selection,
@@ -1090,6 +1540,12 @@ impl Store {
             ));
         }
         persist_occurrence(&tx, &selection.input.track_id, candidate)?;
+        if candidate.identity.provider == "spotify" {
+            tx.execute(
+                "DELETE FROM track_provider_exclusion WHERE track_id=?1 AND provider='spotify'",
+                [selection.input.track_id.as_ref()],
+            )?;
+        }
         tx.commit()?;
         Ok(candidate.identity.clone())
     }

@@ -105,11 +105,12 @@ impl Library {
             let code = serde_json::to_value(reason)
                 .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
             tx.execute(
-                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",
+                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3,state='unresolved',stale=0,evaluation_version=?4 WHERE track_id=?1",
                 rusqlite::params![
                     track,
                     code.as_str().unwrap_or("not_evaluated"),
-                    reason.review_label()
+                    reason.review_label(),
+                    crate::spotify_lifecycle::EVALUATION_VERSION
                 ],
             )?;
         }
@@ -219,6 +220,16 @@ impl Library {
             );
         }
         result
+    }
+    pub fn replace_spotify_song_resolution(
+        &mut self,
+        selection: &crate::song_resolution::Selection,
+        index: usize,
+    ) -> Result<ExternalIdentity> {
+        self.store.replace_spotify_song_resolution(selection, index)
+    }
+    pub fn clear_spotify_song_resolution(&mut self, track: &TrackId) -> Result<()> {
+        self.store.clear_spotify_song_resolution(track)
     }
     pub fn confirm_song_resolution(
         &mut self,

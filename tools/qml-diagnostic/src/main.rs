@@ -16,6 +16,7 @@ mod spotify_enrichment;
 mod spotify_playback;
 mod spotify_playlist;
 mod spotify_resolution;
+mod spotify_review_ui;
 
 use qmetaobject::prelude::*;
 use qmetaobject::{QVariantList, QVariantMap};
@@ -45,6 +46,17 @@ struct Bridge {
     spotify_resolution_worker: Option<spotify_resolution::Worker>,
     spotify_resolution_generation: u64,
     spotify_resolution_selection: Option<music_library::song_resolution::Selection>,
+    spotify_review_fetch_pending: bool,
+    spotify_review_generation: u64,
+    spotify_review_album: Option<music_library::domain::AlbumId>,
+    spotify_review_report: Option<music_library::album_candidates::Report>,
+    spotify_review_programs: Vec<music_library::album_program::Programs>,
+    spotify_review_selection: Option<music_library::spotify_review::AlbumSelection>,
+    spotify_review_action: qt_method!(
+        fn spotify_review_action(&mut self, action: String, id: String, index: i32) -> String {
+            self.spotify_review_action_impl(&action, &id, index)
+        }
+    ),
     spotify_resolution_more: bool,
     spotify_artist_proposal: Option<music_library::artist_equivalence::Proposal>,
     spotify_artist_equivalence: qt_method!(
@@ -122,6 +134,25 @@ struct Bridge {
                 self.spotify_playback_changed();
                 return;
             }
+            if action == "clear" {
+                if let Some(track) = self.spotify_playback_track.clone() {
+                    match self.session.library.clear_spotify_song_resolution(&track) {
+                        Ok(()) => {
+                            self.spotify_playback_song = None;
+                            self.spotify_resolution_selection = None;
+                            self.spotify_resolution_generation += 1;
+                            self.spotify_resolution_pending = false;
+                            self.automatic_song_search = false;
+                            self.spotify_resolution_message =
+                                "Spotify connection cleared; review or retry".into();
+                            self.browse_action_impl("refresh", 0, String::new());
+                        }
+                        Err(error) => self.spotify_resolution_message = error.to_string(),
+                    }
+                }
+                self.spotify_playback_changed();
+                return;
+            }
             if action == "show-all" {
                 if let Some(selection) = &mut self.spotify_resolution_selection {
                     selection.show_all();
@@ -137,7 +168,7 @@ struct Bridge {
                     .and_then(|selection| {
                         self.session
                             .library
-                            .confirm_song_resolution(
+                            .replace_spotify_song_resolution(
                                 selection,
                                 *selection
                                     .visible_indices()
@@ -173,17 +204,6 @@ struct Bridge {
             let Some(track) = self.spotify_playback_track.clone() else {
                 return;
             };
-            if self
-                .session
-                .library
-                .track_provider_occurrences(&track, "spotify")
-                .is_ok_and(|ids| !ids.is_empty())
-            {
-                self.spotify_resolution_message =
-                    "Already associated; replacement is not supported here".into();
-                self.spotify_playback_changed();
-                return;
-            }
             if self
                 .session
                 .library
@@ -272,13 +292,25 @@ struct Bridge {
                 return;
             }
             if action == "track" {
+                self.spotify_review_generation = self.spotify_review_generation.wrapping_add(1);
+                self.spotify_review_fetch_pending = false;
+                self.spotify_review_album = None;
+                self.spotify_review_report = None;
+                self.spotify_review_programs.clear();
+                self.spotify_review_selection = None;
                 self.automatic_song_search = false;
                 self.spotify_resolution_generation += 1;
                 self.spotify_resolution_selection = None;
                 self.spotify_artist_proposal = None;
                 self.spotify_resolution_pending = false;
                 self.spotify_resolution_message.clear();
+                self.spotify_resolution_more = false;
+                self.spotify_album_id = None;
+                self.spotify_album_explanation.clear();
+                self.spotify_playback_title.clear();
+                self.spotify_playback_song = None;
                 self.spotify_playback_track = Some(music_library::domain::TrackId(value.clone()));
+                self.spotify_playback_changed();
                 self.spotify_playback_title = self
                     .session
                     .library
@@ -294,7 +326,20 @@ struct Bridge {
                     .and_then(|ids| {
                         music_library_spotify::playback::Song::from_associations(&ids).ok()
                     });
-                if self.spotify_playback_song.is_none()
+                if let Some(track) = &self.spotify_playback_track
+                    && let Ok(Some((input, page))) =
+                        self.session.library.cached_spotify_track_attempt(track)
+                {
+                    self.spotify_resolution_more = page.next_offset.is_some();
+                    let mut selection =
+                        music_library::song_resolution::Selection::new(input, page.items);
+                    selection.show_all();
+                    self.spotify_resolution_selection = Some(selection);
+                    self.spotify_resolution_message =
+                        "Persisted candidate evidence; inspection makes no provider requests."
+                            .into();
+                }
+                if self.spotify_resolution_selection.is_none()
                     && let Some(path) = self.session.library.database_path()
                     && let Ok(market) = std::env::var("SPOTIFY_MARKET")
                     && let Some(track) = &self.spotify_playback_track
@@ -318,6 +363,25 @@ struct Bridge {
                         Ok(None) => {}
                         Err(error) => self.spotify_resolution_message = error.to_string(),
                     }
+                }
+                if let Some(track) = &self.spotify_playback_track
+                    && let Some(market) = std::env::var("SPOTIFY_MARKET").ok().or_else(|| {
+                        self.session
+                            .library
+                            .retained_spotify_market()
+                            .ok()
+                            .flatten()
+                    })
+                    && let Ok(Some((selection, more))) =
+                        music_library_spotify::album_context::selection(
+                            &self.session.library,
+                            track,
+                            &market,
+                        )
+                {
+                    self.spotify_resolution_more = more;
+                    self.spotify_resolution_selection = Some(selection);
+                    self.spotify_resolution_message="Retained Track/Album candidate evidence; inspection makes no provider requests.".into();
                 }
                 self.refresh_spotify_album_diagnostic();
                 self.spotify_playback_changed();
@@ -823,12 +887,52 @@ fn row_value(row: &music_library::domain::TrackSearchResult) -> QVariant {
 
 impl Bridge {
     fn finish_song_lookup(&mut self, reply: spotify_resolution::Reply) {
+        if reply.generation != self.spotify_resolution_generation {
+            return;
+        }
         let reused = reply.counts == self.spotify_resolution_counts;
         self.spotify_resolution_counts = reply.counts;
         if reply.generation == self.spotify_resolution_generation {
             self.spotify_resolution_pending = false;
             match reply.result {
-                Ok(page) => {
+                Ok(mut page) => {
+                    let inherited = self
+                        .session
+                        .library
+                        .album_id_for_track(&reply.input.track_id)
+                        .ok()
+                        .and_then(|album| {
+                            let market = std::env::var("SPOTIFY_MARKET").ok().or_else(|| {
+                                self.session
+                                    .library
+                                    .retained_spotify_market()
+                                    .ok()
+                                    .flatten()
+                            })?;
+                            music_library_spotify::album_context::cached_candidates(
+                                &self.session.library,
+                                &album,
+                                &market,
+                            )
+                            .ok()?
+                            .into_iter()
+                            .find(|row| row.track == reply.input.track_id)
+                        });
+                    let inherited_candidates = inherited
+                        .as_ref()
+                        .map(|row| row.candidates.clone())
+                        .unwrap_or_default();
+                    if let Some(inherited) = inherited {
+                        let mut merged = music_library::song_resolution::Selection::new(
+                            reply.input.clone(),
+                            page.items,
+                        );
+                        merged.inherit_album_candidates(inherited.candidates);
+                        page.items = merged.candidates().to_vec();
+                        if inherited.more {
+                            page.next_offset = Some(10);
+                        }
+                    }
                     if let Err(e) = self
                         .session
                         .library
@@ -871,6 +975,7 @@ impl Bridge {
                     self.spotify_resolution_more = page.next_offset.is_some();
                     let mut selection =
                         music_library::song_resolution::Selection::new(reply.input, page.items);
+                    selection.inherit_album_candidates(inherited_candidates);
                     // Diagnostics expose rejected candidates too; selection remains explicit.
                     selection.show_all();
                     self.spotify_resolution_selection = Some(selection);
@@ -917,6 +1022,13 @@ impl Bridge {
             spotify_resolution_generation: 0,
             spotify_resolution_selection: None,
             spotify_resolution_more: false,
+            spotify_review_fetch_pending: false,
+            spotify_review_generation: 0,
+            spotify_review_album: None,
+            spotify_review_report: None,
+            spotify_review_programs: vec![],
+            spotify_review_selection: None,
+            spotify_review_action: Default::default(),
             spotify_artist_proposal: None,
             spotify_artist_equivalence: Default::default(),
             spotify_resolution_pending: false,
@@ -1018,7 +1130,64 @@ impl Bridge {
         album: &str,
         p: &music_library::album_program::PositionedProgram,
     ) -> serde_json::Value {
-        serde_json::json!({"album":album,"complete":p.complete,"anchors":p.anchors,"provider_count":p.provider_count,"duplicate_positions":p.duplicate_positions,"rows":p.tracks.iter().take(200).map(|t|serde_json::json!({"local":format!("{}.{} {}",t.normalized_disc,t.local.number.unwrap_or(0),t.local.title.as_deref().unwrap_or("—")),"candidate":t.provider.as_ref().map(|p|format!("{}.{} {}",p.disc.unwrap_or(1),p.number.unwrap_or(0),p.title.as_deref().unwrap_or("—"))).unwrap_or_else(||"—".into()),"decision":t.decision.label()})).collect::<Vec<_>>(),"truncated":p.tracks.len()>200})
+        let rows = p
+            .tracks
+            .iter()
+            .take(200)
+            .map(|t| {
+                let local = format!(
+                    "{}.{} {} — {}",
+                    t.normalized_disc,
+                    t.local.number.unwrap_or(0),
+                    t.local.title.as_deref().unwrap_or("—"),
+                    t.local
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let candidate = t
+                    .provider
+                    .as_ref()
+                    .map(|p| {
+                        format!(
+                            "{}.{} {} — {}",
+                            p.disc.unwrap_or(1),
+                            p.number.unwrap_or(0),
+                            p.title.as_deref().unwrap_or("—"),
+                            p.artists
+                                .iter()
+                                .map(|a| a.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    })
+                    .unwrap_or_else(|| "Missing provider Track".into());
+                let mut decision = t.decision.label().to_owned();
+                if let Some(provider) = &t.provider {
+                    let relation = music_library::album_program::title_relation(&t.local, provider);
+                    let title = if t.local.title == provider.title {
+                        "exact title"
+                    } else if relation == music_library::album_program::TitleRelation::Agrees {
+                        "normalized-compatible title"
+                    } else {
+                        "significant title difference"
+                    };
+                    decision = format!("{title} · {decision}");
+                    if !t.local.artists.is_empty()
+                        && music_library::artist_credit::compare(
+                            &t.local.artists,
+                            &provider.artists,
+                        ) != music_library::artist_credit::Compatibility::Equivalent
+                    {
+                        decision.push_str(" · Artist-credit difference");
+                    }
+                }
+                serde_json::json!({"local":local,"candidate":candidate,"decision":decision})
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({"album":album,"complete":p.complete,"anchors":p.anchors,"provider_count":p.provider_count,"duplicate_positions":p.duplicate_positions,"rows":rows,"warnings":p.warnings,"truncated":p.tracks.len()>200})
     }
     fn spotify_comparison_json(&self) -> String {
         use music_library::{catalog::Page, song_resolution::evaluate_attempt};
@@ -1043,6 +1212,28 @@ impl Bridge {
                 .library
                 .song_resolution_input(&selection.input().track_id)
                 .unwrap_or_else(|_| selection.input().clone());
+            let assessment = match music_library::song_resolution::assess(selection.input(), &page)
+            {
+                music_library::song_resolution::Assessment::Unique(i) => {
+                    music_library::song_resolution::Assessment::Unique(i)
+                }
+                _ => music_library::song_resolution::assess_playable(selection.input(), &page),
+            };
+            let selected = match assessment {
+                music_library::song_resolution::Assessment::Unique(index) => Some(index),
+                _ => None,
+            };
+            let selected = selected.filter(|index| {
+                evaluate_attempt(selection.input(), &current, &page, *index, &trusted).is_some_and(
+                    |e| e.final_decision == music_library::song_resolution::FinalDecision::Accept,
+                )
+            });
+            result["selected_candidate"] = serde_json::json!(selected.and_then(|i| {
+                selection
+                    .visible_indices()
+                    .iter()
+                    .position(|visible| *visible == i)
+            }));
             result["candidate_count"] = serde_json::json!(page.items.len());
             result["more_candidates"] = serde_json::json!(self.spotify_resolution_more);
             result["candidates"] = serde_json::json!(
@@ -1055,7 +1246,14 @@ impl Bridge {
                         &page,
                         *i,
                         &trusted
-                    ))
+                    )
+                    .map(|mut evaluation| {
+                        evaluation.provenance.push_str(&format!(
+                            "\nCandidate discovery: {}",
+                            selection.candidate_provenance(*i)
+                        ));
+                        evaluation
+                    }))
                     .collect::<Vec<_>>()
             );
         }
@@ -1088,7 +1286,19 @@ impl Bridge {
                     .iter()
                     .map(|p| Self::spotify_program_comparison(
                         &programs.album.external_id,
-                        &music_library::album_program::inspect_positioned_program(&local, p)
+                        &music_library::album_program::inspect_album_program(
+                            &local,
+                            p,
+                            &local
+                                .first()
+                                .and_then(|t| self
+                                    .session
+                                    .library
+                                    .song_resolution_input(&t.track_id)
+                                    .ok())
+                                .map(|i| i.album)
+                                .unwrap_or_default()
+                        )
                     ))
                     .collect::<Vec<_>>()
             );
@@ -1109,13 +1319,13 @@ impl Bridge {
                         let assessment = &selection.assessments()[i];
                         let group = match assessment.class {
                             music_library::song_resolution::FeasibilityClass::Preferred => {
-                                "Best match"
+                                "Compatible context"
                             }
                             music_library::song_resolution::FeasibilityClass::Alternate => {
                                 "Other compatible Album representation"
                             }
                             music_library::song_resolution::FeasibilityClass::Infeasible => {
-                                "Outside Album context (override)"
+                                "Different established context; inspect playback evidence"
                             }
                         };
                         string(format!(
@@ -1162,6 +1372,7 @@ impl Bridge {
         QVariantMap::from_iter([
             ("manuallyExcluded",self.spotify_playback_track.as_ref().is_some_and(|t|self.session.library.spotify_manually_excluded(t).unwrap_or(false)).into()),
             ("resolutionChoices", choices.into()),
+            ("albumId", string(self.spotify_album_id.as_ref().map(|id|id.as_ref()).unwrap_or(""))),
             ("comparisonJson", string(self.spotify_comparison_json())),
             ("artistProposalJson", string(self.spotify_artist_proposal.as_ref().map(|p|serde_json::json!({"local_name":p.local_name,"local_id":p.local.as_ref(),"candidate_name":p.candidate_name,"candidate_identity":p.candidate_identity}).to_string()).unwrap_or_else(||"null".into()))),
             (
@@ -3993,6 +4204,7 @@ mod event_delivery_tests {
             let initial = Selection::new(
                 input.clone(),
                 vec![Candidate {
+                    recording: Default::default(),
                     album_identity: None,
                     album_artists: vec![],
                     album_type: String::new(),
@@ -4290,6 +4502,7 @@ mod library_ui_tests {
             .invoke_method("desktopAudit".into(), &[audio.into()])
             .to_qstring()
             .to_string();
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
         assert_eq!(result, "ok");
         if std::env::var_os("MUSIC_LIBRARY_SEARCH_AUDIT").is_some() {
@@ -4544,6 +4757,7 @@ mod library_ui_tests {
         );
         #[cfg(feature = "gstreamer")]
         if std::env::var_os("MUSIC_LIBRARY_PREFERENCES_AUDIO").is_some() {
+            #[cfg(feature = "gstreamer")]
             bridge.pinned().borrow_mut().session.shutdown_audio();
         }
     }
@@ -4719,6 +4933,266 @@ mod library_ui_tests {
     }
 
     #[test]
+    fn spotify_album_review_offline_navigation_and_bulk_confirmation() {
+        use music_library::{
+            album_candidates::{CandidateEvidence, Reason, Report},
+            album_program::{Program, Programs},
+            catalog::Page,
+            domain::*,
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let mut library =
+            music_library::Library::open(tmp.path().join("album-review.sqlite")).unwrap();
+        let credit = ArtistCreditInput {
+            name: "A".into(),
+            role: None,
+        };
+        let r = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Example".into(),
+                year: None,
+                artists: vec![credit.clone()],
+                tracks: (1..=3)
+                    .map(|n| CatalogTrackInput {
+                        title: format!("Song {n}"),
+                        disc_number: Some(1),
+                        track_number: Some(n),
+                        artists: vec![credit.clone()],
+                    })
+                    .collect(),
+            })
+            .unwrap();
+        for track in &r.track_ids {
+            library.add_to_library(track).unwrap();
+        }
+        let album = library.album_id_for_track(&r.track_ids[0]).unwrap();
+        let local = library.local_album_tracks(&album).unwrap();
+        let id = |kind: &str, value: &str| ExternalIdentity {
+            provider: "spotify".into(),
+            kind: kind.into(),
+            external_id: value.into(),
+        };
+        let mut programs = vec![];
+        let mut candidates = vec![];
+        for value in ["one", "two"] {
+            let mut tracks = local.iter().map(|t| t.evidence.clone()).collect::<Vec<_>>();
+            for (n, t) in tracks.iter_mut().enumerate() {
+                t.identities = vec![id("track", &format!("{value}{n}"))];
+                t.recording = Default::default();
+            }
+            if value == "two" {
+                tracks[1].title = Some("Significant title difference".into());
+            }
+            let p = Programs {
+                album: id("album", value),
+                programs: vec![Program {
+                    identity: None,
+                    tracks,
+                    complete: true,
+                }],
+                note: String::new(),
+            };
+            let candidate = music_library::catalog::ArtistAlbumCandidate {
+                identity: p.album.clone(),
+                title: "Example".into(),
+                artist: "A".into(),
+                artist_ids: vec![id("artist", "a")],
+                primary_type: "album".into(),
+                date: String::new(),
+                comment: String::new(),
+            };
+            candidates.push(CandidateEvidence {
+                identity: p.album.clone(),
+                artist: "A".into(),
+                artist_ids: candidate.artist_ids.clone(),
+                artist_accepted: true,
+                warnings: vec![],
+                provider_rank: None,
+                title: music_library::album_candidates::title_evidence("Example", &candidate),
+                local_date: None,
+                provider_date: String::new(),
+                date_agreement: "unknown".into(),
+                local_tracks: 3,
+                required_tracks: 3,
+                provider_tracks: Some(3),
+                programs: vec![music_library::album_program::inspect_positioned_program(
+                    &local,
+                    &p.programs[0],
+                )],
+                equivalent_to: None,
+                decision: "Withheld".into(),
+                reasons: vec![Reason::CompetingCandidates],
+            });
+            programs.push(p);
+        }
+        let input = library.song_resolution_input(&r.track_ids[0]).unwrap();
+        let exact = music_library::song_resolution::Candidate {
+            recording: Default::default(),
+            identity: id("track", "exact"),
+            album_identity: Some(id("album", "two")),
+            title: input.title.clone(),
+            artist: input.artist.clone(),
+            artists: input.artists.clone(),
+            album: input.album.clone(),
+            date: String::new(),
+            album_artists: input.album_artists.clone(),
+            album_type: "album".into(),
+            album_total_tracks: Some(3),
+            duration_ms: 0,
+            disc: 1,
+            number: 1,
+        };
+        let mut extra = exact.clone();
+        extra.identity = id("track", "extra");
+        extra.artists.push(music_library::edition::ArtistEvidence {
+            name: "B".into(),
+            ..Default::default()
+        });
+        library
+            .persist_spotify_song_review(
+                &input,
+                &Page {
+                    items: vec![extra, exact],
+                    next_offset: None,
+                },
+            )
+            .unwrap();
+        let other = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Fresh Target".into(),
+                year: None,
+                artists: vec![ArtistCreditInput {
+                    name: "Other".into(),
+                    role: None,
+                }],
+                tracks: vec![CatalogTrackInput {
+                    title: "New song".into(),
+                    disc_number: Some(1),
+                    track_number: Some(1),
+                    artists: vec![],
+                }],
+            })
+            .unwrap();
+        let other_album = library.album_id_for_track(&other.track_ids[0]).unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        bridge.pinned().borrow_mut().auto_match = false;
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml = include_str!("../Main.qml")
+            .replacen("import QtQuick\n", "import QtQuick\nimport QtTest\n", 1)
+            .replacen(
+                "    function ready() {",
+                &format!(
+                    "{}\n    function ready() {{",
+                    include_str!("../SpotifyAlbumReviewTest.qml")
+                ),
+                1,
+            );
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "albumReviewOpen".into(),
+                    &[QVariant::from(QString::from(r.track_ids[0].as_ref()))]
+                )
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        {
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.spotify_review_report = Some(Report {
+                local_title: "Example".into(),
+                established_artist: Some(id("artist", "a")),
+                candidate_count: 2,
+                more_candidates: false,
+                candidates,
+                decision: "Withheld".into(),
+                reasons: vec![Reason::CompetingCandidates],
+            });
+            b.spotify_review_programs = programs;
+        }
+        assert_eq!(
+            engine
+                .invoke_method("albumReviewNavigate".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        {
+            let pinned = bridge.pinned();
+            let b = pinned.borrow();
+            assert_eq!(b.session.library.unresolved_spotify_count().unwrap(), 3);
+            assert!(b.spotify_resolution_worker.is_none());
+            assert!(b.spotify_album_matcher.is_none());
+        }
+        assert_eq!(
+            engine
+                .invoke_method("albumReviewAdvanced".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        assert_eq!(
+            engine
+                .invoke_method("albumReviewConnect".into(), &[])
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let pinned = bridge.pinned();
+        let (old_review_generation, old_song_generation) = {
+            let b = pinned.borrow();
+            assert_eq!(b.session.library.unresolved_spotify_count().unwrap(), 0);
+            assert_eq!(b.spotify_resolution_counts, (0, 0));
+            (b.spotify_review_generation, b.spotify_resolution_generation)
+        };
+        assert_eq!(
+            engine
+                .invoke_method(
+                    "albumReviewRapidTargets".into(),
+                    &[
+                        QVariant::from(QString::from(r.track_ids[0].as_ref())),
+                        QVariant::from(QString::from(other.track_ids[0].as_ref())),
+                        QVariant::from(QString::from(album.as_ref())),
+                        QVariant::from(QString::from(other_album.as_ref()))
+                    ]
+                )
+                .to_qstring()
+                .to_string(),
+            "ok"
+        );
+        let mut b = pinned.borrow_mut();
+        assert!(!b.spotify_review_result_is_current(old_review_generation, None));
+        assert!(!b.spotify_review_result_is_current(
+            b.spotify_review_generation,
+            Some(old_song_generation)
+        ));
+        assert!(b.spotify_review_result_is_current(
+            b.spotify_review_generation,
+            Some(b.spotify_resolution_generation)
+        ));
+        b.finish_song_lookup(spotify_resolution::Reply {
+            generation: old_song_generation,
+            input,
+            result: Ok(Page {
+                items: vec![],
+                next_offset: None,
+            }),
+            counts: (99, 99),
+        });
+        assert_eq!(
+            b.spotify_resolution_counts,
+            (0, 0),
+            "late old-target reply cannot even overwrite request status"
+        );
+        assert_eq!(b.spotify_playback_track.as_ref(), Some(&other.track_ids[0]));
+        assert!(b.spotify_resolution_selection.is_none());
+    }
+
+    #[test]
     fn spotify_connections_review_updates_without_losing_context() {
         use music_library::domain::{
             ArtistCreditInput, CatalogReleaseInput, CatalogTrackInput, ExternalIdentity,
@@ -4815,6 +5289,7 @@ mod library_ui_tests {
             let track = &imported.track_ids[3];
             let input = b.session.library.song_resolution_input(track).unwrap();
             let candidate = music_library::song_resolution::Candidate {
+                recording: Default::default(),
                 identity: ExternalIdentity {
                     provider: "spotify".into(),
                     kind: "track".into(),
@@ -4871,6 +5346,7 @@ mod library_ui_tests {
                 .song_resolution_input(&imported.track_ids[0])
                 .unwrap();
             let candidate = music_library::song_resolution::Candidate {
+                recording: Default::default(),
                 album_identity: None,
                 identity: ExternalIdentity {
                     provider: "spotify".into(),
@@ -4917,6 +5393,7 @@ mod library_ui_tests {
             for (n, t) in imported.track_ids[1..3].iter().enumerate() {
                 let input = b.session.library.song_resolution_input(t).unwrap();
                 let c = music_library::song_resolution::Candidate {
+                    recording: Default::default(),
                     identity: ExternalIdentity {
                         provider: "spotify".into(),
                         kind: "track".into(),
@@ -5067,6 +5544,7 @@ mod library_ui_tests {
                 join_phrase: String::new(),
             };
             let c = Candidate {
+                recording: Default::default(),
                 album_identity: None,
                 identity: ExternalIdentity {
                     provider: "spotify".into(),
@@ -5309,7 +5787,7 @@ mod library_ui_tests {
         assert!(engine.invoke_method("ready".into(), &[]).to_bool());
         assert_eq!(
             engine
-                .invoke_method("reviewOpen".into(), &[])
+                .invoke_method("reviewOpenLarge".into(), &[])
                 .to_qstring()
                 .to_string(),
             "ok"
@@ -5715,6 +6193,7 @@ mod library_ui_tests {
                 .to_string(),
             "ok"
         );
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
@@ -5885,6 +6364,7 @@ mod library_ui_tests {
             .delete_playlist(&playlist)
             .unwrap();
         #[cfg(feature = "gstreamer")]
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
@@ -5994,6 +6474,7 @@ mod library_ui_tests {
             "ok"
         );
         #[cfg(feature = "gstreamer")]
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
@@ -6091,6 +6572,7 @@ mod library_ui_tests {
                 .to_string(),
             "ok"
         );
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
     }
 
@@ -6818,6 +7300,7 @@ mod library_ui_tests {
             .invoke_method("hopLivePlayback".into(), &[string(playlist)])
             .to_qstring()
             .to_string();
+        #[cfg(feature = "gstreamer")]
         bridge.pinned().borrow_mut().session.shutdown_audio();
         assert_eq!(result, "ok");
     }

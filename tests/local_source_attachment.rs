@@ -885,3 +885,26 @@ fn reconciliation_and_playback_use_root_and_track_indexes() {
     );
     assert!(!playback.contains("SCAN l"), "{playback}");
 }
+
+#[test]
+fn intentional_local_admission_saves_attached_catalog_track_and_never_duplicates_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("db");
+    let mut l = Library::open(&path).unwrap();
+    let imported = l.add_catalog_release(&catalog_release()).unwrap();
+    let track = &imported.track_ids[0];
+    l.remove_from_library(track).unwrap();
+    let root = temp.path().join("Artist/Album");
+    std::fs::create_dir_all(&root).unwrap();
+    let file = root.join("song.mp3");
+    std::fs::write(&file, b"readable fixture").unwrap();
+    let report = run(&mut l, Request::Folder(root), tags());
+    assert_eq!(report.attached, 1);
+    assert_eq!(report.imported, 1);
+    assert_eq!(report.unreadable, 0);
+    let db = Connection::open(&path).unwrap();
+    assert_eq!(count(&db, "track"), 1);
+    assert_eq!(count(&db, "library_membership"), 1);
+    assert_eq!(count(&db, "track_source"), 1);
+    assert_eq!(run(&mut l, Request::Files(vec![file]), tags()).imported, 0);
+}

@@ -48,6 +48,7 @@ fn catalog() -> Release {
 }
 fn candidate(input: &music_library::song_resolution::Input) -> Candidate {
     Candidate {
+        recording: Default::default(),
         identity: id(
             "spotify",
             "track",
@@ -142,7 +143,7 @@ fn current_rejection_is_not_sticky_after_relevant_evidence_changes() {
     let (dir, mut l, r) = fixture();
     let input = l.song_resolution_input(&r.track_ids[0]).unwrap();
     let mut c = candidate(&input);
-    c.title = "Song 1 (Live)".into();
+    c.title = "Song 1 (Unrelated subtitle)".into();
     l.persist_spotify_song_review(&input, &page(c)).unwrap();
     drain(&mut l);
     assert!(l.stale_spotify_tracks(32).unwrap().is_empty());
@@ -562,11 +563,14 @@ fn spotify_duration_fadeout_tolerance_keeps_other_identity_gates() {
         );
         let mut live = c.clone();
         live.title.push_str(" (Live)");
-        assert_ne!(
+        // A sole known Artist/version occurrence can now be a playback source;
+        // duration contradictions still block it.
+        assert_eq!(
             evaluate(&input, &page(live), 0, &[])
                 .unwrap()
-                .final_decision,
-            FinalDecision::Accept
+                .final_decision
+                == FinalDecision::Accept,
+            delta <= 10_000
         );
         let mut wrong_position = c;
         wrong_position.number = 2;
@@ -600,12 +604,20 @@ fn bulk_exclusion_is_atomic_durable_and_skips_new_connections() {
     assert_eq!(l.unresolved_spotify_count().unwrap(), 0);
     assert_eq!(l.mark_tracks_not_on_spotify(&selected).unwrap(), 0);
     drop(l);
-    let l = Library::open(dir.path().join("db")).unwrap();
+    let mut l = Library::open(dir.path().join("db")).unwrap();
     for t in &r.track_ids[..3] {
         assert!(l.spotify_manually_excluded(t).unwrap());
     }
     assert!(!l.spotify_manually_excluded(&r.track_ids[3]).unwrap());
     assert_eq!(l.library_queue(&Default::default()).unwrap().len(), 4);
+    assert_eq!(l.check_tracks_spotify_again(&selected).unwrap(), 3);
+    assert_eq!(l.marked_spotify_count().unwrap(), 0);
+    assert_eq!(l.unresolved_spotify_count().unwrap(), 3);
+    assert_eq!(
+        l.track_provider_occurrences(&r.track_ids[3], "spotify")
+            .unwrap(),
+        vec![id("spotify", "track", "connected")]
+    );
 }
 #[test]
 fn cached_program_cannot_delete_successful_trusted_association_after_new_conflict() {

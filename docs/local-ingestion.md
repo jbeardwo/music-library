@@ -1,5 +1,11 @@
 # Local import and library locations
 
+Intentional Files/Folder import grants membership to newly attached existing Tracks
+as well as newly created Tracks. Automatic rescans preserve removed membership.
+Import failures include bounded path/error details and a complete failure count.
+The real nine-file Polyphia regression and conservative Artist-context migration are
+documented in [the robustness audit](local-spotify-robustness-audit.md).
+
 Add Music offers **From catalog** (the existing catalog workflow) and **From file**.
 From file offers native **Choose files** and **Choose folder** dialogs. Both use
 `Qt.labs.platform`, the same explicit parent window and window modality. On systems

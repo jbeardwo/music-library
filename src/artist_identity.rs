@@ -74,6 +74,30 @@ pub(crate) fn reconcile_albums(tx: &Transaction<'_>, albums: &[String]) -> Resul
     for (directory, name) in contexts {
         consolidate_context(tx, &directory, &name)?;
     }
+    for album in albums {
+        // Repeated identical unqualified local credits are redundant; retain
+        // distinct roles, join phrases and original source observations.
+        for (table, key, owners) in [
+            (
+                "album_artist_credit",
+                "album_id",
+                "SELECT id FROM album WHERE id=?1",
+            ),
+            (
+                "release_artist_credit",
+                "release_id",
+                "SELECT id FROM release WHERE album_id=?1",
+            ),
+            (
+                "track_artist_credit",
+                "track_id",
+                "SELECT t.id FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1",
+            ),
+        ] {
+            tx.execute(&format!("DELETE FROM {table} AS c WHERE c.{key} IN ({owners}) AND c.role IS NULL AND c.join_phrase IS NULL AND EXISTS(SELECT 1 FROM {table} other WHERE other.{key}=c.{key} AND other.artist_id=c.artist_id AND other.position<c.position AND other.role IS NULL AND other.join_phrase IS NULL AND other.credited_name IS c.credited_name)"),[album])?;
+        }
+        crate::storage::refresh_album_match_key(tx, album)?;
+    }
     Ok(())
 }
 
@@ -94,10 +118,16 @@ type Context = (String, Vec<u8>, String);
 fn register_album(tx: &Transaction<'_>, album: &str) -> Result<Option<Context>> {
     let credits=tx.prepare("SELECT c.artist_id,COALESCE(c.credited_name,a.name) FROM album_artist_credit c JOIN artist a ON a.id=c.artist_id WHERE c.album_id=?1 ORDER BY c.position")?
         .query_map([album],|r|Ok((ArtistId(r.get(0)?),r.get::<_,String>(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    let [(artist, name)] = credits.as_slice() else {
+    let Some((_, name)) = credits.first() else {
         return Ok(None);
     };
-    let name = name.trim().to_lowercase();
+    let name = crate::matching::normalize(name);
+    if credits
+        .iter()
+        .any(|(_, credit)| crate::matching::normalize(credit) != name)
+    {
+        return Ok(None);
+    }
     if name.is_empty() {
         return Ok(None);
     }
@@ -130,9 +160,6 @@ fn register_album(tx: &Transaction<'_>, album: &str) -> Result<Option<Context>> 
             let std::path::Component::Normal(directory) = parts[0] else {
                 return Ok(None);
             };
-            if directory.to_str().map(|s| s.trim().to_lowercase()).as_ref() != Some(&name) {
-                return Ok(None);
-            }
             base.join(directory)
         };
         contexts.insert((root, path_to_bytes(&directory)));
@@ -148,7 +175,7 @@ fn register_album(tx: &Transaction<'_>, album: &str) -> Result<Option<Context>> 
     {
         return Ok(None);
     }
-    let mut ids = vec![artist.clone()];
+    let mut ids: Vec<_> = credits.iter().map(|(id, _)| id.clone()).collect();
     // Within this same single-Artist Album, equivalent singleton Release/Track
     // credits describe the same Artist. Guest/multi-Artist credits stay untouched.
     for (table, key, owners) in [

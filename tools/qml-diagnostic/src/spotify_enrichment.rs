@@ -59,6 +59,13 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
                         "Spotify batch stopped: {error}. Remaining Tracks were not queried."
                     ));
                 }
+                if let music_library::album_matching::MatchOutcome::ConfigurationError(error) =
+                    &reply.outcome
+                {
+                    bridge.stop_spotify_retry_batch(format!(
+                        "Spotify authorization/access must be restored before retrying: {error}"
+                    ));
+                }
                 matcher.complete(&mut bridge.session.library, *reply);
                 Some(album)
             }

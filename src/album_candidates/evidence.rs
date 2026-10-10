@@ -28,6 +28,7 @@ pub enum Reason {
     AcceptedArtistBoilerplate,
     AcceptedReleaseTypeSuffix,
     AcceptedMinorTypo,
+    AcceptedPlayableEdition,
     EquivalentCandidatesCollapsed,
     EquivalentOccurrences,
     AlreadyAssociated,
@@ -103,8 +104,11 @@ impl Reason {
             Self::AcceptedMinorTypo => {
                 "One-edit Album typo supported by strong Artist/position/program evidence"
             }
+            Self::AcceptedPlayableEdition => {
+                "Sole compatible provider edition supplies the strongly aligned songs; canonical edition metadata retained"
+            }
             Self::EquivalentCandidatesCollapsed => {
-                "Equivalent provider objects share the complete ordered Track identities; deterministic representation selected"
+                "Equivalent provider objects share a fully corroborated ordered program; deterministic representation selected"
             }
             Self::EquivalentOccurrences => {
                 "Only agreeing occurrences are usable; no preferred Album representation established"
@@ -132,6 +136,7 @@ pub enum TitleComparison {
     ReleaseTypeSuffix,
     EstablishedArtistBoilerplate,
     MinorTypo,
+    PlayableEdition,
     Conflict,
     VersionConflict,
     TypeConflict,
@@ -146,6 +151,9 @@ impl TitleComparison {
             }
             Self::ReleaseTypeSuffix => "compatible release-type suffix normalized",
             Self::MinorTypo => "minor typo; requires strong program evidence",
+            Self::PlayableEdition => {
+                "alternate playable edition; requires unique strong program evidence"
+            }
             Self::Conflict => "title mismatch",
             Self::VersionConflict => "meaningful version qualifier differs",
             Self::TypeConflict => "release type conflicts",
@@ -169,6 +177,81 @@ fn suffix_base(title: &str) -> (&str, Option<&str>) {
         }
     }
     (title, None)
+}
+fn playable_edition_pair(local: &str, provider: &str) -> bool {
+    fn annotation(text: &str) -> bool {
+        let words: Vec<_> = text
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|s| !s.is_empty())
+            .collect();
+        words.iter().any(|w| {
+            matches!(
+                *w,
+                "remaster" | "remastered" | "deluxe" | "expanded" | "extended" | "anniversary"
+            )
+        }) && words.iter().all(|w| {
+            matches!(
+                *w,
+                "remaster"
+                    | "remastered"
+                    | "deluxe"
+                    | "expanded"
+                    | "extended"
+                    | "anniversary"
+                    | "edition"
+                    | "version"
+                    | "bonus"
+                    | "tracks"
+                    | "digital"
+                    | "digitally"
+            ) || w.parse::<u32>().is_ok()
+                || ["th", "st", "nd", "rd"].iter().any(|suffix| {
+                    w.strip_suffix(suffix)
+                        .is_some_and(|n| n.parse::<u32>().is_ok())
+                })
+        })
+    }
+    fn base(title: &str) -> (String, bool) {
+        let normalized = normalize(title);
+        let mut text = normalized.as_str();
+        let mut stripped = false;
+        loop {
+            let candidate = text
+                .strip_suffix(')')
+                .and_then(|t| t.rsplit_once(" ("))
+                .or_else(|| text.rsplit_once(" - "));
+            if let Some((prefix, suffix)) = candidate
+                && annotation(suffix)
+                && !prefix.trim().is_empty()
+            {
+                text = prefix.trim();
+                stripped = true;
+                continue;
+            }
+            for suffix in [
+                " deluxe edition",
+                " expanded edition",
+                " extended edition",
+                " anniversary edition",
+                " remastered",
+                " remaster",
+                " deluxe",
+            ] {
+                if let Some(prefix) = text.strip_suffix(suffix)
+                    && !prefix.trim().is_empty()
+                {
+                    text = prefix.trim();
+                    stripped = true;
+                    break;
+                }
+            }
+            break;
+        }
+        (album_representation_title(text), stripped)
+    }
+    let (a, changed_a) = base(local);
+    let (b, changed_b) = base(provider);
+    (changed_a || changed_b) && !a.is_empty() && a == b
 }
 pub fn title_evidence(local: &str, candidate: &ArtistAlbumCandidate) -> TitleEvidence {
     let l = album_representation_title(local);
@@ -225,6 +308,9 @@ pub struct CandidateEvidence {
     pub artist: String,
     pub artist_ids: Vec<ExternalIdentity>,
     pub artist_accepted: bool,
+    pub warnings: Vec<String>,
+    #[serde(skip)]
+    pub provider_rank: Option<usize>,
     pub title: TitleEvidence,
     pub local_date: Option<String>,
     pub provider_date: String,
@@ -244,6 +330,9 @@ impl CandidateEvidence {
     }
     /// The exact anchor threshold consumed by conservative title relaxation.
     pub fn minimum_program_anchors(&self) -> usize {
+        if self.title.comparison == TitleComparison::PlayableEdition {
+            return 3;
+        }
         if self.title.comparison == TitleComparison::Exact || self.equivalent_title_typography() {
             0
         } else {
@@ -323,10 +412,9 @@ fn initial_report_with_equivalents(
             .map(|c| {
                 let mut title = title_evidence(context.0, &c);
                 let accepted = artist.is_some_and(|a| {
-                    c.artist_ids.len() == 1
-                        && c.artist_ids
-                            .iter()
-                            .all(|id| id == a || equivalents.contains(id))
+                    c.artist_ids
+                        .first()
+                        .is_some_and(|id| id == a || equivalents.contains(id))
                         && a.kind == "artist"
                         && !a.external_id.is_empty()
                         && c.identity.provider == a.provider
@@ -338,6 +426,13 @@ fn initial_report_with_equivalents(
                         .first()
                         .is_some_and(|candidate| candidate == id || equivalents.contains(candidate))
                 });
+                if primary_established
+                    && title.comparison == TitleComparison::Conflict
+                    && title.provider_normalized.strip_prefix("this is ")
+                        == Some(title.local_normalized.as_str())
+                {
+                    title.comparison = TitleComparison::EstablishedArtistBoilerplate;
+                }
                 let established_names = std::iter::once(c.artist.as_str()).chain(
                     local
                         .iter()
@@ -350,11 +445,21 @@ fn initial_report_with_equivalents(
                         })
                         .map(|a| a.name.as_str()),
                 );
-                if primary_established && title.comparison == TitleComparison::Conflict {
+                if primary_established
+                    && matches!(
+                        title.comparison,
+                        TitleComparison::Conflict | TitleComparison::VersionConflict
+                    )
+                {
                     for name in established_names {
                         if let Some(base) = crate::matching::artist_album_title(&c.title, name)
-                            && crate::matching::normalize_album_title(context.0)
+                            && (crate::matching::normalize_album_title(context.0)
                                 == crate::matching::normalize_album_title(base)
+                                || crate::matching::normalize_album_title(base)
+                                    == format!(
+                                        "{} live",
+                                        crate::matching::normalize_album_title(context.0)
+                                    ))
                         {
                             title.provider_normalized =
                                 crate::matching::normalize_album_title(base);
@@ -380,7 +485,10 @@ fn initial_report_with_equivalents(
                 if !can_accommodate(
                     required_tracks(local),
                     provider.album_candidate_track_count(&c.identity),
-                ) {
+                ) && !provider
+                    .album_candidate_track_count(&c.identity)
+                    .is_some_and(|n| local.len() >= 3 && n as usize * 5 >= local.len() * 4)
+                {
                     reasons.push(Reason::TrackCountMismatch);
                 }
                 CandidateEvidence {
@@ -388,6 +496,18 @@ fn initial_report_with_equivalents(
                     artist: c.artist,
                     artist_ids: sorted_ids(&c.artist_ids),
                     artist_accepted: accepted,
+                    warnings: if accepted && c.artist_ids.len() > 1 {
+                        vec![
+                            "Additional provider Artist credits retained; no alias inferred".into(),
+                        ]
+                    } else {
+                        vec![]
+                    },
+                    provider_rank: page
+                        .items
+                        .iter()
+                        .position(|item| item.identity == c.identity)
+                        .map(|i| i + 1),
                     title,
                     local_date: context.1.map(|d| {
                         format!(
@@ -427,7 +547,7 @@ fn program_reason(p: &album_program::PositionedProgram, required: usize) -> Opti
     if !p.complete {
         return Some(Reason::IncompleteProgram);
     }
-    if p.provider_count < required {
+    if p.provider_count < required && !p.alignment.strong {
         return Some(Reason::TrackCountMismatch);
     }
     if p.tracks
@@ -446,10 +566,12 @@ fn program_reason(p: &album_program::PositionedProgram, required: usize) -> Opti
     if p.tracks.iter().any(|t| t.decision == P::VersionConflict) {
         return Some(Reason::AlbumVersionMismatch);
     }
-    if p.tracks
-        .iter()
-        .any(|t| t.decision == P::InsufficientAnchors)
-    {
+    if p.tracks.iter().any(|t| {
+        matches!(
+            t.decision,
+            P::InsufficientAnchors | P::AmbiguousCorrespondence
+        )
+    }) {
         return Some(Reason::InsufficientProgramAnchors);
     }
     None
@@ -510,7 +632,77 @@ fn equivalent(
         && normalize(&a.primary_type) == normalize(&b.primary_type)
         && sorted_ids(&a.artist_ids) == sorted_ids(&b.artist_ids)
         && album_representation_title(&a.title) == album_representation_title(&b.title)
-        && same_program(ap, bp)
+        && (same_program(ap, bp)
+            || (!a.date.is_empty() && a.date == b.date && same_supported_program(ap, bp)))
+}
+
+// Different Spotify occurrence IDs do not necessarily mean different musical
+// programs. This is representation selection, never an Artist/Recording merge.
+fn same_supported_program(a: &Programs, b: &Programs) -> bool {
+    let ([a], [b]) = (a.programs.as_slice(), b.programs.as_slice()) else {
+        return false;
+    };
+    if !a.complete || !b.complete || a.tracks.len() < 3 || a.tracks.len() != b.tracks.len() {
+        return false;
+    }
+    let mut titles = std::collections::HashSet::new();
+    let mut positions = std::collections::HashSet::new();
+    a.tracks.iter().zip(&b.tracks).all(|(x, y)| {
+        let title = album_program::comparison_title(x.title.as_deref().unwrap_or(""));
+        let credits = |t: &crate::edition::TrackEvidence| {
+            let ids: Vec<_> = t
+                .artists
+                .iter()
+                .flat_map(|a| a.identities.clone())
+                .collect();
+            (!t.artists.is_empty()
+                && t.artists.iter().all(|a| {
+                    a.identities
+                        .iter()
+                        .any(|i| i.provider == "spotify" && i.kind == "artist")
+                }))
+            .then(|| sorted_ids(&ids))
+        };
+        let conflicting_recording = [(x, y), (y, x)].iter().any(|(x, y)| {
+            x.recording.identities.iter().any(|id| {
+                y.recording
+                    .identities
+                    .iter()
+                    .any(|other| other.provider == id.provider && other.kind == id.kind)
+                    && !y.recording.identities.contains(id)
+            })
+        }) || (!x.recording.isrcs.is_empty()
+            && !y.recording.isrcs.is_empty()
+            && !x
+                .recording
+                .isrcs
+                .iter()
+                .any(|id| y.recording.isrcs.contains(id)));
+        !title.is_empty()
+            && [x, y].iter().all(|t| {
+                t.identities
+                    .iter()
+                    .filter(|id| {
+                        id.provider == "spotify" && id.kind == "track" && !id.external_id.is_empty()
+                    })
+                    .count()
+                    == 1
+            })
+            && titles.insert(title.clone())
+            && title == album_program::comparison_title(y.title.as_deref().unwrap_or(""))
+            && x.disc == y.disc
+            && x.number == y.number
+            && x.number.is_some_and(|n| n > 0)
+            && positions.insert((x.disc, x.number))
+            && credits(x).is_some()
+            && credits(x) == credits(y)
+            && !x.duration_approximate
+            && !y.duration_approximate
+            && x.duration_ms
+                .zip(y.duration_ms)
+                .is_some_and(|(a, b)| a > 0 && b > 0 && a.abs_diff(b) <= 100)
+            && !conflicting_recording
+    })
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn resolve_spotify(
@@ -525,6 +717,58 @@ pub(super) fn resolve_spotify(
 ) -> Result<Resolution, CatalogError> {
     let mut report =
         initial_report_with_equivalents(provider, context, Some(artist), page, local, equivalents);
+    // Credit order is presentation when another established representation has
+    // the identical identity set AND complete ordered occurrence identities.
+    // Membership of the established Artist alone never relaxes a collaboration.
+    let order_only: Vec<_> = report
+        .candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, row)| {
+            (page.next_offset.is_none()
+                && page.items.len() <= MAX_PROGRAM_CANDIDATES
+                && row.reasons == vec![Reason::ArtistMismatch])
+            .then(|| {
+                let candidate = page.items.iter().find(|c| c.identity == row.identity)?;
+                let other = page.items.iter().find(|other| {
+                    report.candidates.iter().any(|r| {
+                        r.identity == other.identity && r.artist_accepted && r.reasons.is_empty()
+                    }) && sorted_ids(&candidate.artist_ids) == sorted_ids(&other.artist_ids)
+                })?;
+                Some((index, candidate.clone(), other.clone()))
+            })
+            .flatten()
+        })
+        .take(MAX_PROGRAM_CANDIDATES)
+        .collect();
+    for (index, candidate, other) in order_only {
+        let mut programs = vec![];
+        for identity in [&candidate.identity, &other.identity] {
+            let p = if let Some(p) = cache.iter().find(|p| &p.album == identity) {
+                p.clone()
+            } else {
+                let p = provider.album_programs(identity)?;
+                if p.album != *identity {
+                    return Err(CatalogError::Other(
+                        "Candidate program belongs to another Album".into(),
+                    ));
+                }
+                if cache.len() == MAX_PROGRAM_CANDIDATES {
+                    cache.remove(0);
+                }
+                cache.push(p.clone());
+                p
+            };
+            programs.push(p);
+        }
+        if equivalent(&candidate, &programs[0], &other, &programs[1]) {
+            let row = &mut report.candidates[index];
+            row.artist_accepted = true;
+            row.reasons.clear();
+            row.decision = "Withheld".into();
+            row.warnings.push("Provider Artist credit order differs; identical Artist identity set and complete ordered Track identities".into());
+        }
+    }
     // An established provider observation can corroborate an incomplete display
     // title. Semantic version conflicts remain a veto, never discarded.
     for row in &mut report.candidates {
@@ -566,6 +810,7 @@ pub(super) fn resolve_spotify(
             "Withheld"
         }
         .into();
+        report.rank_candidates();
         Resolution { outcome, report }
     };
     if local.is_empty() {
@@ -576,11 +821,41 @@ pub(super) fn resolve_spotify(
         ));
     }
     for row in &mut report.candidates {
-        if !can_accommodate(row.required_tracks, row.provider_tracks) {
+        if !can_accommodate(row.required_tracks, row.provider_tracks)
+            && !row
+                .provider_tracks
+                .is_some_and(|n| local.len() >= 3 && n as usize * 5 >= local.len() * 4)
+        {
             if !row.reasons.contains(&Reason::TrackCountMismatch) {
                 row.reasons.push(Reason::TrackCountMismatch);
             }
             row.decision = "Rejected".into();
+        }
+    }
+    // A Spotify locator is a playable representation, not an assertion that the
+    // canonical Release has become this provider's remaster/deluxe edition.
+    // Prefer normal candidates; only a sole compatible edition can be a fallback.
+    if page.next_offset.is_none() && !report.candidates.iter().any(|c| c.reasons.is_empty()) {
+        let alternatives: Vec<_> = report
+            .candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| {
+                c.artist_accepted
+                    && !c.reasons.is_empty()
+                    && c.reasons.iter().all(|r| {
+                        matches!(r, Reason::AlbumVersionMismatch | Reason::AlbumTitleMismatch)
+                    })
+                    && playable_edition_pair(&c.title.local_raw, &c.title.provider_raw)
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if let [index] = alternatives.as_slice() {
+            let row = &mut report.candidates[*index];
+            row.title.comparison = TitleComparison::PlayableEdition;
+            row.reasons.clear();
+            row.decision = "Withheld".into();
+            row.warnings.push("Spotify edition differs; using corresponding songs as playable sources without changing the canonical Release".into());
         }
     }
     let viable: Vec<_> = report
@@ -638,8 +913,41 @@ pub(super) fn resolve_spotify(
         row.programs = p
             .programs
             .iter()
-            .map(|p| album_program::inspect_positioned_program(local, p))
+            .map(|p| album_program::inspect_album_program(local, p, context.0))
             .collect();
+        row.warnings
+            .extend(row.programs.iter().flat_map(|p| p.warnings.clone()));
+        if row.title.comparison == TitleComparison::EstablishedArtistBoilerplate
+            && qualifiers(&row.title.local_raw) != qualifiers(&row.title.provider_raw)
+        {
+            let annotation = format!(
+                "{} live",
+                crate::matching::album_representation_title(context.0)
+            );
+            let systematic = p.programs.iter().all(|program| {
+                program
+                    .tracks
+                    .iter()
+                    .filter(|t| {
+                        t.title
+                            .as_deref()
+                            .and_then(|title| title.rsplit_once(" - "))
+                            .is_some_and(|(_, suffix)| {
+                                let suffix = crate::matching::album_representation_title(suffix);
+                                suffix.strip_suffix(" version").unwrap_or(&suffix) == annotation
+                            })
+                    })
+                    .count()
+                    * 5
+                    >= program.tracks.len() * 4
+                    && program.tracks.len() >= 3
+            });
+            if !systematic {
+                row.reasons.push(Reason::AlbumVersionMismatch);
+                row.decision = "Rejected".into();
+                continue;
+            }
+        }
         let reasons: Vec<_> = row
             .programs
             .iter()
@@ -653,18 +961,44 @@ pub(super) fn resolve_spotify(
             .all(|p| p.anchors >= row.minimum_program_anchors());
         // Typo/suffix/typography cannot be an identity shortcut. No duration
         // contradictions or comparable competitors may be hidden by a typo.
-        let duration_conflict = row.title.comparison == TitleComparison::MinorTypo
-            && row.programs.iter().any(|p| {
-                p.tracks.iter().any(|t| {
-                    t.provider.as_ref().is_some_and(|c| {
-                        t.local
-                            .duration_ms
-                            .zip(c.duration_ms)
-                            .is_some_and(|(a, b)| a.abs_diff(b) > 3000)
-                    })
+        let duration_conflict = matches!(
+            row.title.comparison,
+            TitleComparison::MinorTypo | TitleComparison::PlayableEdition
+        ) && row.programs.iter().any(|p| {
+            p.tracks.iter().any(|t| {
+                t.provider.as_ref().is_some_and(|c| {
+                    t.local
+                        .duration_ms
+                        .zip(c.duration_ms)
+                        .is_some_and(|(a, b)| {
+                            a.abs_diff(b)
+                                > if row.title.comparison == TitleComparison::PlayableEdition {
+                                    10_000
+                                } else {
+                                    3000
+                                }
+                        })
                 })
-            });
-        if !compatible {
+            })
+        });
+        if row.title.comparison == TitleComparison::PlayableEdition
+            && row.programs.iter().any(|p| {
+                let matched = p
+                    .alignment
+                    .rows
+                    .iter()
+                    .filter(|r| r.local_index.is_some() && r.provider_index.is_some())
+                    .count();
+                // Provider extras are expected for expanded editions. Coverage
+                // of the canonical program, not consumption of bonus material,
+                // is the relevant measure; normal positional/identity guards
+                // below still apply when two-sided alignment is not strong.
+                matched < 3 || matched * 5 < local.len() * 4
+            })
+        {
+            row.reasons = vec![Reason::InsufficientProgramAnchors];
+            row.decision = "Withheld".into();
+        } else if !compatible {
             row.reasons = if reasons.is_empty() {
                 vec![Reason::IncompleteProgram]
             } else {
@@ -687,6 +1021,16 @@ pub(super) fn resolve_spotify(
             examined.push((index, c, p));
         }
     }
+    // Complete equivalent programs with exact established credits dominate an
+    // otherwise equally supported object carrying additional provider credits.
+    let exact: Vec<_> = examined
+        .iter()
+        .filter(|(i, c, _)| c.artist_ids.len() == 1 && report.candidates[*i].reasons.is_empty())
+        .map(|(_, _, p)| p.clone())
+        .collect();
+    examined.retain(|(_, c, p)| {
+        c.artist_ids.len() == 1 || !exact.iter().any(|other| same_program(other, p))
+    });
     let mut groups: Vec<Vec<usize>> = vec![];
     for (i, (_, c, p)) in examined.iter().enumerate() {
         if let Some(g) = groups.iter_mut().find(|g| {
@@ -765,6 +1109,7 @@ pub(super) fn resolve_spotify(
                 TitleComparison::Typography => Reason::AcceptedNormalizedTitle,
                 TitleComparison::EstablishedArtistBoilerplate => Reason::AcceptedArtistBoilerplate,
                 TitleComparison::ReleaseTypeSuffix => Reason::AcceptedReleaseTypeSuffix,
+                TitleComparison::PlayableEdition => Reason::AcceptedPlayableEdition,
                 _ => Reason::AcceptedMinorTypo,
             }
         };
@@ -837,6 +1182,37 @@ pub(super) fn resolve_spotify(
 }
 
 impl Report {
+    /// Explainable evidence order, independent of Spotify response ordering.
+    pub fn rank_candidates(&mut self) {
+        let score = |c: &CandidateEvidence| {
+            let class = match c.decision.as_str() {
+                "Accepted" => 2,
+                "Rejected" => 0,
+                _ => 1,
+            };
+            let title = match c.title.comparison {
+                TitleComparison::Exact => 5,
+                TitleComparison::Typography => 4,
+                TitleComparison::ReleaseTypeSuffix
+                | TitleComparison::EstablishedArtistBoilerplate => 3,
+                TitleComparison::MinorTypo => 2,
+                _ => 0,
+            };
+            (
+                class,
+                c.artist_accepted,
+                title,
+                c.programs.iter().map(|p| p.anchors).max().unwrap_or(0),
+                std::cmp::Reverse(c.warnings.len()),
+                std::cmp::Reverse(c.reasons.len()),
+            )
+        };
+        self.candidates.sort_by(|a, b| {
+            score(b)
+                .cmp(&score(a))
+                .then_with(|| identity_key(&a.identity).cmp(&identity_key(&b.identity)))
+        });
+    }
     /// Concise review reason from structured evidence, never title-specific logic.
     pub fn review_reason(&self, track: &str) -> Reason {
         use album_program::PositionDecision;

@@ -9,7 +9,7 @@ use crate::{
 use rusqlite::params;
 
 /// Increment when acceptance/evidence semantics change. Successful identities are never invalidated.
-pub const EVALUATION_VERSION: u32 = 5;
+pub const EVALUATION_VERSION: u32 = 11;
 pub const LOCAL_BATCH: u32 = 32;
 pub const RETRY_ALBUMS: u32 = 20;
 #[derive(Clone, Debug, Default, serde::Serialize)]
@@ -35,6 +35,19 @@ pub(crate) fn album_unexcluded(db: &rusqlite::Connection, album: &AlbumId) -> Re
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify'))",[album.as_ref()],|r|r.get(0))?)
 }
 impl Library {
+    /// Bounded offline cache provenance. It never chooses a market for requests.
+    pub fn retained_spotify_market(&self) -> Result<Option<String>> {
+        let keys=self.store.connection.prepare("SELECT fingerprint FROM spotify_discovery WHERE fingerprint>='spotify:' AND fingerprint<'spotify;' ORDER BY fingerprint LIMIT 64")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let markets = keys
+            .iter()
+            .filter_map(|key| key.split("market=").nth(1).and_then(|v| v.get(..2)))
+            .collect::<std::collections::BTreeSet<_>>();
+        Ok(if markets.len() == 1 {
+            markets.first().map(|v| v.to_string())
+        } else {
+            None
+        })
+    }
     /// Separate write connection for bounded local work away from the UI thread.
     pub fn spotify_review_worker(&self) -> Result<Option<Self>> {
         self.store
@@ -63,17 +76,22 @@ impl Library {
     }
     /// Re-enable eligibility; clearing negative knowledge never creates an identity.
     pub fn check_spotify_again(&mut self, track: &TrackId) -> Result<()> {
+        self.check_tracks_spotify_again(std::slice::from_ref(track))?;
+        Ok(())
+    }
+    /// Atomically re-enable the selected Tracks without touching associations.
+    pub fn check_tracks_spotify_again(&mut self, tracks: &[TrackId]) -> Result<usize> {
         let tx = self.store.connection.transaction()?;
-        tx.execute(
-            "DELETE FROM track_provider_exclusion WHERE track_id=?1 AND provider='spotify'",
-            [track.as_ref()],
+        let changed = tx.execute(
+            "DELETE FROM track_provider_exclusion WHERE track_id IN(SELECT value FROM json_each(?1)) AND provider='spotify'",
+            [json(&tracks)?],
         )?;
         tx.execute(
-            "UPDATE spotify_connection_review SET stale=1 WHERE track_id=?1",
-            [track.as_ref()],
+            "UPDATE spotify_connection_review SET stale=1 WHERE track_id IN(SELECT value FROM json_each(?1))",
+            [json(&tracks)?],
         )?;
         tx.commit()?;
-        Ok(())
+        Ok(changed)
     }
     pub fn marked_spotify_count(&self) -> Result<u64> {
         Ok(self.store.connection.query_row("SELECT count(*) FROM track_provider_exclusion x INDEXED BY provider_exclusion_list JOIN library_membership m ON m.track_id=x.track_id WHERE x.provider='spotify'",[],|r|r.get::<_,i64>(0))? as u64)
@@ -90,6 +108,20 @@ impl Library {
             |r| Ok(AlbumId(r.get(0)?)),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+    /// True Needs-retry contexts take priority over the ordinary browsing cursor.
+    /// New work before that cursor must never be silently omitted from a retry.
+    pub fn spotify_retry_needed_albums(&self, limit: u32) -> Result<Vec<AlbumId>> {
+        let mut q=self.store.connection.prepare("SELECT b.album_id FROM album_browse_order b INDEXED BY album_order_title WHERE EXISTS(SELECT 1 FROM effective_album_metadata a WHERE a.album_id=b.album_id AND a.match_title!='' AND a.match_artist_credit!='') AND (SELECT count(*) FROM album_artist_credit ac WHERE ac.album_id=b.album_id)=1 AND EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN spotify_connection_review v ON v.track_id=t.id WHERE r.album_id=b.album_id AND v.state='needs_retry' AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id)) ORDER BY b.title_key,b.album_id LIMIT ?1")?;
+        Ok(
+            q.query_map([limit.clamp(1, RETRY_ALBUMS)], |r| Ok(AlbumId(r.get(0)?)))?
+                .collect::<rusqlite::Result<_>>()?,
+        )
+    }
+    /// Fresh discovery is needed when local evaluation could not replay this context.
+    /// Used by both the status display and explicit batch retry policy.
+    pub fn spotify_album_needs_retry(&self, album: &AlbumId) -> Result<bool> {
+        Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN spotify_connection_review v ON v.track_id=t.id WHERE r.album_id=?1 AND v.state='needs_retry' AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id))", [album.as_ref()], |r| r.get(0))?)
     }
     /// Bounded Track fallback after a batch's Album work; no provider activity here.
     pub fn spotify_retry_tracks(&self, albums: &[AlbumId], limit: u32) -> Result<Vec<TrackId>> {
@@ -112,6 +144,30 @@ impl Library {
     pub fn spotify_album_has_eligible(&self, album: &AlbumId) -> Result<bool> {
         Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id))",[album.as_ref()],|r|r.get(0))?)
     }
+    /// Inspection may expose persisted evidence even after discovery TTL expires.
+    /// The snapshot is retained so inspection cannot masquerade as a fresh search.
+    pub fn cached_spotify_track_attempt(
+        &self,
+        track: &TrackId,
+    ) -> Result<Option<(Input, Page<Candidate>)>> {
+        use rusqlite::OptionalExtension;
+        let row: Option<(String, String)> = self
+            .store
+            .connection
+            .query_row(
+                "SELECT input_json,page_json FROM spotify_reconciliation_cache WHERE track_id=?1",
+                [track.as_ref()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.map(|(input, page)| {
+            Ok((
+                serde_json::from_str(&input).map_err(|e| Error::Invalid(e.to_string()))?,
+                serde_json::from_str(&page).map_err(|e| Error::Invalid(e.to_string()))?,
+            ))
+        })
+        .transpose()
+    }
     /// A complete bounded page retains competition evidence, not merely its chosen candidate.
     pub(crate) fn cache_spotify_attempt(
         &mut self,
@@ -126,7 +182,7 @@ impl Library {
         if current.spotify_excluded {
             return Ok(());
         }
-        if page.items.len() <= 10 {
+        if page.items.len() <= 20 {
             tx.execute("INSERT INTO spotify_reconciliation_cache(track_id,input_json,page_json) VALUES(?1,?2,?3) ON CONFLICT(track_id) DO UPDATE SET input_json=excluded.input_json,page_json=excluded.page_json",params![input.track_id.as_ref(),json(input)?,json(page)?])?;
         } else {
             tx.execute(
@@ -186,6 +242,62 @@ impl Library {
             }
         }
         Ok(batch)
+    }
+    /// Complete affected Album contexts to a bounded local fixed point. No search,
+    /// no global stale scan and no invalidation of trusted/excluded Tracks.
+    pub fn reevaluate_spotify_albums_locally(&mut self, albums: &[AlbumId]) -> Result<LocalBatch> {
+        if albums.len() > RETRY_ALBUMS as usize {
+            return Err(Error::Invalid("Local retry Album bound exceeded".into()));
+        }
+        let mut batch = LocalBatch::default();
+        for _ in 0..3 {
+            let ids = self.spotify_retry_tracks_complete(albums)?;
+            if ids.is_empty() {
+                break;
+            }
+            let ids_json = json(&ids)?;
+            let cached:std::collections::HashMap<TrackId,(String,String)>=self.store.connection.prepare("SELECT track_id,input_json,page_json FROM spotify_reconciliation_cache WHERE track_id IN(SELECT value FROM json_each(?1))")?.query_map([&ids_json],|r|Ok((TrackId(r.get(0)?),(r.get(1)?,r.get(2)?))))?.collect::<rusqlite::Result<_>>()?;
+            let programs:std::collections::HashMap<AlbumId,String>=self.store.connection.prepare("SELECT album_id,programs_json FROM spotify_program_cache WHERE album_id IN(SELECT value FROM json_each(?1))")?.query_map([json(&albums)?],|r|Ok((AlbumId(r.get(0)?),r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+            let before = batch.accepted.len();
+            for track in ids {
+                if !self
+                    .track_provider_occurrences(&track, "spotify")?
+                    .is_empty()
+                {
+                    continue;
+                }
+                batch.examined += 1;
+                batch.updated.push(track.clone());
+                if let Err(error) =
+                    self.reevaluate_one(&track, cached.get(&track), &programs, &mut batch)
+                {
+                    batch.errors.push(format!("{}: {error}", track.as_ref()));
+                    self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry' WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
+                }
+            }
+            if batch.accepted.len() == before || !batch.errors.is_empty() {
+                break;
+            }
+        }
+        batch.accepted.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        batch.accepted.dedup();
+        batch.updated.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+        batch.updated.dedup();
+        batch.still_unresolved = self.spotify_retry_tracks_complete(albums)?.len();
+        Ok(batch)
+    }
+    fn spotify_retry_tracks_complete(&self, albums: &[AlbumId]) -> Result<Vec<TrackId>> {
+        let mut result = vec![];
+        let mut after = None;
+        loop {
+            let page = self.spotify_retry_tracks_after(albums, after.as_ref(), 20)?;
+            if page.is_empty() {
+                break;
+            }
+            after = page.last().cloned();
+            result.extend(page);
+        }
+        Ok(result)
     }
     fn reevaluate_one(
         &mut self,
@@ -254,6 +366,11 @@ impl Library {
             batch.still_unresolved += 1;
             return Ok(());
         }
+        let current_negative:bool=self.store.connection.query_row("SELECT reason_code='no_candidates' AND stale=0 AND evaluation_version=?2 FROM spotify_connection_review WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION],|r|r.get(0))?;
+        if current_negative {
+            batch.still_unresolved += 1;
+            return Ok(());
+        }
         self.store.connection.execute("UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0 WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
         batch.needs_retry += 1;
         Ok(())
@@ -263,7 +380,7 @@ impl Library {
 /// Successful discovery expires lazily; browsing never refreshes it.
 pub const DISCOVERY_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// Query construction/breadth only. Never increment for evaluator changes.
-pub const SEARCH_STRATEGY_VERSION: u32 = 1;
+pub const SEARCH_STRATEGY_VERSION: u32 = 3;
 impl Library {
     pub fn database_path(&self) -> Option<String> {
         self.store
@@ -281,6 +398,19 @@ impl Library {
         Ok(self.store.connection.query_row(
             "SELECT response_json FROM spotify_discovery WHERE fingerprint=?1 AND completed_at>?2",
             params![fingerprint, now - DISCOVERY_TTL_SECONDS], |r| r.get(0)).optional()?)
+    }
+    /// Retained observation for explicit offline inspection, independent of TTL.
+    pub fn spotify_discovery_observation(&self, fingerprint: &str) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .store
+            .connection
+            .query_row(
+                "SELECT response_json FROM spotify_discovery WHERE fingerprint=?1",
+                [fingerprint],
+                |r| r.get(0),
+            )
+            .optional()?)
     }
     pub fn persist_spotify_discovery(
         &self,
@@ -393,4 +523,31 @@ impl Library {
         }
         Ok(status)
     }
+}
+
+impl Library {
+    /// A discovery marker, not identity: local replays never repeatedly spend
+    /// the Track budget on the same unsuccessful fallback scope.
+    pub fn spotify_playable_discovery_fresh(&self, input: &Input) -> Result<bool> {
+        let key = playable_discovery_key(input)?;
+        Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM spotify_discovery WHERE fingerprint=?1 AND completed_at>unixepoch()-?2)",params![key,DISCOVERY_TTL_SECONDS],|r|r.get(0))?)
+    }
+    pub fn record_spotify_playable_discovery(&mut self, input: &Input) -> Result<()> {
+        if self.song_resolution_input(&input.track_id)? != *input {
+            return Err(Error::ReconciliationEvidenceChanged);
+        }
+        let key = playable_discovery_key(input)?;
+        self.store.connection.execute("INSERT INTO spotify_discovery(fingerprint,response_json,completed_at) VALUES(?1,'{}',unixepoch()) ON CONFLICT(fingerprint) DO UPDATE SET completed_at=excluded.completed_at",[key])?;
+        Ok(())
+    }
+}
+fn playable_discovery_key(input: &Input) -> Result<String> {
+    Ok(format!(
+        "playable-track-search:1:{}:{}",
+        input.track_id.as_ref(),
+        json(&(
+            crate::matching::normalize_album_title(&input.title),
+            crate::song_resolution::established_playable_artist(input)
+        ))?
+    ))
 }

@@ -7,12 +7,17 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 
+#[path = "album_program/alignment.rs"]
+mod alignment;
 #[path = "album_program/diagnostics.rs"]
 mod diagnostics;
+#[allow(unused_imports)]
+pub use alignment::{Alignment, AlignmentKind, AlignmentRow, align_program, numeric_title};
 // These public exports are also included privately by the benchmark harness.
 #[allow(unused_imports)]
 pub use diagnostics::{
-    PositionDecision, PositionedProgram, PositionedTrack, inspect_positioned_program,
+    PositionDecision, PositionedProgram, PositionedTrack, inspect_album_program,
+    inspect_positioned_program,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -334,8 +339,27 @@ fn title_pair(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
         crate::artist_credit::musical_title(right.title.as_deref().unwrap_or(""), &right.artists);
     let pa = crate::matching::presentation_title(a);
     let pb = crate::matching::presentation_title(b);
+    let bracket_typography = |s: &str| {
+        let value = crate::matching::normalize_album_title(s)
+            .chars()
+            .collect::<Vec<_>>();
+        value
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let symbol = |c: &char| matches!(*c, '[' | ']' | '{' | '}' | '(' | ')' | '/');
+                if c.is_whitespace()
+                    && (i > 0 && symbol(&value[i - 1]) || value.get(i + 1).is_some_and(symbol))
+                {
+                    None
+                } else {
+                    Some(*c)
+                }
+            })
+            .collect::<String>()
+    };
     if (pa.contains(['[', ']', '{', '}']) || pb.contains(['[', ']', '{', '}']))
-        && crate::matching::normalize_album_title(pa) != crate::matching::normalize_album_title(pb)
+        && bracket_typography(pa) != bracket_typography(pb)
     {
         return TitleRelation::Uncorroborated;
     }
@@ -351,7 +375,7 @@ fn title_pair(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
     let punctuation_agrees = !a.trim().is_empty() && punctuation(a) == punctuation(b);
     let a = comparison_title(a);
     let b = comparison_title(b);
-    if !a.is_empty() && (a == b || punctuation_agrees) {
+    if !a.is_empty() && (a == b || punctuation_agrees || alignment::numeric_equivalent(&a, &b)) {
         TitleRelation::Agrees
     } else if qualifiers(&a) != qualifiers(&b) {
         TitleRelation::Contradictory
@@ -385,6 +409,12 @@ fn position(t: &TrackEvidence) -> Option<(u32, u32)> {
 fn occurrence_identity_conflict(a: &TrackEvidence, b: &TrackEvidence) -> bool {
     conflict(&a.recording.identities, &b.recording.identities)
         || conflict(&a.identities, &b.identities)
+        || a.artists.len() > 1
+            && b.artists.len() > 1
+            && matches!(
+                crate::artist_credit::compare(&a.artists, &b.artists),
+                crate::artist_credit::Compatibility::Contradictory
+            )
         || a.artists
             .first()
             .zip(b.artists.first())
@@ -394,7 +424,11 @@ fn occurrence_identity_conflict(a: &TrackEvidence, b: &TrackEvidence) -> bool {
 /// Only used after revalidating the accepted Spotify representation and snapshot.
 /// Build context once per program. Uncorroborated titles need three independent
 /// exact title/position anchors; neither library completeness nor scripts matter.
-fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) -> Vec<TrackOutcome> {
+fn established_occurrences(
+    local: &[LocalTrackEvidence],
+    programs: &Programs,
+    album_title: &str,
+) -> Vec<TrackOutcome> {
     let _timing = crate::catalog::Timing::detail("album_program.established_occurrences");
     let empty = || vec![TrackOutcome::NoConfidentMatch; local.len()];
     if programs.album.provider != "spotify"
@@ -406,13 +440,15 @@ fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) ->
     }
     let mut agreed: Vec<Option<Vec<ExternalIdentity>>> = vec![None; local.len()];
     for program in &programs.programs {
-        if !crate::album_candidates::can_accommodate(
-            crate::album_candidates::required_tracks(local),
-            Some(program.tracks.len() as u32),
-        ) {
+        let evidence = inspect_album_program(local, program, album_title);
+        if !evidence.alignment.strong
+            && !crate::album_candidates::can_accommodate(
+                crate::album_candidates::required_tracks(local),
+                Some(program.tracks.len() as u32),
+            )
+        {
             return empty();
         }
-        let evidence = inspect_positioned_program(local, program);
         if evidence.duplicate_positions > 0
             || evidence.tracks.iter().any(|t| {
                 matches!(
@@ -426,7 +462,10 @@ fn established_occurrences(local: &[LocalTrackEvidence], programs: &Programs) ->
         for (i, t) in evidence.tracks.iter().enumerate() {
             let ids = if matches!(
                 t.decision,
-                PositionDecision::ExactAnchor | PositionDecision::CorroboratedPosition
+                PositionDecision::ExactAnchor
+                    | PositionDecision::CorroboratedPosition
+                    | PositionDecision::AlignedAfterInsertion
+                    | PositionDecision::ReorderedTrack
             ) {
                 t.provider
                     .as_ref()
@@ -1017,7 +1056,15 @@ impl Store {
             .collect();
         let comparisons = if programs.album.provider == "spotify" && programs.album.kind == "album"
         {
-            established_occurrences(&reply.input.tracks, &programs)
+            established_occurrences(
+                &reply.input.tracks,
+                &programs,
+                &tx.query_row(
+                    "SELECT title FROM effective_album_metadata WHERE album_id=?1",
+                    [reply.input.album_id.as_ref()],
+                    |r| r.get::<_, String>(0),
+                )?,
+            )
         } else {
             compare_album(&eligible, &programs)
         };

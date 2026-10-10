@@ -48,6 +48,7 @@ fn catalog() -> Release {
 }
 fn candidate(input: &music_library::song_resolution::Input) -> Candidate {
     Candidate {
+        recording: Default::default(),
         identity: id(
             "spotify",
             "track",

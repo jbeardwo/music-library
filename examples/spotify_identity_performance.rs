@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ids = l.diagnostic_track_identities(&track)?;
         reads.push(t.elapsed());
         let c = Candidate {
+            recording: Default::default(),
             album_identity: None,
             identity: ExternalIdentity {
                 provider: "spotify".into(),

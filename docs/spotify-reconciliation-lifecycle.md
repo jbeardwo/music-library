@@ -4,7 +4,7 @@
 
 ## Versioned local reconciliation
 
-`spotify_lifecycle::EVALUATION_VERSION` is currently **5**. Increment it when matcher/evidence semantics change. Migration 0029 adds the last evaluation version, an indexed stale flag and a separate `needs_retry` state to Spotify review bookkeeping. Existing trusted associations are preserved. Legacy unresolved rows start stale; successful associations receive only bookkeeping initialization, never identity replacement.
+`spotify_lifecycle::EVALUATION_VERSION` is currently **11**. Increment it when matcher/evidence semantics change. Migration 0029 adds the last evaluation version, an indexed stale flag and a separate `needs_retry` state to Spotify review bookkeeping. Existing trusted associations are preserved. Legacy unresolved rows start stale; successful associations receive only bookkeeping initialization, never identity replacement.
 
 Version 3 treats ordinary apostrophe typography as equivalent title evidence under the standard exact-title program requirements, rather than imposing the additional title-relaxation anchor threshold. Straight, left/right typographic, modifier-letter and fullwidth apostrophes normalize to the straight apostrophe in title comparison/discovery. Version words and other structural gates remain meaningful. The real Library's `X’ed Out` contains U+2019, which normalizes to `X'ed Out`; this observation alone does not establish an Album association.
 

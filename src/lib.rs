@@ -44,5 +44,6 @@ pub use storage::{Error, Result};
 pub mod canonical_evidence;
 
 pub mod spotify_lifecycle;
+pub mod spotify_review;
 
 pub mod preferences;

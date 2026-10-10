@@ -1,5 +1,23 @@
 # Music Library — Architecture
 
+Current Spotify Album/Track propagation, cache-only completion and diagnostic
+generation ownership are documented in the [propagation/retry audit](spotify-propagation-retry-audit.md).
+
+A sole strongly corroborated Spotify remaster/expanded edition can act as a
+playable representation of the canonical Release's corresponding Tracks. This
+does not replace canonical edition metadata or assert exact Recording identity;
+unused provider Tracks are not admitted to the library. Source selection and
+edition equivalence remain separate decisions.
+
+Current local/Spotify robustness decisions and measured regression outcomes are in
+[the 2026-10-09 audit](local-spotify-robustness-audit.md). Intentional Files/Folder
+admission saves newly attached existing canonical Tracks; source rescans never restore
+membership. Local Artist consolidation requires indexed shared directory/Album
+context and no conflicting trusted identities, rather than display-name equality.
+Spotify reconciliation uses a reusable explicit program alignment shared with durable
+occurrence persistence and diagnostics. Manual partial/split-provider mapping changes
+Track occurrences without splitting the canonical Album or inferring Artist aliases.
+
 ## Architectural Goals
 
 The architecture should prioritize:
@@ -2263,3 +2281,8 @@ Ignoring the currently playing Track makes no transport command. Sources continu
 through the existing resolver. The queue is in memory, so no queue-persistence
 migration is needed. Future shuffle candidate selection can use the same generated
 eligibility boundary; Shuffle is not implemented here.
+
+Spotify Track playback can also use a best-available occurrence from another provider
+release without establishing canonical Release equivalence. The separate playback
+assessment, bounded retry budget, evidence warnings and manual correction semantics
+are described in [Best-available Spotify Track playback](spotify-best-available-playback.md).

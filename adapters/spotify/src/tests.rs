@@ -38,6 +38,7 @@ fn explicit_song_search_is_bounded_uses_catalog_auth_and_yields_playback_occurre
     let mut mock = Mock::new(vec![token(), page.clone(), page]);
     assert_eq!(mock.client.request_counts(), (0, 0));
     let input = music_library::song_resolution::Input {
+        recording: Default::default(),
         evidence: Default::default(),
         association_providers: vec![],
         spotify_excluded: false,
@@ -195,7 +196,14 @@ fn empty_full_title_uses_one_bounded_artist_scoped_token_without_changing_accept
         json!({"albums":{"items":[{"id":"album1","name":"Bitches Ain't Shit But Good People","artists":[{"id":"artist1","name":"Artist"}],"album_type":"single","total_tracks":4,"release_date":"2003-03-31"}],"total":1,"offset":0,"next":null}}),
         None,
     );
-    let mut mock = Mock::new(vec![token(), artists(), empty.clone(), found, empty]);
+    let mut mock = Mock::new(vec![
+        token(),
+        artists(),
+        empty.clone(),
+        found,
+        empty.clone(),
+        empty,
+    ]);
     mock.client.search_artists("Artist").unwrap();
     let artist = id("artist", "artist1");
     let page = mock
@@ -224,7 +232,7 @@ fn empty_full_title_uses_one_bounded_artist_scoped_token_without_changing_accept
             .is_empty()
     );
     let requests = mock.finish();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 6);
     assert!(requests[3].contains("album%3A%22Bitches%22+artist%3A%22Artist%22"));
 }
 
@@ -331,6 +339,308 @@ fn errors_classify_quota_service_configuration_and_request_failures() {
 fn song(n: u32) -> Value {
     json!({"id":format!("song{n}"),"name":format!("Song {n}"),"disc_number":1,"track_number":n,"duration_ms":200000,"artists":[{"id":"artist1","name":"Artist"}],"external_ids":{"isrc":"TESTISRC"}})
 }
+
+fn retained_album_context(
+    local_titles: &[&str],
+    provider_titles: &[&str],
+) -> (
+    tempfile::TempDir,
+    music_library::Library,
+    music_library::domain::ImportedRelease,
+    music_library::domain::AlbumId,
+) {
+    use music_library::domain::*;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("context.db");
+    let mut library = music_library::Library::open(&path).unwrap();
+    let credit = ArtistCreditInput {
+        name: "Artist".into(),
+        role: None,
+    };
+    let release = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Album".into(),
+            year: None,
+            artists: vec![credit.clone()],
+            tracks: local_titles
+                .iter()
+                .enumerate()
+                .map(|(i, title)| CatalogTrackInput {
+                    title: (*title).into(),
+                    disc_number: Some(1),
+                    track_number: Some(i as u32 + 1),
+                    artists: vec![credit.clone()],
+                })
+                .collect(),
+        })
+        .unwrap();
+    for t in &release.track_ids {
+        library.add_to_library(t).unwrap();
+    }
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let artist = ArtistId(
+        db.query_row(
+            "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get(0),
+        )
+        .unwrap(),
+    );
+    library
+        .attach_artist_external_identity(&artist, &id("artist", "artist1"))
+        .unwrap();
+    library
+        .persist_spotify_discovery("spotify-name:1:US:artist1", "\"Artist\"", Spotify::now())
+        .unwrap();
+    let mut query = Url::parse("https://api.spotify.com/v1/search").unwrap();
+    let music_library::album_matching::Preparation::Ready(input) =
+        library.spotify_album_review_input(&album).unwrap()
+    else {
+        panic!("expected searchable Album")
+    };
+    let album_query = format!("album:{} artist:{}", quoted(&input.title), quoted("Artist"));
+    query
+        .query_pairs_mut()
+        .append_pair("market", "US")
+        .append_pair("q", &album_query)
+        .append_pair("type", "album")
+        .append_pair("limit", "10")
+        .append_pair("offset", "0");
+    library.persist_spotify_discovery(&format!("spotify:{}:{query}",music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION),&json!({"albums":{"items":[{"id":"album1","name":"Album","artists":[{"id":"artist1","name":"Artist"}],"album_type":"album","total_tracks":provider_titles.len()}],"total":1,"offset":0,"next":null}}).to_string(),Spotify::now()).unwrap();
+    let tracks = provider_titles
+        .iter()
+        .enumerate()
+        .map(|(i, title)| {
+            let mut t = song(i as u32 + 1);
+            t["name"] = json!(title);
+            t
+        })
+        .collect::<Vec<_>>();
+    library
+        .persist_spotify_discovery(
+            "spotify:1:https://api.spotify.com/v1/albums/album1/tracks?market=US&limit=50&offset=0",
+            &json!({"items":tracks,"total":provider_titles.len(),"offset":0,"next":null})
+                .to_string(),
+            Spotify::now(),
+        )
+        .unwrap();
+    (dir, library, release, album)
+}
+
+#[test]
+fn sole_deluxe_cached_program_connects_only_corresponding_canonical_tracks() {
+    let (dir, mut library, release, album) = retained_album_context(
+        &["A", "B", "C", "D", "Local Only"],
+        &["A", "B", "C", "D", "Provider Bonus"],
+    );
+    let db = rusqlite::Connection::open(dir.path().join("context.db")).unwrap();
+    let (key, response): (String, String) = db.query_row("SELECT fingerprint,response_json FROM spotify_discovery WHERE fingerprint LIKE '%type=album%'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let mut response: serde_json::Value = serde_json::from_str(&response).unwrap();
+    response["albums"]["items"][0]["name"] = json!("Album (Deluxe Edition)");
+    library
+        .persist_spotify_discovery(&key, &response.to_string(), Spotify::now())
+        .unwrap();
+    let batch = album_context::reconcile(&mut library, std::slice::from_ref(&album), "US").unwrap();
+    assert_eq!(batch.accepted.len(), 4);
+    assert_eq!(library.unresolved_spotify_count().unwrap(), 1);
+    for t in &release.track_ids[..4] {
+        assert_eq!(
+            library
+                .track_provider_occurrences(t, "spotify")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert!(
+        library
+            .track_provider_occurrences(&release.track_ids[4], "spotify")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(library.library_queue(&Default::default()).unwrap().len(), 5);
+    assert_eq!(
+        db.query_row("SELECT count(*) FROM track", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        5
+    );
+    assert_eq!(
+        db.query_row(
+            "SELECT match_title FROM effective_album_metadata WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get::<_, String>(0)
+        )
+        .unwrap(),
+        "album"
+    );
+    assert!(
+        album_context::reconcile(&mut library, &[album], "US")
+            .unwrap()
+            .accepted
+            .is_empty()
+    );
+}
+#[test]
+fn retained_album_occurrences_propagate_without_track_search_and_complete_one_local_retry() {
+    let (_dir, mut library, release, album) =
+        retained_album_context(&["A", "B", "C"], &["A", "B", "C"]);
+    let before = library.unresolved_spotify_count().unwrap();
+    assert_eq!(before, 3);
+    let (selection, more) = album_context::selection(&library, &release.track_ids[0], "US")
+        .unwrap()
+        .unwrap();
+    assert!(!more);
+    assert_eq!(selection.candidates().len(), 1);
+    assert_eq!(
+        selection.candidate_provenance(0),
+        "Found through Album candidate"
+    );
+    assert_eq!(
+        library.unresolved_spotify_count().unwrap(),
+        3,
+        "inspection is read-only"
+    );
+    let first = album_context::reconcile(&mut library, std::slice::from_ref(&album), "US").unwrap();
+    assert_eq!(first.accepted.len(), 3);
+    assert_eq!(library.unresolved_spotify_count().unwrap(), 0);
+    let second = album_context::reconcile(&mut library, &[album], "US").unwrap();
+    assert!(second.accepted.is_empty());
+    assert_eq!(second.examined, 0);
+}
+
+#[test]
+fn album_context_exposes_spelling_and_wording_differences_without_fuzzy_acceptance() {
+    let (_dir, mut library, r, album) = retained_album_context(
+        &[
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "Quetzal",
+            "If I Sit Still Maybe I'll Make It Out of Here",
+        ],
+        &[
+            "A",
+            "B",
+            "C",
+            "D",
+            "E",
+            "F",
+            "G",
+            "H",
+            "Quetzel",
+            "If I Sit Still Maybe I'll Get Out of Here",
+        ],
+    );
+    let (selection, _) = album_context::selection(&library, &r.track_ids[8], "US")
+        .unwrap()
+        .unwrap();
+    assert!(selection.candidates().iter().any(|c| c.title == "Quetzel"));
+    assert_eq!(
+        selection.candidates()[selection.visible_indices()[0]].title,
+        "Quetzel",
+        "lexical evidence ranks the plausible spelling first without accepting it"
+    );
+    assert_eq!(
+        selection.candidate_provenance(0),
+        "Found through Album candidate"
+    );
+    let page = Page {
+        items: selection.candidates().to_vec(),
+        next_offset: None,
+    };
+    assert!(
+        library
+            .apply_song_evaluation(selection.input(), &page)
+            .unwrap()
+            .is_none()
+    );
+    let (selection, _) = album_context::selection(&library, &r.track_ids[9], "US")
+        .unwrap()
+        .unwrap();
+    assert!(
+        selection
+            .candidates()
+            .iter()
+            .any(|c| c.title.contains("Get Out"))
+    );
+    library.mark_not_on_spotify(&r.track_ids[9]).unwrap();
+    album_context::reconcile(&mut library, &[album], "US").unwrap();
+    assert!(
+        library
+            .track_provider_occurrences(&r.track_ids[9], "spotify")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn single_series_title_has_one_bounded_artist_boilerplate_fallback_and_cache_reuse() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("series.db");
+    let mut mock = Mock::new(vec![
+        token(),
+        artists(),
+        (
+            200,
+            json!({"albums":{"items":[],"total":0,"offset":0,"next":null}}),
+            None,
+        ),
+        (
+            200,
+            json!({"albums":{"items":[{"id":"album1","name":"Artist on Audiotree Live","artists":[{"id":"artist1","name":"Artist"}],"album_type":"album","total_tracks":3}],"total":1,"offset":0,"next":null}}),
+            None,
+        ),
+    ]);
+    mock.client = mock.client.with_library(path.to_str()).unwrap();
+    mock.client.search_artists("Artist").unwrap();
+    let page = mock
+        .client
+        .artist_albums(&id("artist", "artist1"), "Audiotree")
+        .unwrap();
+    assert_eq!(page.items[0].title, "Artist on Audiotree Live");
+    let before = mock.client.request_counts();
+    mock.client
+        .artist_albums(&id("artist", "artist1"), "Audiotree")
+        .unwrap();
+    assert_eq!(mock.client.request_counts(), before);
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[3].contains("Artist+on+Audiotree+Live"));
+    assert!(!requests[3].contains("album%3A") && !requests[3].contains("artist%3A"));
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.contains("/artists/artist1/albums"))
+    );
+}
+#[test]
+fn series_live_fallback_never_adds_a_third_search() {
+    let empty = || {
+        (
+            200,
+            json!({"albums":{"items":[],"total":0,"offset":0,"next":null}}),
+            None,
+        )
+    };
+    let mut mock = Mock::new(vec![token(), artists(), empty(), empty()]);
+    mock.client.search_artists("Artist").unwrap();
+    assert!(
+        mock.client
+            .artist_albums(&id("artist", "artist1"), "Audiotree Live")
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 4);
+    assert!(requests[3].contains("Artist+on+Audiotree+Live"));
+}
 #[test]
 fn album_search_identity_filter_and_paginated_occurrence_program_are_cached() {
     let albums = json!({"albums":{"items":[{"id":"album1","name":"Album","artists":[{"id":"artist1","name":"Artist"}],"album_type":"album"},{"id":"wrong","name":"Album","artists":[{"id":"other","name":"Artist"}]}],"total":2}});
@@ -386,12 +696,13 @@ fn known_artist_cache_miss_uses_single_lookup_not_discography() {
         token(),
         (200, json!({"id":"artist1","name":"Artist"}), None),
         (200, json!({"albums":{"items":[],"total":0}}), None),
+        (200, json!({"albums":{"items":[],"total":0}}), None),
     ]);
     mock.client
         .artist_albums(&id("artist", "artist1"), "Album")
         .unwrap();
     let requests = mock.finish();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 4);
     assert!(requests[1].starts_with("GET /artists/artist1?"));
 }
 
@@ -500,6 +811,7 @@ fn featured_display_uses_structured_primary_for_search_and_keeps_provider_artist
         join_phrase: " feat. ".into(),
     };
     let input = music_library::song_resolution::Input {
+        recording: Default::default(),
         evidence: Default::default(),
         association_providers: vec![],
         spotify_excluded: false,
@@ -799,6 +1111,7 @@ fn trusted_artist_identity_supplies_current_search_name_without_rewriting_credit
         join_phrase: String::new(),
     };
     let input = music_library::song_resolution::Input {
+        recording: Default::default(),
         track_id: music_library::domain::TrackId("canonical".into()),
         evidence: Default::default(),
         association_providers: vec![],
@@ -875,6 +1188,11 @@ fn persisted_absent_album_discovery_has_zero_repeated_requests_across_restart() 
             json!({"albums":{"items":[],"total":0,"offset":0,"next":null}}),
             None,
         ),
+        (
+            200,
+            json!({"albums":{"items":[],"total":0,"offset":0,"next":null}}),
+            None,
+        ),
     ]);
     mock.client = mock.client.with_library(path.to_str()).unwrap();
     mock.client.search_artists("Artist").unwrap();
@@ -897,7 +1215,7 @@ fn persisted_absent_album_discovery_has_zero_repeated_requests_across_restart() 
         }
     }
     assert_eq!(mock.client.request_counts(), before);
-    assert_eq!(mock.client.request_categories()["album search"], 1);
+    assert_eq!(mock.client.request_categories()["album search"], 2);
     let mut restarted = Spotify::at(
         Config::new(
             "private-client".into(),
@@ -919,7 +1237,7 @@ fn persisted_absent_album_discovery_has_zero_repeated_requests_across_restart() 
             .is_empty()
     );
     assert_eq!(restarted.request_counts(), (0, 0));
-    assert_eq!(mock.finish().len(), 3);
+    assert_eq!(mock.finish().len(), 4);
 }
 
 #[test]
@@ -1043,7 +1361,7 @@ fn large_absent_album_reconciles_repeatedly_without_network_amplification() {
             None,
         );
         let mut responses = vec![token(), artists()];
-        responses.extend(std::iter::repeat_n(empty, if cached { 1 } else { 4 }));
+        responses.extend(std::iter::repeat_n(empty, if cached { 2 } else { 8 }));
         let mock = Mock::new(responses);
         let requests = mock.requests.clone();
         let (send, receive) = std::sync::mpsc::channel();
@@ -1070,7 +1388,7 @@ fn large_absent_album_reconciles_repeatedly_without_network_amplification() {
             matcher.complete(&mut library, reply);
             assert_eq!(
                 requests.lock().unwrap().len(),
-                if cached { 3 } else { 3 + pass },
+                if cached { 4 } else { 4 + pass * 2 },
                 "pass {pass}, cached={cached}"
             );
         }
@@ -1080,7 +1398,7 @@ fn large_absent_album_reconciles_repeatedly_without_network_amplification() {
         assert!(library.spotify_retry_albums(None, 20).unwrap().is_empty());
         matcher.match_album(&library, &album).unwrap();
         assert!(receive.try_recv().is_err());
-        assert_eq!(requests.lock().unwrap().len(), if cached { 3 } else { 6 });
+        assert_eq!(requests.lock().unwrap().len(), if cached { 4 } else { 10 });
         drop(matcher);
         mock.thread.join().unwrap();
     }
@@ -1269,6 +1587,8 @@ fn expired_negative_search_is_eligible_and_album_title_changes_rekey_discovery()
         artists(),
         empty.clone(),
         empty.clone(),
+        empty.clone(),
+        empty.clone(),
         empty,
     ]);
     mock.client = mock.client.with_library(path.to_str()).unwrap();
@@ -1305,7 +1625,7 @@ fn expired_negative_search_is_eligible_and_album_title_changes_rekey_discovery()
     mock.client
         .artist_albums(&id("artist", "artist1"), "Absent")
         .unwrap();
-    assert_eq!(mock.client.request_categories()["album search"], 2);
+    assert_eq!(mock.client.request_categories()["album search"], 3);
     assert_eq!(
         mock.client.request_audit().back().unwrap().reason,
         DiscoveryRequestReason::Expired
@@ -1313,7 +1633,7 @@ fn expired_negative_search_is_eligible_and_album_title_changes_rekey_discovery()
     mock.client
         .artist_albums(&id("artist", "artist1"), "Renamed")
         .unwrap();
-    assert_eq!(mock.client.request_categories()["album search"], 3);
+    assert_eq!(mock.client.request_categories()["album search"], 5);
     assert_eq!(
         mock.client.request_audit().back().unwrap().reason,
         DiscoveryRequestReason::NoCompletedResult
@@ -1321,7 +1641,7 @@ fn expired_negative_search_is_eligible_and_album_title_changes_rekey_discovery()
     mock.client
         .artist_albums(&id("artist", "artist1"), "Renamed")
         .unwrap();
-    assert_eq!(mock.client.request_categories()["album search"], 3);
+    assert_eq!(mock.client.request_categories()["album search"], 5);
     mock.finish();
 }
 
@@ -1475,11 +1795,7 @@ fn catalog_timeout_during_refresh_preserves_successful_discovery() {
         .append_pair("type", "artist")
         .append_pair("limit", "10")
         .append_pair("offset", "0");
-    let key = format!(
-        "spotify:{}:{}",
-        music_library::spotify_lifecycle::SEARCH_STRATEGY_VERSION,
-        url
-    );
+    let key = format!("spotify:{}:{}", 1, url);
     let db = music_library::Library::open(&path).unwrap();
     db.persist_spotify_discovery(&key, &artists().1.to_string(), Spotify::now())
         .unwrap();
@@ -1509,6 +1825,7 @@ fn diagnostic_cache_only_lookup_never_authenticates_or_queries_on_misses() {
     ]);
     mock.client = mock.client.with_library(path.to_str()).unwrap();
     let mut input = music_library::song_resolution::Input {
+        recording: Default::default(),
         track_id: music_library::domain::TrackId("diagnostic".into()),
         spotify_excluded: false,
         evidence: Default::default(),
@@ -1541,4 +1858,318 @@ fn diagnostic_cache_only_lookup_never_authenticates_or_queries_on_misses() {
     assert!(offline.try_cached_songs(&input).unwrap().is_none());
     assert_eq!(offline.request_counts(), (0, 0));
     assert_eq!(mock.finish().len(), 2);
+}
+
+#[test]
+fn album_inspection_exposes_every_cached_candidate_without_requests_or_ttl_refresh() {
+    use music_library::{Library, album_matching::Preparation, domain::*};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("review.db");
+    let mut library = Library::open(&path).unwrap();
+    let credit = ArtistCreditInput {
+        name: "Artist".into(),
+        role: None,
+    };
+    let r = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Album".into(),
+            year: None,
+            artists: vec![credit.clone()],
+            tracks: (1..=3)
+                .map(|n| CatalogTrackInput {
+                    title: format!("Song {n}"),
+                    disc_number: Some(1),
+                    track_number: Some(n),
+                    artists: vec![credit.clone()],
+                })
+                .collect(),
+        })
+        .unwrap();
+    for t in &r.track_ids {
+        library.add_to_library(t).unwrap();
+    }
+    let album = library.album_id_for_track(&r.track_ids[0]).unwrap();
+    let candidates=[("album1","Album"),("album2","Album (Live)"),("album3","Album (Remix)")].into_iter().map(|(id,name)|json!({"id":id,"name":name,"artists":[{"id":"artist1","name":"Artist"}],"album_type":"album","total_tracks":3})).collect::<Vec<_>>();
+    let program = (
+        200,
+        json!({"items":(1..=3).map(song).collect::<Vec<_>>(),"total":3,"offset":0,"next":null}),
+        None,
+    );
+    let mut mock = Mock::new(vec![
+        token(),
+        artists(),
+        (
+            200,
+            json!({"albums":{"items":candidates,"total":3,"next":null,"offset":0}}),
+            None,
+        ),
+        program.clone(),
+        program.clone(),
+        program,
+    ]);
+    let base = mock.client.base.clone();
+    let token_url = mock.client.token_url.clone();
+    let market = mock.client.config.market.clone();
+    let config = || Config::new("offline".into(), "offline".into(), market.clone()).unwrap();
+    mock.client = mock.client.with_library(path.to_str()).unwrap();
+    let Preparation::Ready(initial) = library.spotify_album_review_input(&album).unwrap() else {
+        panic!("initial input");
+    };
+    let found = mock.client.search_artists(&initial.artist).unwrap();
+    library
+        .attach_artist_external_identity(&initial.artist_id, &found.items[0].identity)
+        .unwrap();
+    let page = mock
+        .client
+        .artist_albums(&found.items[0].identity, &initial.title)
+        .unwrap();
+    let mut all = page.items;
+    all.extend(mock.client.rejected_album_candidates());
+    for c in all {
+        mock.client.album_programs(&c.identity).unwrap();
+    }
+    let before = mock.requests.lock().unwrap().len();
+    let Preparation::Ready(input) = library.spotify_album_review_input(&album).unwrap() else {
+        panic!("review input");
+    };
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let observations: Vec<(String, i64)> = db
+        .prepare("SELECT fingerprint,completed_at FROM spotify_discovery ORDER BY fingerprint")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    for _ in 0..3 {
+        let offline = Spotify::at(config(), base.clone(), token_url.clone())
+            .with_library(path.to_str())
+            .unwrap();
+        let (report, programs) = Spotify::cached_album_review_with_client(offline, &input)
+            .unwrap()
+            .unwrap();
+        assert_eq!(report.candidates.len(), 3);
+        assert_eq!(programs.len(), 3);
+        assert!(report.candidates.iter().all(|c| !c.programs.is_empty()));
+        assert_eq!(mock.requests.lock().unwrap().len(), before);
+    }
+    let after: Vec<(String, i64)> = db
+        .prepare("SELECT fingerprint,completed_at FROM spotify_discovery ORDER BY fingerprint")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(observations, after);
+    db.execute("UPDATE spotify_discovery SET completed_at=0", [])
+        .unwrap();
+    let offline = Spotify::at(config(), base, token_url)
+        .with_library(path.to_str())
+        .unwrap();
+    assert_eq!(
+        Spotify::cached_album_review_with_client(offline, &input)
+            .unwrap()
+            .unwrap()
+            .0
+            .candidates
+            .len(),
+        3,
+        "retained evidence remains inspectable after TTL expires"
+    );
+    assert_eq!(mock.requests.lock().unwrap().len(), before);
+    mock.thread.join().unwrap();
+}
+
+#[test]
+fn pasted_album_and_track_fetch_exact_objects_and_reuse_cache() {
+    let album_id = "1234567890123456789012";
+    let track_id = "2234567890123456789012";
+    let album = json!({"id":album_id,"name":"Provider title unrelated to local Japanese title","artists":[{"id":"artist1","name":"A"}],"album_type":"album","total_tracks":1,"release_date":"2020","release_date_precision":"year"});
+    let track = json!({"id":track_id,"name":"Provider Track","disc_number":1,"track_number":1,"duration_ms":123456,"artists":[{"id":"artist1","name":"A"}],"album":album.clone()});
+    let mut mock = Mock::new(vec![
+        token(),
+        (200, album, None),
+        (
+            200,
+            json!({"items":[track.clone()],"offset":0,"total":1,"next":null}),
+            None,
+        ),
+        (200, track, None),
+    ]);
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("library.db");
+    mock.client = mock.client.with_library(path.to_str()).unwrap();
+    let first = mock
+        .client
+        .explicit_album(&format!("spotify:album:{album_id}"))
+        .unwrap();
+    assert_eq!(first.1.programs[0].tracks.len(), 1);
+    assert_eq!(
+        mock.client
+            .explicit_album(&format!("https://open.spotify.com/album/{album_id}?si=x"))
+            .unwrap()
+            .0
+            .identity,
+        first.0.identity
+    );
+    let first = mock.client.explicit_track(track_id).unwrap();
+    assert_eq!(
+        mock.client
+            .explicit_track(&format!("spotify:track:{track_id}"))
+            .unwrap(),
+        first
+    );
+    let requests = mock.finish();
+    assert_eq!(requests.len(), 4);
+    assert!(requests.iter().all(|r| !r.contains("search?")));
+}
+
+#[test]
+fn bounded_playable_fallback_discovers_only_two_unresolved_tracks_and_reuses_cache() {
+    struct Search {
+        calls: usize,
+    }
+    impl music_library::song_resolution::SongSearch for Search {
+        fn search_songs(
+            &mut self,
+            input: &music_library::song_resolution::Input,
+        ) -> Result<
+            music_library::catalog::Page<music_library::song_resolution::Candidate>,
+            music_library::catalog::CatalogError,
+        > {
+            self.calls += 1;
+            Ok(music_library::catalog::Page {
+                items: vec![music_library::song_resolution::Candidate {
+                    recording: Default::default(),
+                    identity: music_library::domain::ExternalIdentity {
+                        provider: "spotify".into(),
+                        kind: "track".into(),
+                        external_id: format!("single-{}", input.track_id.as_ref()),
+                    },
+                    album_identity: None,
+                    title: input.title.clone(),
+                    artist: input.artist.clone(),
+                    artists: input.album_artists.clone(),
+                    album: "Separate provider single".into(),
+                    date: String::new(),
+                    album_artists: input.album_artists.clone(),
+                    album_type: "single".into(),
+                    album_total_tracks: Some(1),
+                    duration_ms: 200000,
+                    disc: 1,
+                    number: 1,
+                }],
+                next_offset: None,
+            })
+        }
+    }
+    let (_dir, mut library, imported, album) = retained_album_context(
+        &["A", "B", "C", "D"],
+        &["Unrelated 1", "Unrelated 2", "Unrelated 3", "Unrelated 4"],
+    );
+    let mut search = Search { calls: 0 };
+    let result = crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(
+        search.calls,
+        2,
+        "batch {result:?}, input {:?}",
+        library
+            .song_resolution_input(&imported.track_ids[0])
+            .unwrap()
+    );
+    assert_eq!(result.accepted.len(), 2);
+    assert_eq!(
+        library.album_id_for_track(&imported.track_ids[0]).unwrap(),
+        album
+    );
+    let before = search.calls;
+    let _ = crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(search.calls - before, 2); // remaining two, never the connected pair
+    let before = search.calls;
+    let result = crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(search.calls, before);
+    assert!(result.accepted.is_empty());
+}
+
+#[test]
+fn failed_playable_discovery_is_cached_and_provider_errors_abort_the_batch() {
+    struct Search {
+        calls: usize,
+        error: bool,
+    }
+    impl music_library::song_resolution::SongSearch for Search {
+        fn search_songs(
+            &mut self,
+            _: &music_library::song_resolution::Input,
+        ) -> Result<
+            music_library::catalog::Page<music_library::song_resolution::Candidate>,
+            music_library::catalog::CatalogError,
+        > {
+            self.calls += 1;
+            if self.error {
+                Err(music_library::catalog::CatalogError::Other(
+                    "provider unavailable".into(),
+                ))
+            } else {
+                Ok(music_library::catalog::Page {
+                    items: vec![],
+                    next_offset: None,
+                })
+            }
+        }
+    }
+    let (_dir, mut library, _, album) =
+        retained_album_context(&["A", "B"], &["Unrelated 1", "Unrelated 2"]);
+    let mut search = Search {
+        calls: 0,
+        error: false,
+    };
+    crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(search.calls, 2);
+    crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(search.calls, 2);
+    let (_dir, mut library, _, album) =
+        retained_album_context(&["A", "B"], &["Unrelated 1", "Unrelated 2"]);
+    let mut search = Search {
+        calls: 0,
+        error: true,
+    };
+    let batch = crate::album_context::reconcile_best_available(
+        &mut library,
+        std::slice::from_ref(&album),
+        "US",
+        &mut search,
+    )
+    .unwrap();
+    assert_eq!(search.calls, 1);
+    assert_eq!(batch.errors.len(), 1);
 }

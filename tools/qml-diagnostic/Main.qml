@@ -57,9 +57,179 @@ ApplicationWindow {
         }
     }
 
+    component SpotifyProgramComparison: ColumnLayout {
+        required property var program
+                            Layout.fillWidth: true
+                            Label { text: program.album + " · anchors: " + program.anchors + " · provider tracks: " + program.provider_count + " · complete: " + program.complete + " · duplicate positions: " + program.duplicate_positions; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            Label { text: (program.warnings || []).join("\n"); visible:text.length>0;wrapMode:Text.Wrap;Layout.fillWidth:true }
+                            Label { text: "LOCAL ALBUM                         SPOTIFY ALBUM"; font.bold: true }
+                            Repeater {
+                                model: program.rows
+                                delegate: RowLayout {
+                                    required property var modelData
+                                    objectName: "spotifyProgramRow"
+                                    Layout.fillWidth: true
+                                    Label { objectName: "spotifyProgramLocal"; text: modelData.local; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+                                    Label { objectName: "spotifyProgramCandidate"; text: modelData.candidate; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredWidth: 1 }
+                                    Label { text: modelData.decision; wrapMode: Text.Wrap; Layout.preferredWidth: 150 }
+                                }
+                            }
+                            Label { visible: program.truncated; text: "First 200 established Tracks shown; full decision evidence retained below." }
+                        }
     function openSpotifyConnection(trackId) {
+        spotifySongChoice.currentIndex=-1;
+        spotifyTrackPaste.text="";
+        spotifyProvenance.checked=false;
+        spotifyProgramExpanded.checked=false;
         if (trackId) window.bridge.spotify_playback_action("track", trackId);
         spotifyPlaybackDialog.open();
+    }
+
+    function openSpotifyAlbumConnection(albumId) {
+        spotifyAlbumDialog.inspection={};
+        albumResult.text="";
+        spotifyAlbumPaste.text="";
+        spotifyAdvancedMapping.close();
+        spotifyAdvancedMapping.data={};
+        spotifyAdvancedMapping.chosen={};
+        mappingSave.enabled=false;
+        mappingEvidence.text="";
+        spotifyAlbumDialog.albumId=albumId;
+        spotifyAlbumDialog.inspection=JSON.parse(window.bridge.spotify_review_action("open",albumId,0));
+        spotifyAlbumDialog.open();
+    }
+    Dialog {
+        id: spotifyAlbumDialog
+        objectName: "spotifyAlbumConnection"
+        title: "Album Spotify connection"
+        modal: true
+        width: Math.min(940,window.width-40)
+        height: Math.min(680,window.height-40)
+        anchors.centerIn: parent
+        standardButtons: Dialog.Close
+        property string albumId: ""
+        property var inspection: ({count:0})
+        function inspect(index) { inspection=JSON.parse(window.bridge.spotify_review_action("inspect",albumId,index)); }
+        Connections { target:window.bridge; function onSpotify_playback_changed() { if(spotifyAlbumDialog.opened) {spotifyAlbumDialog.inspect(spotifyAlbumDialog.inspection.index || 0);albumResult.text=window.spotifyPlayback.resolutionMessage;} } }
+        function connectCandidate(confirmed) {
+            const result=JSON.parse(window.bridge.spotify_review_action(confirmed ? "confirm-differences" : "confirm",albumId,inspection.index || 0));
+            albumResult.text=result.error || (result.connected + " positioned Tracks connected. Unmatched Tracks remain available for individual review.");
+            if(!result.error) inspection=JSON.parse(window.bridge.spotify_review_action("open",albumId,0));
+        }
+        contentItem: ScrollView {
+            clip: true
+            ColumnLayout {
+                width: parent.width
+                Label { text: spotifyAlbumDialog.inspection.error || spotifyAlbumDialog.inspection.message || "Known Album: " + (spotifyAlbumDialog.inspection.known_album || "") + " — " + (spotifyAlbumDialog.inspection.known_artist || "Unknown Artist"); wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Label {text:spotifyAlbumDialog.inspection.lifecycle || "";wrapMode:Text.Wrap;Layout.fillWidth:true}
+                Label {text:"Known Album: "+(spotifyAlbumDialog.inspection.known_album || "")+" — "+(spotifyAlbumDialog.inspection.known_artist || "");visible:!spotifyAlbumDialog.inspection.candidate;wrapMode:Text.Wrap;Layout.fillWidth:true}
+                RowLayout {
+                    visible: spotifyAlbumDialog.inspection.count > 0
+                    Button { text: "Previous"; enabled: spotifyAlbumDialog.inspection.index > 0; onClicked: spotifyAlbumDialog.inspect(spotifyAlbumDialog.inspection.index-1) }
+                    Label { text: "Our match rank " + ((spotifyAlbumDialog.inspection.index || 0)+1) + " of " + spotifyAlbumDialog.inspection.count }
+                    Button { text: "Next"; enabled: spotifyAlbumDialog.inspection.index+1 < spotifyAlbumDialog.inspection.count; onClicked: spotifyAlbumDialog.inspect(spotifyAlbumDialog.inspection.index+1) }
+                }
+                Label {
+                    property var candidate: spotifyAlbumDialog.inspection.candidate
+                    text: candidate ? candidate.title.provider_raw + " — " + candidate.artist + "\n" + candidate.title.provider_type + " · " + candidate.provider_date + " · " + (candidate.provider_tracks === null ? "unknown" : candidate.provider_tracks) + " Tracks\n" + spotifyAlbumDialog.inspection.decision + " · " + (spotifyAlbumDialog.inspection.preferred ? "Automatically preferred" : "Inspected candidate; no association changed") + "\n" + (spotifyAlbumDialog.inspection.primary_reason || "No blocker") + "\n" + (spotifyAlbumDialog.inspection.warnings || []).join("; ") : ""
+                    textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+                RowLayout {
+                    TextField {id:spotifyAlbumPaste;placeholderText:"Spotify Album URL / URI / ID";Layout.fillWidth:true}
+                    Button {text:"Paste Spotify Album…";onClicked:{const r=JSON.parse(window.bridge.spotify_review_action("paste-album",spotifyAlbumPaste.text,0));albumResult.text=r.error || r.message;}}
+                }
+                Repeater { model: spotifyAlbumDialog.inspection.programs || []; delegate: SpotifyProgramComparison { required property var modelData; program:modelData } }
+                Label {
+                    property var plan: spotifyAlbumDialog.inspection.plan
+                    text: plan ? plan.matches.length + " positioned Tracks can be connected. " + plan.unmatched_local + " local and " + plan.unmatched_provider + " provider Tracks unmatched.\n" + plan.warnings.join("\n") : "Candidate program is not cached. Retry Album to retrieve bounded evidence."
+                    wrapMode: Text.Wrap; Layout.fillWidth: true
+                }
+                Flow {
+                    Layout.fillWidth:true
+                    spacing:6
+                    Button {
+                        objectName: "connectSpotifyAlbum"
+                        text: "Connect this Album"
+                        enabled: !!spotifyAlbumDialog.inspection.plan
+                        onClicked: {
+                            if(spotifyAlbumDialog.inspection.plan.requires_confirmation) spotifyAlbumDifferences.open();
+                            else spotifyAlbumDialog.connectCandidate(false);
+                        }
+                    }
+                    Button { text:"Fetch candidate program"; visible:!!spotifyAlbumDialog.inspection.candidate && !spotifyAlbumDialog.inspection.plan; onClicked:{const r=JSON.parse(window.bridge.spotify_review_action("fetch-program",spotifyAlbumDialog.albumId,spotifyAlbumDialog.inspection.index || 0));albumResult.text=r.error || r.message;} }
+                    Button { text: "Advanced Track Mapping…"; enabled: !!spotifyAlbumDialog.inspection.plan; onClicked: { spotifyAdvancedMapping.data=JSON.parse(window.bridge.spotify_review_action("mapping",spotifyAlbumDialog.albumId,0));spotifyAdvancedMapping.chosen={};spotifyAdvancedMapping.open(); } }
+                    Button { text: "Retry Album"; onClicked: { const r=JSON.parse(window.bridge.spotify_review_action("retry",spotifyAlbumDialog.albumId,0));albumResult.text=r.error || r.message; } }
+                    Button { text: "Search Spotify again"; onClicked: {const r=JSON.parse(window.bridge.spotify_review_action("refresh",spotifyAlbumDialog.albumId,0));albumResult.text=r.error || r.message;} }
+                    Button { text: "Mark album as not on Spotify"; onClicked: { const r=JSON.parse(window.bridge.spotify_review_action("mark-album",spotifyAlbumDialog.albumId,0));albumResult.text=r.error || r.message; } }
+                    Button { text: "Reload cached candidates"; onClicked: spotifyAlbumDialog.inspection=JSON.parse(window.bridge.spotify_review_action("open",spotifyAlbumDialog.albumId,0)) }
+                }
+                Label { id: albumResult; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            }
+        }
+    }
+    Dialog {
+        id: spotifyAdvancedMapping
+        title: "Advanced Track Mapping"
+        modal: true
+        width: Math.min(800,window.width-40)
+        height: Math.min(650,window.height-40)
+        anchors.centerIn: parent
+        property var data: ({rows:[],options:[]})
+        property var chosen: ({})
+        standardButtons: Dialog.Close
+        contentItem: ScrollView {
+            ColumnLayout {
+                width: parent.width
+                Label { text: "Choose a Spotify Track for each local Track. No match leaves it unresolved. Duplicate assignments are rejected. Paste additional Albums in Album review to map a split release.";wrapMode:Text.Wrap;Layout.fillWidth:true }
+                Repeater {
+                    model: spotifyAdvancedMapping.data.rows || []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Label { text: modelData.title;Layout.preferredWidth:240;wrapMode:Text.Wrap }
+                        ComboBox {
+                            Layout.fillWidth:true
+                            model: ["No Spotify match"].concat((spotifyAdvancedMapping.data.options || []).map(function(p){return p.number+". "+p.title+" · "+p.album;}))
+                            currentIndex:modelData.suggested
+                            Component.onCompleted:spotifyAdvancedMapping.chosen[modelData.id]=currentIndex
+                            onActivated:{spotifyAdvancedMapping.chosen[modelData.id]=currentIndex;mappingSave.enabled=false;}
+                        }
+                    }
+                }
+                Button {
+                    text: "Review chosen mapping…"
+                    onClicked: {
+                        const mappings=Object.keys(spotifyAdvancedMapping.chosen).filter(function(k){return spotifyAdvancedMapping.chosen[k]>0;}).map(function(k){return [k,spotifyAdvancedMapping.data.options[spotifyAdvancedMapping.chosen[k]-1].identity.external_id];});
+                        const r=JSON.parse(window.bridge.spotify_review_action("prepare-mapping",JSON.stringify(mappings),0));
+                        mappingEvidence.text=r.error || (r.matches || []).map(function(m){return m.local_title+" → "+m.provider_title+"\n"+m.warnings.join("; ");}).join("\n");
+                        mappingSave.enabled=!r.error && (r.matches || []).length>0;
+                    }
+                }
+                Label {id:mappingEvidence;wrapMode:Text.Wrap;Layout.fillWidth:true}
+                Button {id:mappingSave;text:"Confirm mapping and differences";enabled:false;onClicked:{const r=JSON.parse(window.bridge.spotify_review_action("confirm-differences",spotifyAlbumDialog.albumId,0));mappingEvidence.text=r.error || r.connected+" Tracks connected";enabled=false;}}
+            }
+        }
+    }
+    Dialog {
+        id: spotifyAlbumDifferences
+        objectName: "spotifyAlbumDifferenceConfirmation"
+        title: "Confirm positioned Track differences"
+        modal: true
+        width: Math.min(650,window.width-40)
+        height: Math.min(500,window.height-40)
+        anchors.centerIn: parent
+        standardButtons: Dialog.Cancel
+        contentItem: ScrollView {
+            ColumnLayout {
+                width: parent.width
+                Label { text: spotifyAlbumDialog.inspection.plan ? spotifyAlbumDialog.inspection.plan.matches.length + " positioned Tracks will be connected. Review the significant differences below." : ""; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Label { text:spotifyAlbumDialog.inspection.plan ? spotifyAlbumDialog.inspection.plan.warnings.join("\n") : ""; wrapMode:Text.Wrap;Layout.fillWidth:true }
+                Repeater {
+                    model: spotifyAlbumDialog.inspection.plan ? spotifyAlbumDialog.inspection.plan.matches.filter(m=>m.warnings.length>0) : []
+                    delegate: Label { required property var modelData; text: modelData.disc + "." + modelData.number + " " + modelData.local_title + "\n" + modelData.warnings.join("\n"); wrapMode: Text.Wrap; Layout.fillWidth: true }
+                }
+                Button { text: "Connect all positioned Tracks"; onClicked: { spotifyAlbumDialog.connectCandidate(true);spotifyAlbumDifferences.close(); } }
+            }
+        }
     }
 
     Dialog {
@@ -175,6 +345,11 @@ ApplicationWindow {
                     textFormat: Text.PlainText
                 }
                 Label { text: "Manually marked as not on Spotify"; visible: window.spotifyPlayback.manuallyExcluded || false }
+                RowLayout {
+                    TextField {id:spotifyTrackPaste;placeholderText:"Spotify Track URL / URI / ID";Layout.fillWidth:true}
+                    Button {text:"Paste Spotify Track…";onClicked:{const r=JSON.parse(window.bridge.spotify_review_action("paste-track",spotifyTrackPaste.text,0));spotifyTrackPaste.placeholderText=r.error || r.message;}}
+                }
+                Button { text: "Clear Spotify connection"; visible: window.spotifyPlayback.available; onClicked: window.bridge.spotify_resolve("clear", -1) }
                 Button { objectName: "diagnosticSpotifyMark"; text: "Mark as not on Spotify"; ToolTip.visible: hovered; ToolTip.text: "Skips Spotify reconciliation until you choose Check Spotify again."; visible: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded; onClicked: window.bridge.browse_action("spotify-mark",2,window.spotifyPlayback.trackId) }
                 Button { objectName: "diagnosticSpotifyCheck"; text: "Check Spotify again"; visible: window.spotifyPlayback.manuallyExcluded || false; onClicked: window.bridge.browse_action("spotify-check",2,window.spotifyPlayback.trackId) }
                 TextField {
@@ -185,14 +360,20 @@ ApplicationWindow {
                     onVisibleChanged: if (!visible) text = ""
                 }
                 Button {
+                    objectName: "spotifyTrackReviewAlbum"
+                    text: "Review Album match"
+                    enabled: !!window.spotifyPlayback.albumId
+                    onClicked: window.openSpotifyAlbumConnection(window.spotifyPlayback.albumId)
+                }
+                Button {
                     objectName: "spotifyConnectionSearch"
                     text: window.spotifyPlayback.resolutionPending ? "Searching Spotify catalog…" : "Search Spotify for this Track"
-                    enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
+                    enabled: !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
                     onClicked: window.bridge.spotify_resolve(spotifySearchArtist.text.trim().length > 0 ? "search-artist:" + spotifySearchArtist.text.trim() : "search", -1)
                 }
                 Button {
                     text: "Search Spotify again (refresh provider results)"
-                    enabled: !window.spotifyPlayback.available && !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending
+                    enabled: !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending
                     onClicked: window.bridge.spotify_resolve("refresh", -1)
                 }
                 Label {
@@ -221,6 +402,18 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     property var trace: JSON.parse(window.spotifyPlayback.comparisonJson || '{"candidates":[],"programs":[],"album_candidates":[],"candidate_count":0}')
                     property var evaluation: trace.candidates.length > 0 ? trace.candidates[Math.max(0, spotifySongChoice.currentIndex)] : null
+                    RowLayout {
+                        visible: spotifyComparison.trace.candidate_count > 0
+                        Button { text: "Previous"; enabled: spotifySongChoice.currentIndex > 0; onClicked: spotifySongChoice.currentIndex-- }
+                        Label { text: "Our match rank " + (Math.max(0, spotifySongChoice.currentIndex) + 1) + " of " + spotifyComparison.trace.candidate_count }
+                        Button { text: "Next"; enabled: Math.max(0, spotifySongChoice.currentIndex) + 1 < spotifySongChoice.count; onClicked: spotifySongChoice.currentIndex = Math.max(0, spotifySongChoice.currentIndex) + 1 }
+                    }
+                    Label {
+                        visible: spotifyComparison.trace.candidate_count > 0
+                        text: spotifyComparison.trace.selected_candidate === Math.max(0, spotifySongChoice.currentIndex) ? "Automatically preferred · strongest compatible evidence" : spotifyComparison.trace.selected_candidate !== null && spotifyComparison.trace.selected_candidate !== undefined ? "Not automatically selected · another candidate has stronger evidence" : "Manual review required · no unique strongest candidate"
+                        wrapMode: Text.Wrap
+                        Layout.fillWidth: true
+                    }
                     Label {
                         objectName: "spotifyCandidateCount"
                         visible: spotifyComparison.trace.candidate_count > 0
@@ -292,24 +485,7 @@ ApplicationWindow {
                     CheckBox { id: spotifyProgramExpanded; text: "Program details"; visible: spotifyComparison.trace.programs.length > 0 }
                     Repeater {
                         model: spotifyProgramExpanded.checked ? spotifyComparison.trace.programs : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            Label { text: modelData.album + " · anchors: " + modelData.anchors + " · provider tracks: " + modelData.provider_count + " · complete: " + modelData.complete + " · duplicate positions: " + modelData.duplicate_positions; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            Label { text: "LOCAL ALBUM                         SPOTIFY ALBUM"; font.bold: true }
-                            Repeater {
-                                model: modelData.rows
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    objectName: "spotifyProgramRow"
-                                    Layout.fillWidth: true
-                                    Label { objectName: "spotifyProgramLocal"; text: modelData.local; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredWidth: 1 }
-                                    Label { objectName: "spotifyProgramCandidate"; text: modelData.candidate; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true; Layout.preferredWidth: 1 }
-                                    Label { text: modelData.decision; wrapMode: Text.Wrap; Layout.preferredWidth: 150 }
-                                }
-                            }
-                            Label { visible: modelData.truncated; text: "First 200 established Tracks shown; full decision evidence retained below." }
-                        }
+                        delegate: SpotifyProgramComparison { required property var modelData; program: modelData }
                     }
                 }
                 Label {
@@ -322,7 +498,7 @@ ApplicationWindow {
                 RowLayout {
                     visible: window.spotifyChoices.length > 0 || window.spotifyPlayback.resolutionPending
                     Button {
-                        text: spotifyComparison.evaluation && spotifyComparison.evaluation.association_persisted ? "Connected to Spotify" : "Confirm Spotify association"
+                        text: spotifyComparison.evaluation && spotifyComparison.evaluation.association_persisted ? "Connected to Spotify" : (window.spotifyPlayback.available ? "Replace Spotify association" : "Confirm Spotify association")
                         enabled: spotifySongChoice.currentIndex >= 0 && !window.spotifyPlayback.resolutionPending && !(spotifyComparison.evaluation && spotifyComparison.evaluation.association_persisted)
                         onClicked: window.bridge.spotify_resolve("confirm", spotifySongChoice.currentIndex)
                     }
@@ -1533,7 +1709,7 @@ ApplicationWindow {
         MenuItem { text: "Move down"; enabled: !window.library.pending && window.library.playlistReorderAllowed && window.library.panes[2].selectionCount === 1; visible: window.library.view === "Playlists" && window.contextPane === 2; onTriggered: window.bridge.browse_action("playlist-down", 2, window.contextId) }
         MenuItem { objectName: "reviewThisAlbum"; text: "Review this Album"; visible: window.library.view === "Spotify Connections" && window.contextPane === 2; onTriggered: { const row = window.library.panes[2].rows.find(r => r.id === window.contextTrackId); if(row) window.bridge.browse_action("review-album",2,row.albumId); } }
         MenuItem { objectName: "spotifyMarkUnavailable"; text: "Mark as not on Spotify"; visible: window.library.view === "Spotify Connections" && !window.library.reviewMarked && window.contextPane === 2; onTriggered: window.bridge.browse_action("spotify-mark-selection",2,window.contextTrackId) }
-        MenuItem { objectName: "spotifyCheckAgain"; text: "Check Spotify again"; visible: window.library.view === "Spotify Connections" && window.library.reviewMarked && window.contextPane === 2; onTriggered: window.bridge.browse_action("spotify-check",2,window.contextTrackId) }
+        MenuItem { objectName: "spotifyCheckAgain"; text: "Check Spotify again"; visible: window.library.view === "Spotify Connections" && window.library.reviewMarked && window.contextPane === 2; onTriggered: window.bridge.browse_action("spotify-check-selection",2,window.contextTrackId) }
         MenuItem { id: trackMetadataMenuAction; objectName: "trackMetadataAction"; text: "Metadata…"; visible: window.contextPane === 2; enabled: !window.library.pending && window.contextTrackId.length > 0; onTriggered: window.openMetadata("track",window.contextTrackId) }
         MenuItem { id: albumMetadataMenuAction; objectName: "albumMetadataAction"; text: "Metadata…"; visible: window.contextPane === 1 && window.library.view !== "Playlists"; enabled: !window.library.pending && window.contextId.length > 0; onTriggered: window.openMetadata("album",window.contextId) }
         MenuItem { objectName: "songSpotifyConnection"; text: "Spotify connection…"; visible: window.contextPane === 2; enabled: !window.library.pending && window.contextTrackId.length > 0; onTriggered: window.openSpotifyConnection(window.contextTrackId) }
@@ -1665,6 +1841,7 @@ ApplicationWindow {
         required property int paneIndex
         required property string heading
         readonly property bool playlistTable: paneIndex === 2 && window.library.view === "Playlists"
+        property bool reviewShowTracks: false
         readonly property bool reviewTable: paneIndex === 2 && window.library.view === "Spotify Connections"
         readonly property bool songsTable: paneIndex === 2 && (window.library.view === "Songs" || reviewTable)
         readonly property bool detailsTable: playlistTable || songsTable
@@ -1806,6 +1983,7 @@ ApplicationWindow {
         })
         RowLayout {
             visible: pane.reviewTable
+            Button { text:pane.reviewShowTracks ? "Review Albums" : "Show Track list"; onClicked:pane.reviewShowTracks=!pane.reviewShowTracks }
             ComboBox { objectName: "spotifyReviewMode"; model: ["Unresolved", "Marked Not on Spotify"]; currentIndex: window.library.reviewMarked ? 1 : 0; onActivated: window.bridge.browse_action("review-mode",2,currentIndex === 1 ? "marked" : "unresolved") }
             Button { objectName: "spotifyRetryUnresolved"; text: "Retry unresolved"; ToolTip.visible: hovered; ToolTip.text: "Re-evaluates up to 20 Albums using fresh cached discovery where available. Unresolved Tracks can be searched individually. Click again for the next Album batch."; enabled: !window.library.reviewRetryPending && !window.library.reviewLocalActive; visible: !window.library.reviewMarked; onClicked: window.bridge.browse_action("review-retry",2,"") }
             Label { text: window.library.reviewMessage || ""; Layout.fillWidth: true; wrapMode: Text.Wrap }
@@ -2028,7 +2206,7 @@ ApplicationWindow {
         Item {
             id: tableHeaderViewport
             objectName: pane.songsTable ? "songsTableHeader" : "playlistTableHeader"
-            visible: pane.detailsTable
+            visible: pane.detailsTable && !(pane.reviewTable && !pane.reviewShowTracks && !window.library.reviewMarked && !window.library.reviewAlbum)
             Layout.fillWidth: true
             Layout.minimumWidth: 0
             Layout.preferredWidth: 0
@@ -2075,9 +2253,87 @@ ApplicationWindow {
                 }
             }
         }
+        ListModel { id: spotifyAlbumGroups; dynamicRoles: true }
+        ListView {
+            id: spotifyGroupList
+            objectName: "spotifyAlbumGroups"
+            visible: pane.reviewTable && !pane.reviewShowTracks && !window.library.reviewMarked && !window.library.reviewAlbum
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            clip: true
+            model: spotifyAlbumGroups
+            property var expanded: ({})
+            property string after: ""
+            property var pages: [""]
+            function refresh() {
+                if(!visible) return;
+                const groups=JSON.parse(window.bridge.spotify_review_action("groups",after,0));
+                if(!Array.isArray(groups)) return;
+                const ids=new Set(groups.map(g=>g.id));
+                const anchorIndex=indexAt(1,contentY+1);
+                const anchorItem=anchorIndex>=0 ? itemAtIndex(anchorIndex) : null;
+                const anchor=anchorIndex>=0 && anchorIndex<spotifyAlbumGroups.count ? {id:spotifyAlbumGroups.get(anchorIndex).group.id,pixel:anchorItem ? anchorItem.y-contentY : 0} : null;
+                const offset=contentY;
+                for(let i=spotifyAlbumGroups.count-1;i>=0;i--) if(!ids.has(spotifyAlbumGroups.get(i).group.id)) spotifyAlbumGroups.remove(i);
+                for(let i=0;i<groups.length;i++) {
+                    if(i<spotifyAlbumGroups.count && spotifyAlbumGroups.get(i).group.id===groups[i].id) {
+                        if(JSON.stringify(spotifyAlbumGroups.get(i).group)!==JSON.stringify(groups[i])) spotifyAlbumGroups.setProperty(i,"group",groups[i]);
+                    } else {
+                        let existing=-1;
+                        for(let j=i+1;j<spotifyAlbumGroups.count;j++) if(spotifyAlbumGroups.get(j).group.id===groups[i].id) {existing=j;break;}
+                        if(existing>=0) {spotifyAlbumGroups.move(existing,i,1);spotifyAlbumGroups.setProperty(i,"group",groups[i]);}
+                        else spotifyAlbumGroups.insert(i,{group:groups[i]});
+                    }
+                }
+                forceLayout();
+                const retained=anchor ? groups.findIndex(g=>g.id===anchor.id) : -1;
+                if(retained>=0) {
+                    positionViewAtIndex(retained,ListView.Beginning);
+                    const item=itemAtIndex(retained);
+                    contentY=Math.max(0,(item ? item.y : offset)-anchor.pixel);
+                } else contentY=Math.max(0,Math.min(offset,Math.max(0,contentHeight-height)));
+            }
+            onVisibleChanged: if(visible) refresh()
+            Connections { target: window.bridge; function onBrowse_changed() { spotifyGroupList.refresh(); } }
+            delegate: ColumnLayout {
+                id: albumGroup
+                required property var group
+                width: spotifyGroupList.width
+                property bool expanded: !!spotifyGroupList.expanded[group.id]
+                property var tracks: []
+                function refreshTracks() { if(expanded) { const r=JSON.parse(window.bridge.spotify_review_action("tracks",group.id,0)); tracks=Array.isArray(r)?r:[]; } }
+                onExpandedChanged: refreshTracks()
+                onGroupChanged: refreshTracks()
+                RowLayout {
+                    Layout.fillWidth: true
+                    ToolButton { text: albumGroup.expanded ? "▾" : "▸"; onClicked: {const e=Object.assign({},spotifyGroupList.expanded);e[albumGroup.group.id]=!albumGroup.expanded;spotifyGroupList.expanded=e;} }
+                    Label { text: (albumGroup.group.title || "Singles / Unassigned") + " — " + (albumGroup.group.artist || "Unknown Artist") + " · " + albumGroup.group.unresolved + " unresolved · " + albumGroup.group.status; wrapMode: Text.Wrap; Layout.fillWidth:true; MouseArea { anchors.fill:parent; onDoubleClicked:window.openSpotifyAlbumConnection(albumGroup.group.id) } }
+                    Button { text: "Review…"; onClicked: window.openSpotifyAlbumConnection(albumGroup.group.id) }
+                    Button { text: "Retry Album"; onClicked: {const r=JSON.parse(window.bridge.spotify_review_action("retry",albumGroup.group.id,0));groupResult.text=r.error || r.message;} }
+                }
+                Label { id: groupResult; visible:text.length>0; wrapMode:Text.Wrap; Layout.fillWidth:true }
+                Repeater {
+                    model: albumGroup.expanded ? albumGroup.tracks : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.leftMargin:36
+                        Layout.fillWidth:true
+                        Label { text:modelData.title + " — " + modelData.artist + " · " + modelData.reason; wrapMode:Text.Wrap; Layout.fillWidth:true }
+                        Button { text:"Track connection…"; onClicked:window.openSpotifyConnection(modelData.id) }
+                        Button { objectName:"spotifyGroupTrackMark"; text:"Mark as not on Spotify"; onClicked:window.bridge.browse_action("spotify-mark",2,modelData.id) }
+                    }
+                }
+                Button { visible:albumGroup.expanded && albumGroup.tracks.length>=201; text:"Show all Tracks in this Album"; onClicked:window.bridge.browse_action("review-album",2,albumGroup.group.id) }
+            }
+            footer: RowLayout {
+                Button { text:"Previous Albums"; enabled:spotifyGroupList.pages.length>1; onClicked: {const p=spotifyGroupList.pages.slice(0,-1);spotifyGroupList.pages=p;spotifyGroupList.after=p[p.length-1];spotifyGroupList.refresh();} }
+                Button { text:"Next Albums"; enabled:spotifyAlbumGroups.count===200; onClicked: {spotifyGroupList.after=spotifyAlbumGroups.get(199).group.id;spotifyGroupList.pages=spotifyGroupList.pages.concat([spotifyGroupList.after]);spotifyGroupList.refresh();} }
+            }
+            Label { anchors.centerIn:parent; visible:spotifyAlbumGroups.count===0; text:"No unresolved Albums in this page." }
+        }
         ListView {
             id: list
-            visible: !(window.library.view === "Playlists" && pane.paneIndex === 1)
+            visible: !(window.library.view === "Playlists" && pane.paneIndex === 1) && !spotifyGroupList.visible
             objectName: "libraryPane" + pane.paneIndex
             Layout.fillWidth: true
             Layout.fillHeight: true

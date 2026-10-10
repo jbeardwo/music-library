@@ -1,5 +1,9 @@
 # Spotify Connections review
 
+The current workflow is [Album-grouped review and explicit positioned confirmation](spotify-album-review-workflow.md). That document supersedes the Track-only entry workflow below and describes candidate navigation and corrected retry semantics. The original Track table remains available through Show Track list.
+
+## Previous Track-only workflow and validation
+
 **Settings and diagnostics (⋯) → Spotify Connections** opens the management view.
 It is separate from Artists, Genres, Albums, Songs and Playlists. Each row is one
 saved canonical Track, identified by its opaque application Track ID.

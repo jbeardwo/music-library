@@ -47,6 +47,7 @@ fn release() -> Release {
 }
 fn candidate() -> Candidate {
     Candidate {
+        recording: Default::default(),
         album_identity: None,
         album_artists: vec![],
         album_type: String::new(),
@@ -61,6 +62,38 @@ fn candidate() -> Candidate {
         disc: 1,
         number: 1,
     }
+}
+
+#[test]
+fn persisted_manual_identity_is_authoritative_in_review_without_relaxing_matching() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, FinalDecision, assess, evaluate},
+    };
+    let mut library = Library::open_in_memory().unwrap();
+    let r = library.add_catalog_release(&release()).unwrap();
+    let mut known = candidate();
+    known.title = "Explicitly confirmed different title".into();
+    library
+        .attach_track_external_identity(&r.track_ids[0], &known.identity)
+        .unwrap();
+    let input = library.song_resolution_input(&r.track_ids[0]).unwrap();
+    let page = Page {
+        items: vec![known.clone()],
+        next_offset: None,
+    };
+    assert_ne!(assess(&input, &page), Assessment::Unique(0));
+    let evaluation = evaluate(&input, &page, 0, std::slice::from_ref(&known.identity)).unwrap();
+    assert_eq!(evaluation.final_decision, FinalDecision::Accept);
+    assert!(evaluation.association_persisted && evaluation.primary_blocker.is_none());
+    assert!(!evaluation.warnings.is_empty());
+    let mut alternative = known.clone();
+    alternative.identity.external_id = "another occurrence".into();
+    alternative.title = input.title.clone();
+    let mut selection = Selection::new(input, vec![alternative, known.clone()]);
+    selection.show_all();
+    selection.set_trusted_identities(vec![known.identity]);
+    assert_eq!(selection.visible_indices()[0], 1);
 }
 
 #[test]
@@ -565,5 +598,440 @@ fn provider_metadata_enriches_playlist_only_duration_without_playback() {
             .get::<_, i64>(0))
             .unwrap(),
         0
+    );
+}
+
+#[test]
+fn exact_credit_dominates_extra_credit_in_either_provider_order() {
+    use music_library::{
+        catalog::Page,
+        edition::ArtistEvidence,
+        song_resolution::{Assessment, FinalDecision, assess, evaluate},
+    };
+    let mut l = Library::open_in_memory().unwrap();
+    let r = l.add_catalog_release(&release()).unwrap();
+    let input = l.song_resolution_input(&r.track_ids[0]).unwrap();
+    let mut exact = candidate();
+    exact.album = input.album.clone();
+    exact.artists = input.artists.clone();
+    exact.album_artists = input.album_artists.clone();
+    exact.identity = id("spotify", "track", "exact");
+    let mut plausible = exact.clone();
+    plausible.identity = id("spotify", "track", "plausible");
+    plausible.artists.push(ArtistEvidence {
+        name: "Additional Artist".into(),
+        ..Default::default()
+    });
+    for items in [
+        vec![plausible.clone(), exact.clone()],
+        vec![exact.clone(), plausible.clone()],
+    ] {
+        let expected = items
+            .iter()
+            .position(|c| c.identity == exact.identity)
+            .unwrap();
+        let page = Page {
+            items,
+            next_offset: None,
+        };
+        assert_eq!(assess(&input, &page), Assessment::Unique(expected));
+        for index in 0..2 {
+            let evaluation = evaluate(&input, &page, index, &[]).unwrap();
+            assert_eq!(
+                evaluation.final_decision == FinalDecision::Accept,
+                index == expected
+            );
+        }
+    }
+    let mut equal = exact.clone();
+    equal.identity.external_id = "different edition occurrence".into();
+    for items in [
+        vec![equal.clone(), exact.clone()],
+        vec![exact.clone(), equal.clone()],
+    ] {
+        assert_eq!(
+            assess(
+                &input,
+                &Page {
+                    items,
+                    next_offset: None
+                }
+            ),
+            Assessment::NeedsSelection
+        );
+    }
+    // Better credit cannot hide a worse established position.
+    exact.number = 2;
+    assert_eq!(
+        assess(
+            &input,
+            &Page {
+                items: vec![plausible, exact],
+                next_offset: None
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+}
+
+fn playable_fixture() -> (Library, music_library::song_resolution::Input, Candidate) {
+    let mut library = Library::open_in_memory().unwrap();
+    let mut release = release();
+    release.media[0].tracks[0].duration = Some(music_library::catalog::Duration {
+        milliseconds: 200000,
+        approximate: false,
+    });
+    let imported = library.add_catalog_release(&release).unwrap();
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let mut c = candidate();
+    c.identity = id("spotify", "track", "playable");
+    c.artists = input.artists.clone();
+    c.album = "Separate single".into();
+    c.album_identity = Some(id("spotify", "album", "single"));
+    c.album_type = "single".into();
+    c.album_total_tracks = Some(1);
+    (library, input, c)
+}
+#[test]
+fn cross_release_playback_preserves_canonical_release_and_records_difference() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{FinalDecision, evaluate},
+    };
+    let (mut library, input, c) = playable_fixture();
+    let before = library.album_id_for_track(&input.track_id).unwrap();
+    let page = Page {
+        items: vec![c.clone()],
+        next_offset: None,
+    };
+    let result = evaluate(&input, &page, 0, &[]).unwrap();
+    assert_eq!(result.final_decision, FinalDecision::Accept);
+    assert!(
+        result
+            .warnings
+            .iter()
+            .any(|w| w.contains("canonical Release unchanged"))
+    );
+    library
+        .apply_song_evaluation(&input, &page)
+        .unwrap()
+        .unwrap();
+    assert_eq!(library.album_id_for_track(&input.track_id).unwrap(), before);
+    assert_eq!(
+        library
+            .song_resolution_input(&input.track_id)
+            .unwrap()
+            .album,
+        input.album
+    );
+}
+#[test]
+fn sole_version_is_playable_but_comparable_versions_require_review() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess_playable, evaluate},
+    };
+    let (_, input, c) = playable_fixture();
+    for suffix in ["(2015 Remaster)", "(Live)", "(Acoustic)", "(Demo)"] {
+        let mut version = c.clone();
+        version.title = format!("Song {suffix}");
+        let page = Page {
+            items: vec![version],
+            next_offset: None,
+        };
+        assert_eq!(assess_playable(&input, &page), Assessment::Unique(0));
+        assert!(
+            evaluate(&input, &page, 0, &[])
+                .unwrap()
+                .warnings
+                .iter()
+                .any(|w| w.contains("version differs"))
+        );
+    }
+    let items = ["Live", "Acoustic", "Demo"]
+        .into_iter()
+        .map(|version| {
+            let mut c = c.clone();
+            c.title = format!("Song ({version})");
+            c.identity.external_id = version.into();
+            c
+        })
+        .collect();
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items,
+                next_offset: None
+            }
+        ),
+        Assessment::NeedsSelection
+    );
+}
+#[test]
+fn playable_fallback_rejects_identity_artist_duration_and_title_conflicts() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess_playable},
+    };
+    let (_, input, c) = playable_fixture();
+    let mut cases = vec![];
+    let mut bad = c.clone();
+    bad.artists[0].identities = vec![id("musicbrainz", "artist", "other")];
+    cases.push(bad);
+    let mut bad = c.clone();
+    bad.recording.identities = vec![id("musicbrainz", "recording", "other")];
+    cases.push(bad);
+    let mut bad = c.clone();
+    bad.duration_ms = 900000;
+    cases.push(bad);
+    for title in [
+        "Song (Subtitle)",
+        "字 Song",
+        "Song feat. Stranger",
+        "Unrelated Song",
+    ] {
+        let mut bad = c.clone();
+        bad.title = title.into();
+        cases.push(bad);
+    }
+    for bad in cases {
+        assert_eq!(
+            assess_playable(
+                &input,
+                &Page {
+                    items: vec![bad],
+                    next_offset: None
+                }
+            ),
+            Assessment::NoMatch
+        );
+    }
+}
+#[test]
+fn playable_ranking_uses_evidence_and_collapses_confirmed_equivalent_occurrences() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess_playable},
+    };
+    let (_, input, c) = playable_fixture();
+    let mut weaker = c.clone();
+    weaker.title = "Song (Live)".into();
+    weaker.identity.external_id = "first".into();
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![weaker, c.clone()],
+                next_offset: None
+            }
+        ),
+        Assessment::Unique(1)
+    );
+    let mut a = c.clone();
+    a.recording.isrcs = vec!["same-isrc".into()];
+    let mut b = a.clone();
+    b.identity.external_id = "duplicate".into();
+    b.album = "Other wrapper".into();
+    assert!(matches!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![a, b],
+                next_offset: None
+            }
+        ),
+        Assessment::Unique(_)
+    ));
+    let mut featured = c.clone();
+    featured
+        .artists
+        .push(music_library::edition::ArtistEvidence {
+            name: "Guest".into(),
+            ..Default::default()
+        });
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![featured],
+                next_offset: None
+            }
+        ),
+        Assessment::Unique(0)
+    );
+}
+
+#[test]
+fn split_release_sources_survive_reload_without_album_or_track_identity_changes() {
+    use music_library::catalog::Page;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("split.sqlite");
+    let mut library = Library::open(&path).unwrap();
+    let mut release = release();
+    let mut second = release.media[0].tracks[0].clone();
+    second.title = "Second song".into();
+    second.position = 2;
+    second.identities = vec![id("musicbrainz", "track", "second")];
+    release.media[0].tracks.push(second);
+    let imported = library.add_catalog_release(&release).unwrap();
+    let canonical = library.album_id_for_track(&imported.track_ids[0]).unwrap();
+    for (index, track) in imported.track_ids.iter().enumerate() {
+        let input = library.song_resolution_input(track).unwrap();
+        let mut c = candidate();
+        c.identity = id("spotify", "track", &format!("source-{index}"));
+        c.title = input.title.clone();
+        c.artists = input.artists.clone();
+        c.album = format!("Single {index}");
+        c.album_identity = Some(id("spotify", "album", &format!("single-{index}")));
+        assert_eq!(
+            library
+                .apply_song_evaluation(
+                    &input,
+                    &Page {
+                        items: vec![c.clone()],
+                        next_offset: None
+                    }
+                )
+                .unwrap(),
+            Some(c.identity)
+        );
+    }
+    drop(library);
+    let library = Library::open(&path).unwrap();
+    for track in &imported.track_ids {
+        assert_eq!(library.album_id_for_track(track).unwrap(), canonical);
+        assert_eq!(
+            library
+                .track_provider_occurrences(track, "spotify")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn explicit_spotify_correction_replaces_and_clears_without_changing_canonical_context() {
+    use music_library::catalog::Page;
+    let (mut library, input, c) = playable_fixture();
+    library
+        .apply_song_evaluation(
+            &input,
+            &Page {
+                items: vec![c.clone()],
+                next_offset: None,
+            },
+        )
+        .unwrap();
+    let current = library.song_resolution_input(&input.track_id).unwrap();
+    let mut corrected = c.clone();
+    corrected.identity.external_id = "user-chosen-alternative".into();
+    corrected.title = "Explicit different version".into();
+    let selection = Selection::new(current, vec![corrected.clone()]);
+    library
+        .replace_spotify_song_resolution(&selection, 0)
+        .unwrap();
+    assert_eq!(
+        library
+            .track_provider_occurrences(&input.track_id, "spotify")
+            .unwrap(),
+        vec![corrected.identity]
+    );
+    assert_eq!(
+        library
+            .song_resolution_input(&input.track_id)
+            .unwrap()
+            .album,
+        input.album
+    );
+    library
+        .clear_spotify_song_resolution(&input.track_id)
+        .unwrap();
+    assert!(
+        library
+            .track_provider_occurrences(&input.track_id, "spotify")
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        library
+            .song_resolution_input(&input.track_id)
+            .unwrap()
+            .album,
+        input.album
+    );
+}
+
+#[test]
+fn playable_credit_order_is_presentation_but_replacement_collaborators_conflict() {
+    use music_library::{
+        catalog::Page,
+        edition::ArtistEvidence,
+        song_resolution::{Assessment, assess_playable},
+    };
+    let (_, mut input, mut c) = playable_fixture();
+    let guest = ArtistEvidence {
+        name: "Guest".into(),
+        identities: vec![id("spotify", "artist", "guest")],
+        join_phrase: String::new(),
+    };
+    c.artists.insert(0, guest.clone());
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![c.clone()],
+                next_offset: None
+            }
+        ),
+        Assessment::Unique(0)
+    );
+    input.artists.push(ArtistEvidence {
+        name: "Different collaborator".into(),
+        ..Default::default()
+    });
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![c],
+                next_offset: None
+            }
+        ),
+        Assessment::NoMatch
+    );
+}
+#[test]
+fn contradictory_isrc_and_incomplete_discovery_cannot_auto_connect_playable_source() {
+    use music_library::{
+        catalog::Page,
+        song_resolution::{Assessment, assess_playable},
+    };
+    let (_, mut input, mut c) = playable_fixture();
+    input.recording.isrcs = vec!["trusted-isrc".into()];
+    c.recording.isrcs = vec!["different-isrc".into()];
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![c.clone()],
+                next_offset: None
+            }
+        ),
+        Assessment::NoMatch
+    );
+    c.recording.isrcs.clear();
+    assert_eq!(
+        assess_playable(
+            &input,
+            &Page {
+                items: vec![c],
+                next_offset: Some(10)
+            }
+        ),
+        Assessment::NeedsSelection
     );
 }

@@ -115,7 +115,16 @@ impl Bridge {
                                 .push(format!("Skipped {} unsupported files", report.unsupported));
                         }
                         if report.unreadable > 0 {
-                            summary.push(format!("{} files could not be read", report.unreadable));
+                            summary
+                                .push(format!("{} files could not be imported", report.unreadable));
+                            summary.extend(report.errors.iter().map(|error| {
+                                format!("{}: {}", error.path.display(), error.message)
+                            }));
+                            if report.unreadable > report.errors.len() as u64 {
+                                summary.push(
+                                    "Further failures omitted from this bounded report".into(),
+                                );
+                            }
                         }
                         if report.locations_failed > 0 {
                             summary.push(format!(

@@ -36,6 +36,19 @@ pub fn required_tracks(local: &[LocalTrackEvidence]) -> usize {
             }
         })
         .collect();
+    let malformed = local
+        .iter()
+        .filter(|t| {
+            t.evidence
+                .number
+                .is_some_and(|n| n as usize > local.len().max(1) * 4)
+        })
+        .count()
+        * 2
+        >= local.len().max(1);
+    if malformed && local.len() >= 3 {
+        return keys.len();
+    }
     keys.len().max(
         local
             .iter()

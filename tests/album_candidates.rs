@@ -1576,6 +1576,82 @@ mod spotify_reconciliation {
             MatchOutcome::NoConfidentMatch
         );
     }
+
+    #[test]
+    fn shortened_live_series_album_requires_systematic_program_annotation() {
+        let mut p = SpotifyPrograms::new();
+        for t in &mut p.provider.programs.get_mut("a").unwrap().programs[0].tracks {
+            t.title = Some(format!(
+                "{} - Audiotree Live Version",
+                t.title.as_deref().unwrap()
+            ));
+        }
+        let candidate = album("a", "Artist on Audiotree Live", "Album");
+        let result = evaluate(
+            &mut p,
+            "Audiotree",
+            vec![candidate.clone()],
+            &locals(&[1, 2, 3]),
+        );
+        assert!(matches!(result.outcome, MatchOutcome::MatchedClose(_)));
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].title =
+            Some("Unrelated Live Song".into());
+        let result = evaluate(&mut p, "Audiotree", vec![candidate], &locals(&[1, 2, 3]));
+        assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch);
+    }
+
+    #[test]
+    fn identical_program_artist_identity_sets_ignore_credit_order_but_distinct_occurrences_do_not()
+    {
+        let mut a = album("a", "Album", "Album");
+        let mut b = album("b", "Album", "Album");
+        a.artist_ids.push(sid("artist", "guest"));
+        b.artist_ids = vec![sid("artist", "guest"), sid("artist", "artist")];
+        b.artist = "Guest, Artist".into();
+        for reverse in [false, true] {
+            let mut p = SpotifyPrograms::new();
+            let mut program = p.provider.programs["a"].clone();
+            program.album = b.identity.clone();
+            for t in &mut program.programs[0].tracks {
+                t.artists.reverse();
+            }
+            p.provider.programs.insert("b".into(), program);
+            let page = if reverse {
+                vec![b.clone(), a.clone()]
+            } else {
+                vec![a.clone(), b.clone()]
+            };
+            let result = evaluate(&mut p, "Album", page.clone(), &locals(&[1, 2, 3]));
+            assert!(matches!(result.outcome,MatchOutcome::Matched(ref id) if id.external_id=="a"));
+            assert!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .any(|c| c.equivalent_to.is_some())
+            );
+            p.provider.programs.get_mut("b").unwrap().programs[0].tracks[0].identities =
+                vec![sid("track", "other-occurrence")];
+            let result = evaluate(&mut p, "Album", page, &locals(&[1, 2, 3]));
+            assert!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .find(|c| c.identity == b.identity)
+                    .unwrap()
+                    .reasons
+                    .contains(&Reason::ArtistMismatch)
+            );
+            assert!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .all(|c| c.equivalent_to.is_none())
+            );
+        }
+    }
     #[test]
     fn persisted_canonical_album_evidence_participates_without_a_source_fork() {
         use music_library::canonical_evidence::{AlbumEvidence, Observation, Origin};
@@ -1747,15 +1823,142 @@ mod spotify_reconciliation {
         );
     }
     #[test]
+    fn sole_provider_edition_supplies_songs_without_changing_canonical_edition() {
+        let local = locals(&[1, 2, 3]);
+        for title in [
+            "Songs (2015 Remaster)",
+            "Songs (Remastered)",
+            "Songs Deluxe Edition",
+            "Songs (Expanded Edition)",
+            "Songs - Extended Edition",
+            "Songs (10th Anniversary Edition)",
+        ] {
+            let mut p = SpotifyPrograms::new();
+            let result = evaluate(&mut p, "Songs", vec![album("a", title, "Album")], &local);
+            assert_eq!(
+                result.outcome,
+                MatchOutcome::MatchedClose(sid("album", "a")),
+                "{title}"
+            );
+            assert_eq!(result.report.reasons, vec![Reason::AcceptedPlayableEdition]);
+            assert!(!result.report.candidates[0].warnings.is_empty());
+        }
+        let mut p = SpotifyPrograms::new();
+        let mut extra = p.provider.programs["a"].programs[0].tracks[0].clone();
+        extra.number = Some(4);
+        extra.title = Some("Bonus Song".into());
+        extra.identities = vec![sid("track", "bonus")];
+        p.provider.programs.get_mut("a").unwrap().programs[0]
+            .tracks
+            .push(extra);
+        p.provider.counts.insert("a".into(), 4);
+        let deluxe = album("a", "Songs (Deluxe Edition)", "Album");
+        let result = evaluate(&mut p, "Songs", vec![deluxe.clone()], &local);
+        assert_eq!(
+            result.outcome,
+            MatchOutcome::MatchedClose(sid("album", "a"))
+        );
+        assert_eq!(
+            result.report.candidates[0].programs[0]
+                .alignment
+                .rows
+                .iter()
+                .filter(|r| r.local_index.is_some() && r.provider_index.is_some())
+                .count(),
+            3
+        );
+        assert_eq!(
+            local.len(),
+            3,
+            "provider extras never create canonical Tracks"
+        );
+        let result = evaluate(
+            &mut p,
+            "Songs",
+            vec![deluxe.clone(), album("b", "Songs", "Album")],
+            &local,
+        );
+        assert_eq!(
+            result.outcome,
+            MatchOutcome::Matched(sid("album", "b")),
+            "normal edition preferred"
+        );
+        let result = evaluate(
+            &mut p,
+            "Songs",
+            vec![deluxe.clone(), album("b", "Songs (2015 Remaster)", "Album")],
+            &local,
+        );
+        assert!(
+            !matches!(
+                result.outcome,
+                MatchOutcome::Matched(_) | MatchOutcome::MatchedClose(_)
+            ),
+            "competing editions remain reviewable"
+        );
+        let mut variant = p.provider.programs["a"].clone();
+        variant.programs[0].tracks[0].title = Some("Song 1 (Live)".into());
+        p.provider.programs.insert("a".into(), variant);
+        assert!(
+            !matches!(
+                evaluate(&mut p, "Songs", vec![deluxe], &local).outcome,
+                MatchOutcome::MatchedClose(_)
+            ),
+            "partial weak program cannot establish a fallback"
+        );
+    }
+    #[test]
+    fn sole_edition_never_bypasses_page_duration_or_ambiguous_title_guards() {
+        let local = locals(&[1, 2, 3]);
+        let mut p = SpotifyPrograms::new();
+        let candidate = album("a", "Songs (2015 Remaster)", "Album");
+        let result = resolve_with_report(
+            &mut p,
+            ("Songs", None),
+            &sid("artist", "artist"),
+            &Page {
+                items: vec![candidate.clone()],
+                next_offset: Some(10),
+            },
+            false,
+            &local,
+            &mut vec![],
+        )
+        .unwrap();
+        assert!(!matches!(
+            result.outcome,
+            MatchOutcome::Matched(_) | MatchOutcome::MatchedClose(_)
+        ));
+        assert!(p.provider.calls.is_empty());
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].duration_ms = Some(220000);
+        let result = evaluate(&mut p, "Songs", vec![candidate.clone()], &local);
+        assert!(
+            !matches!(
+                result.outcome,
+                MatchOutcome::Matched(_) | MatchOutcome::MatchedClose(_)
+            ),
+            "duration disagreement must block this small program"
+        );
+        p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].duration_ms = Some(200000);
+        let mut ambiguous = local;
+        for t in &mut ambiguous[..2] {
+            t.evidence.title = Some("Untitled".into());
+        }
+        for t in &mut p.provider.programs.get_mut("a").unwrap().programs[0].tracks[..2] {
+            t.title = Some("Untitled".into());
+        }
+        assert!(!matches!(
+            evaluate(&mut p, "Songs", vec![candidate], &ambiguous).outcome,
+            MatchOutcome::MatchedClose(_)
+        ));
+    }
+    #[test]
     fn live_and_other_version_qualifiers_survive_normalization() {
         for title in [
             "Songs EP (Live in Chicago)",
-            "Songs (Remastered)",
-            "Songs Deluxe Edition",
             "Songs Acoustic",
             "Songs (Demo)",
             "Songs Instrumental",
-            "Songs Anniversary Edition",
             "Songs Radio Edit",
         ] {
             let mut p = SpotifyPrograms::new();
@@ -1775,6 +1978,71 @@ mod spotify_reconciliation {
             assert!(
                 p.provider.calls.is_empty(),
                 "semantic conflict is rejected before program requests"
+            );
+        }
+    }
+    #[test]
+    fn distinct_occurrence_ids_can_share_a_fully_corroborated_provider_program() {
+        let local = locals(&[1, 2, 3]);
+        let mut p = SpotifyPrograms::new();
+        let a = album("a", "Freshman Year", "Album");
+        let b = album("b", "Freshman Year", "Album");
+        for (key, program) in &mut p.provider.programs {
+            for t in &mut program.programs[0].tracks {
+                t.identities = vec![sid("track", &format!("{key}{}", t.number.unwrap()))];
+                t.artists = vec![ArtistEvidence {
+                    identities: vec![sid("artist", "artist")],
+                    name: "Artist".into(),
+                    ..Default::default()
+                }];
+            }
+        }
+        p.provider.programs.get_mut("b").unwrap().programs[0].tracks[0].duration_ms = Some(200009);
+        for candidates in [vec![b.clone(), a.clone()], vec![a.clone(), b.clone()]] {
+            assert_eq!(
+                evaluate(&mut p, "Freshman Year", candidates, &local).outcome,
+                MatchOutcome::Matched(sid("album", "a"))
+            );
+        }
+        let baseline = p.provider.programs["b"].clone();
+        for variant in 0..10 {
+            let program = &mut p.provider.programs.get_mut("b").unwrap().programs[0];
+            *program = baseline.programs[0].clone();
+            match variant {
+                0 => program.tracks[0].duration_ms = None,
+                1 => program.tracks[0].duration_ms = Some(201000),
+                2 => program.tracks[0].artists[0].identities = vec![sid("artist", "unrelated")],
+                3 => program.tracks[0].title = Some("Song 1 (Live)".into()),
+                4 => program.tracks[1].title = program.tracks[0].title.clone(),
+                5 => program.tracks[0].duration_approximate = true,
+                6 => {
+                    program.tracks.swap(0, 1);
+                }
+                7 => program.tracks[0].identities.clear(),
+                8 => {
+                    program.tracks[0].recording.identities = vec![id("recording", "conflict")];
+                }
+                _ => program.tracks[0].recording.isrcs = vec!["OTHER".into()],
+            }
+            let track = &mut p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0];
+            track.recording.identities = if variant == 8 {
+                vec![id("recording", "trusted")]
+            } else {
+                vec![]
+            };
+            track.recording.isrcs = if variant == 9 {
+                vec!["KNOWN".into()]
+            } else {
+                vec![]
+            };
+            let result = evaluate(&mut p, "Freshman Year", vec![a.clone(), b.clone()], &local);
+            assert!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .all(|c| c.equivalent_to.is_none()),
+                "variant {variant}"
             );
         }
     }
@@ -1894,8 +2162,70 @@ mod spotify_reconciliation {
         p.provider.programs.get_mut("a").unwrap().programs[0].tracks[0].number = Some(1);
         p.provider.programs.get_mut("a").unwrap().programs[0].tracks[1].number = Some(2);
         let result = evaluate(&mut p, "Album", vec![album("a", "Album", "Album")], &local);
-        assert_eq!(result.outcome, MatchOutcome::NoConfidentMatch);
-        assert_eq!(result.report.reasons, vec![Reason::PositionMismatch]);
+        assert_eq!(result.outcome, MatchOutcome::Matched(sid("album", "a")));
+        assert_eq!(
+            result.report.candidates[0].programs[0].tracks[0]
+                .provider
+                .as_ref()
+                .unwrap()
+                .number,
+            Some(2)
+        );
+    }
+    #[test]
+    fn later_exact_artist_album_wins_in_either_result_order() {
+        let mut extra = album("a", "Album", "Album");
+        extra.artist_ids.push(sid("artist", "guest"));
+        extra.artist = "Artist, Guest".into();
+        let exact = album("b", "Album", "Album");
+        for candidates in [
+            vec![extra.clone(), exact.clone()],
+            vec![exact.clone(), extra.clone()],
+        ] {
+            let mut provider = SpotifyPrograms::new();
+            let result = evaluate(&mut provider, "Album", candidates, &locals(&[1, 2, 3]));
+            assert_eq!(
+                result.outcome,
+                MatchOutcome::Matched(exact.identity.clone())
+            );
+            assert_eq!(result.report.candidates.len(), 2);
+            assert_eq!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .find(|c| c.identity == extra.identity)
+                    .unwrap()
+                    .decision,
+                "Withheld"
+            );
+            assert_eq!(
+                result
+                    .report
+                    .candidates
+                    .iter()
+                    .find(|c| c.identity == exact.identity)
+                    .unwrap()
+                    .decision,
+                "Accepted"
+            );
+        }
+    }
+    #[test]
+    fn stronger_needs_review_candidate_ranks_before_weak_rejection_in_either_order() {
+        let weak = album("a", "Unrelated title", "Album");
+        let strong = album("b", "Album", "Album");
+        for candidates in [
+            vec![weak.clone(), strong.clone()],
+            vec![strong.clone(), weak.clone()],
+        ] {
+            let mut p = SpotifyPrograms::new();
+            p.provider.programs.get_mut("b").unwrap().programs[0].complete = false;
+            let result = evaluate(&mut p, "Album", candidates, &locals(&[1, 2, 3]));
+            assert_eq!(result.report.candidates[0].identity, strong.identity);
+            assert_eq!(result.report.candidates[0].decision, "Withheld");
+            assert_eq!(result.report.candidates[1].decision, "Rejected");
+        }
     }
     #[test]
     fn incomplete_competitor_cannot_be_dismissed_to_manufacture_uniqueness() {

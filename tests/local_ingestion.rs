@@ -401,6 +401,9 @@ fn real_metadata_provenance_artwork_and_persistence_match_automatic_scanning() {
         &mut LoftyMetadataExtractor,
     );
     assert_eq!(report.unreadable, 1);
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(report.errors[0].path, music.join("bad.flac"));
+    assert!(!report.errors[0].message.is_empty());
     assert_eq!(report.unchanged, 1);
     assert_eq!(std::fs::read(file).unwrap(), before);
     drop(b);
@@ -590,6 +593,8 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
         .unwrap();
     drop(l);
     let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE hidden_artist_preference; DROP TABLE ignored_track_preference;")
+        .unwrap();
     metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
@@ -622,7 +627,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        31
+        33
     );
     assert_eq!(
         run(&mut l, Request::ConfiguredLocations, &mut Tags::default()).imported,
@@ -651,6 +656,8 @@ fn failed_location_migration_rolls_back_sources_and_exclusions() {
         .unwrap();
     drop(l);
     let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE hidden_artist_preference; DROP TABLE ignored_track_preference;")
+        .unwrap();
     metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
@@ -1173,6 +1180,8 @@ fn local_genres_survive_migration_missing_sources_and_membership_removal() {
         .source_id;
     drop(l);
     let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE hidden_artist_preference; DROP TABLE ignored_track_preference;")
+        .unwrap();
     metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();
@@ -1238,6 +1247,8 @@ fn genre_migration_failure_rolls_back_marker_and_schema_version() {
     let path = temp.path().join("db");
     drop(Library::open(&path).unwrap());
     let db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP TABLE hidden_artist_preference; DROP TABLE ignored_track_preference;")
+        .unwrap();
     metadata_schema::downgrade(&db);
     db.execute_batch(include_str!("support/drop_song_details.sql"))
         .unwrap();

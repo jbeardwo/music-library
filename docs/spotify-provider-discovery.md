@@ -1,5 +1,21 @@
 # Spotify provider discovery and quota lifecycle
 
+Current behavior is recorded in the [propagation/retry audit](spotify-propagation-retry-audit.md).
+Album searches use strategy 3 with at most one established-Artist series fallback.
+Other endpoint keys retain version 1. Offline inspection can reuse legacy Album
+query observations without renewing freshness. Evaluator version is 10; version
+statements below describe historical stages.
+
+The series fallback now uses an unfiltered plain-text `Artist on Series Live`
+query. Cached CHON searches demonstrated that both quoted `album:`/`artist:`
+queries returned empty pages, so repeating those field restrictions could not
+discover its Audiotree release. Returned objects still pass established Artist
+IDs and unchanged Album/program matching. The initial query plus at most one
+alternate remains the bound; the alternate replaces the earlier filtered query.
+Normal freshness uses current keys; offline inspection can replay version 2/1
+observations without fetching or renewing TTL. Search Spotify again explicitly
+executes the new strategy. No live result is claimed without configured access.
+
 Reconciliation now separates successful catalog discovery from candidate acceptance. Migration 31 adds `spotify_discovery(fingerprint, response_json, completed_at)` and `provider_cooldown(provider, until_epoch)`. Existing Track candidate snapshots, established Album programs, trusted identities and manual exclusions keep their separate ownership.
 
 The Spotify adapter attaches an independent Library connection before worker construction. Successful typed catalog GET responses are persisted and replayed through the same translation and evaluator code. Empty pages are successful discovery too. Album detail and bounded program pages are reusable independently, including rejected competitors. This stores requested bounded responses, not an enumerated Spotify catalog. Expired records are removed incrementally (at most 32 per successful write), using an age index. Refresh failures never write a replacement response or clear the previous successful record.
@@ -55,3 +71,11 @@ Legacy successful searches cannot be reconstructed when previous versions saved 
 ## Final checks
 
 The full core run passed 404 tests (17 ignored); the subsequent source-availability/path/Genre regression also passed. Final Spotify adapter run passed 60 tests (3 ignored); the ignored disposable real-Album mock audit was run explicitly and passed. Four Qt checks passed in isolated offscreen processes: Album batch no-fan-out, selected Album evidence/association preservation, Connections targeted updates, and offline Metadata actions. The combined Qt run stalled on existing QApplication thread-affinity behavior, so a full combined Qt-suite pass is not claimed. Core, Spotify adapter and GStreamer-enabled QML strict Clippy checks passed. Formatting and whitespace checks passed. No commit was made.
+
+## Album review follow-up
+
+[Album review](spotify-album-review-workflow.md) exposes retained candidates offline,
+including expired observations for inspection without renewing TTL. Ordinary discovery
+freshness remains unchanged. Explicit true Needs-retry contexts refresh discovery;
+completed Album evaluations clear the retry state. The evaluator is version 6, while
+discovery strategy stays at version 1. Batches remain Album-scoped with no Track fan-out.

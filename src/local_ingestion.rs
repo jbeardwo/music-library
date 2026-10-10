@@ -32,17 +32,35 @@ pub struct Report {
     pub parsed: u64,
     pub unchanged: u64,
     pub imported: u64,
-    /// Newly associated local routes; saved membership is preserved.
+    /// Newly associated local routes; intentional Files/Folder admission saves their Tracks.
     pub attached: u64,
     /// Candidates without sufficient persisted identity, admitted as separate Tracks.
     pub unresolved: u64,
     pub unsupported: u64,
     pub unreadable: u64,
+    /// Bounded file-specific failures; unreadable retains the complete failure count.
+    pub errors: Vec<ImportError>,
     pub locations_failed: u64,
     /// Known routes made unavailable by completed scans or failed readability checks.
     pub unavailable: u64,
     /// Successfully admitted Releases, also the ordinary post-import scheduling input.
     pub releases: Vec<ImportedRelease>,
+}
+#[derive(Clone, Debug)]
+pub struct ImportError {
+    pub path: PathBuf,
+    pub message: String,
+}
+impl Report {
+    fn failed(&mut self, path: &Path, message: impl ToString) {
+        self.unreadable += 1;
+        if self.errors.len() < 100 {
+            self.errors.push(ImportError {
+                path: path.to_owned(),
+                message: message.to_string(),
+            });
+        }
+    }
 }
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
@@ -121,8 +139,8 @@ impl Library {
                 for path in paths {
                     let path = match path.canonicalize() {
                         Ok(p) => p,
-                        Err(_) => {
-                            report.unreadable += 1;
+                        Err(error) => {
+                            report.failed(path, error);
                             continue;
                         }
                     };
@@ -192,7 +210,11 @@ impl Library {
                 }
             }
         }
-        self.import_candidate_groups(&mut report, progress)?;
+        self.import_candidate_groups(
+            &mut report,
+            progress,
+            matches!(request, Request::Files(_) | Request::Folder(_)),
+        )?;
         // The same conservative finalizer as migration backfill, scoped to all
         // successfully encountered associated Albums (including unchanged re-adds).
         let tx = self.store.connection.transaction()?;
@@ -229,8 +251,8 @@ impl Library {
         let path = self.store.root_path(root)?;
         let scan = self.store.begin_scan(root)?;
         let result = (|| -> Result<bool> {
-            if std::fs::read_dir(&path).is_err() {
-                report.unreadable += 1;
+            if let Err(error) = std::fs::read_dir(&path) {
+                report.failed(&path, error);
                 return Ok(false);
             }
             let mut complete = true;
@@ -238,8 +260,8 @@ impl Library {
             for entry in WalkDir::new(&path).follow_links(false) {
                 let entry = match entry {
                     Ok(e) => e,
-                    Err(_) => {
-                        report.unreadable += 1;
+                    Err(error) => {
+                        report.failed(error.path().unwrap_or(&path), &error);
                         complete = false;
                         continue;
                     }
@@ -363,7 +385,10 @@ impl Library {
             };
             if candidates.len() > 1 {
                 seen.extend(candidates.iter().map(|k| k.observation.source_id.clone()));
-                report.unreadable += 1;
+                report.failed(
+                    path,
+                    "Ambiguous existing local source records; no identity chosen",
+                );
                 continue;
             }
             let known = candidates.first().copied();
@@ -376,7 +401,7 @@ impl Library {
                 {
                     seen.push(k.observation.source_id.clone());
                     unavailable.push(k.observation.source_id.clone());
-                    report.unreadable += 1;
+                    report.failed(path, "Source could not be read as a regular file");
                     continue;
                 }
                 // Observe presence without reparsing excluded audio or admitting membership.
@@ -400,12 +425,12 @@ impl Library {
                     admitted.push(id);
                     items.push(item);
                 }
-                Err(_) => {
+                Err(error) => {
                     if let Some(k) = known {
                         seen.push(k.observation.source_id.clone());
                         unavailable.push(k.observation.source_id.clone());
                     }
-                    report.unreadable += 1;
+                    report.failed(path, error);
                 }
             }
         }
@@ -471,6 +496,7 @@ impl Library {
         &mut self,
         report: &mut Report,
         progress: &mut dyn FnMut(Progress),
+        intentional: bool,
     ) -> Result<()> {
         loop {
             let group = self.store.connection.query_row("SELECT parent,title_key,credit_key FROM ingestion_candidates ORDER BY parent,title_key,credit_key LIMIT 1", [], |r|Ok((r.get::<_,Vec<u8>>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional()?;
@@ -508,6 +534,15 @@ impl Library {
                         .collect(),
                 };
                 let attached = self.store.attach_local_candidates(&candidates, &request)?;
+                // Intentional admission saves newly attached canonical Tracks. The
+                // attachment boundary itself remains membership independent;
+                // unchanged sources and automatic rescans never enter this set.
+                if intentional && !attached.is_empty() {
+                    report.imported += self.store.connection.execute(
+                        "INSERT OR IGNORE INTO library_membership(track_id) SELECT ts.track_id FROM json_each(?1) j JOIN track_source ts ON ts.source_id=j.value",
+                        [source_json(&attached)],
+                    )? as u64;
+                }
                 report.attached += attached.len() as u64;
                 let attached: HashSet<_> = attached.into_iter().collect();
                 let mut request = request;
@@ -524,7 +559,14 @@ impl Library {
                 match self.import_release(&request) {
                     Ok(imported) => report.imported += imported.track_ids.len() as u64,
                     Err(crate::Error::Database(error)) => return Err(error.into()),
-                    Err(_) => report.unreadable += request.tracks.len() as u64,
+                    Err(error) => {
+                        for candidate in candidates
+                            .iter()
+                            .filter(|c| request.tracks.iter().any(|t| t.source_id == c.source_id))
+                        {
+                            report.failed(&candidate.path, &error);
+                        }
+                    }
                 }
             }
             self.store.connection.execute("DELETE FROM ingestion_candidates WHERE parent=?1 AND title_key=?2 AND credit_key=?3", params![parent,title,credit])?;

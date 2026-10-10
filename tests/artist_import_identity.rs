@@ -214,3 +214,100 @@ DROP TABLE local_root_source; DROP TABLE local_source_suppression; DROP TABLE ou
         2
     );
 }
+
+#[test]
+fn shared_artist_directory_does_not_require_display_name_as_folder_name() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut l = Library::open(temp.path().join("library.db")).unwrap();
+    let root = temp.path().join("music");
+    std::fs::create_dir(&root).unwrap();
+    // Directory is Bygones; the tag name intentionally differs (renames and
+    // filesystem punctuation restrictions are supporting context, not identity).
+    let a = import(&mut l, &root, "First", "Giraffes? Giraffes!");
+    l.attach_artist_external_identity(
+        &a,
+        &ExternalIdentity {
+            provider: "spotify".into(),
+            kind: "artist".into(),
+            external_id: "trusted".into(),
+        },
+    )
+    .unwrap();
+    let b = import(&mut l, &root, "Second", "Giraffes? Giraffes!");
+    assert_eq!(a, b);
+    assert_eq!(l.library_queue(&Default::default()).unwrap().len(), 2);
+}
+
+#[test]
+fn migration_consolidates_redundant_local_credits_but_preserves_trusted_conflicts_and_preferences()
+{
+    for conflicting in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("library.db");
+        let mut l = Library::open(&path).unwrap();
+        let root = temp.path().join("music");
+        std::fs::create_dir(&root).unwrap();
+        let canonical = import(&mut l, &root, "Album", "Bygones");
+        l.attach_artist_external_identity(
+            &canonical,
+            &ExternalIdentity {
+                provider: "spotify".into(),
+                kind: "artist".into(),
+                external_id: "trusted-one".into(),
+            },
+        )
+        .unwrap();
+        drop(l);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute(
+            "INSERT INTO artist(id,name) VALUES('redundant','Bygones')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO album_artist_credit(album_id,position,artist_id,credited_name) SELECT album_id,1,'redundant',credited_name FROM album_artist_credit LIMIT 1",[]).unwrap();
+        db.execute(
+            "INSERT INTO hidden_artist_preference(artist_id) VALUES('redundant')",
+            [],
+        )
+        .unwrap();
+        if conflicting {
+            db.execute("INSERT INTO artist_external_identity VALUES('redundant','spotify','artist','trusted-two')",[]).unwrap();
+        }
+        db.pragma_update(None, "user_version", 32).unwrap();
+        drop(db);
+        let l = Library::open(&path).unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        let count: i64 = db
+            .query_row(
+                "SELECT count(*) FROM artist WHERE name='Bygones'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, if conflicting { 2 } else { 1 });
+        assert_eq!(l.library_queue(&Default::default()).unwrap().len(), 1);
+        assert_eq!(
+            db.query_row("SELECT count(*) FROM hidden_artist_preference", [], |r| r
+                .get::<_, i64>(
+                0
+            ))
+            .unwrap(),
+            1
+        );
+        if !conflicting {
+            assert_eq!(
+                db.query_row("SELECT artist_id FROM hidden_artist_preference", [], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap(),
+                canonical.as_ref()
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM album_artist_credit", [], |r| r
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                1
+            );
+        }
+    }
+}

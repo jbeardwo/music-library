@@ -40,6 +40,7 @@ fn candidate() -> Candidate {
         join_phrase: String::new(),
     };
     Candidate {
+        recording: Default::default(),
         album_identity: None,
         identity: id("spotify", "track", "track1"),
         title: "Song 1".into(),

@@ -1,0 +1,1502 @@
+[
+  {
+    "artist": "TTNG",
+    "album": "Animals",
+    "local": [
+      {
+        "title": "Chinchilla",
+        "disc": null,
+        "number": 1,
+        "duration_ms": 267173
+      },
+      {
+        "title": "Baboon",
+        "disc": null,
+        "number": 2,
+        "duration_ms": 206160
+      },
+      {
+        "title": "Lemur",
+        "disc": null,
+        "number": 3,
+        "duration_ms": 191720
+      },
+      {
+        "title": "Badger",
+        "disc": null,
+        "number": 4,
+        "duration_ms": 293786
+      },
+      {
+        "title": "Quetzal",
+        "disc": null,
+        "number": 5,
+        "duration_ms": 37293
+      },
+      {
+        "title": "Panda",
+        "disc": null,
+        "number": 6,
+        "duration_ms": 207986
+      },
+      {
+        "title": "Elk",
+        "disc": null,
+        "number": 7,
+        "duration_ms": 231160
+      },
+      {
+        "title": "Pig",
+        "disc": null,
+        "number": 8,
+        "duration_ms": 228853
+      },
+      {
+        "title": "Gibbon",
+        "disc": null,
+        "number": 9,
+        "duration_ms": 266493
+      },
+      {
+        "title": "Dog",
+        "disc": null,
+        "number": 10,
+        "duration_ms": 175160
+      },
+      {
+        "title": "Crocodile",
+        "disc": null,
+        "number": 11,
+        "duration_ms": 151693
+      },
+      {
+        "title": "Rabbit",
+        "disc": null,
+        "number": 12,
+        "duration_ms": 285520
+      },
+      {
+        "title": "Zebra",
+        "disc": null,
+        "number": 13,
+        "duration_ms": 128973
+      },
+      {
+        "title": "If I Sit Still Maybe I'll Make It Out Of Here",
+        "disc": null,
+        "number": 14,
+        "duration_ms": 364240
+      },
+      {
+        "title": "26 Is Dancier Than 4",
+        "disc": null,
+        "number": 15,
+        "duration_ms": 286013
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Animals",
+        "tracks": [
+          {
+            "title": "Pig",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 228853
+          },
+          {
+            "title": "Baboon",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 206160
+          },
+          {
+            "title": "Panda",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 207986
+          },
+          {
+            "title": "Gibbon",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 266493
+          },
+          {
+            "title": "Rabbit",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 285520
+          },
+          {
+            "title": "Badger",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 293786
+          },
+          {
+            "title": "Elk",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 231160
+          },
+          {
+            "title": "Crocodile",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 151693
+          },
+          {
+            "title": "Quetzel",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 37293
+          },
+          {
+            "title": "Chinchilla",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 267173
+          },
+          {
+            "title": "Dog",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 175160
+          },
+          {
+            "title": "Lemur",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 191720
+          },
+          {
+            "title": "Zebra",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 128973
+          },
+          {
+            "title": "If I Sit Still, Maybe I'll Get Out Of Here",
+            "disc": 1,
+            "number": 14,
+            "duration_ms": 364240
+          },
+          {
+            "title": "26 Is Dancier Than 4",
+            "disc": 1,
+            "number": 15,
+            "duration_ms": 288013
+          }
+        ]
+      },
+      {
+        "title": "Animals Acoustic",
+        "tracks": [
+          {
+            "title": "Chinchilla - Acoustic",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 285551
+          },
+          {
+            "title": "Baboon - Acoustic",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 223919
+          },
+          {
+            "title": "Lemur - Acoustic",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 193138
+          },
+          {
+            "title": "Badger - Acoustic",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 324568
+          },
+          {
+            "title": "Quetzal - Acoustic",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 87183
+          },
+          {
+            "title": "Panda - Acoustic",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 210373
+          },
+          {
+            "title": "Elk - Acoustic",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 269896
+          },
+          {
+            "title": "Pig - Acoustic",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 251359
+          },
+          {
+            "title": "Gibbon - Acoustic",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 284602
+          },
+          {
+            "title": "Dog - Acoustic",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 208354
+          },
+          {
+            "title": "Crocodile - Acoustic",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 178414
+          },
+          {
+            "title": "Rabbit - Acoustic",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 374125
+          },
+          {
+            "title": "Zebra - Acoustic",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 135801
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "TTNG",
+    "album": "Animals Acoustic",
+    "local": [
+      {
+        "title": "Chinchilla",
+        "disc": null,
+        "number": 1,
+        "duration_ms": 285546
+      },
+      {
+        "title": "Baboon",
+        "disc": null,
+        "number": 2,
+        "duration_ms": 223920
+      },
+      {
+        "title": "Lemur",
+        "disc": null,
+        "number": 3,
+        "duration_ms": 193133
+      },
+      {
+        "title": "Badger",
+        "disc": null,
+        "number": 4,
+        "duration_ms": 324573
+      },
+      {
+        "title": "Quetzal",
+        "disc": null,
+        "number": 5,
+        "duration_ms": 87186
+      },
+      {
+        "title": "Panda",
+        "disc": null,
+        "number": 6,
+        "duration_ms": 210373
+      },
+      {
+        "title": "Elk",
+        "disc": null,
+        "number": 7,
+        "duration_ms": 269893
+      },
+      {
+        "title": "Pig",
+        "disc": null,
+        "number": 8,
+        "duration_ms": 251360
+      },
+      {
+        "title": "Gibbon",
+        "disc": null,
+        "number": 9,
+        "duration_ms": 284600
+      },
+      {
+        "title": "Dog",
+        "disc": null,
+        "number": 10,
+        "duration_ms": 208360
+      },
+      {
+        "title": "Crocodile",
+        "disc": null,
+        "number": 11,
+        "duration_ms": 178413
+      },
+      {
+        "title": "Rabbit",
+        "disc": null,
+        "number": 12,
+        "duration_ms": 374120
+      },
+      {
+        "title": "Zebra",
+        "disc": null,
+        "number": 13,
+        "duration_ms": 135853
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Animals Acoustic",
+        "tracks": [
+          {
+            "title": "Chinchilla - Acoustic",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 285551
+          },
+          {
+            "title": "Baboon - Acoustic",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 223919
+          },
+          {
+            "title": "Lemur - Acoustic",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 193138
+          },
+          {
+            "title": "Badger - Acoustic",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 324568
+          },
+          {
+            "title": "Quetzal - Acoustic",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 87183
+          },
+          {
+            "title": "Panda - Acoustic",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 210373
+          },
+          {
+            "title": "Elk - Acoustic",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 269896
+          },
+          {
+            "title": "Pig - Acoustic",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 251359
+          },
+          {
+            "title": "Gibbon - Acoustic",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 284602
+          },
+          {
+            "title": "Dog - Acoustic",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 208354
+          },
+          {
+            "title": "Crocodile - Acoustic",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 178414
+          },
+          {
+            "title": "Rabbit - Acoustic",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 374125
+          },
+          {
+            "title": "Zebra - Acoustic",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 135801
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "TTNG",
+    "album": "Audiotree Live",
+    "local": [
+      {
+        "title": "Cat Fantastic",
+        "disc": null,
+        "number": 1,
+        "duration_ms": 284537
+      },
+      {
+        "title": "Left Aligned",
+        "disc": null,
+        "number": 2,
+        "duration_ms": 199383
+      },
+      {
+        "title": "Adventure, Stamina & Anger",
+        "disc": null,
+        "number": 3,
+        "duration_ms": 287683
+      },
+      {
+        "title": "Havoc In The Forum",
+        "disc": null,
+        "number": 4,
+        "duration_ms": 192133
+      },
+      {
+        "title": "If I Sit Still, Maybe I'll Get Out Of Here",
+        "disc": null,
+        "number": 5,
+        "duration_ms": 363392
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "TTNG on Audiotree Live",
+        "tracks": [
+          {
+            "title": "Cat Fantastic - Audiotree Live Version",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 284537
+          },
+          {
+            "title": "Left Aligned - Audiotree Live Version",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 199383
+          },
+          {
+            "title": "Adventure, Stamina & Anger - Audiotree Live Version",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 287683
+          },
+          {
+            "title": "Havoc in the Forum - Audiotree Live Version",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 192133
+          },
+          {
+            "title": "If I Sit Still, Maybe I'll Get Out of Here - Audiotree Live Version",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 363392
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "Elephant Gym",
+    "album": "Dreams",
+    "local": [
+      {
+        "title": "Anima",
+        "disc": null,
+        "number": 1,
+        "duration_ms": 160199
+      },
+      {
+        "title": "Go Through the Night",
+        "disc": null,
+        "number": 2,
+        "duration_ms": 232723
+      },
+      {
+        "title": "Shadow",
+        "disc": null,
+        "number": 3,
+        "duration_ms": 225663
+      },
+      {
+        "title": "Witches",
+        "disc": null,
+        "number": 4,
+        "duration_ms": 231422
+      },
+      {
+        "title": "Dreamlike",
+        "disc": null,
+        "number": 5,
+        "duration_ms": 216138
+      },
+      {
+        "title": "Wings",
+        "disc": null,
+        "number": 6,
+        "duration_ms": 231454
+      },
+      {
+        "title": "Happy but Sad",
+        "disc": null,
+        "number": 7,
+        "duration_ms": 119462
+      },
+      {
+        "title": "Deities' Party",
+        "disc": null,
+        "number": 8,
+        "duration_ms": 185919
+      },
+      {
+        "title": "Dear Humans (JP Version)",
+        "disc": null,
+        "number": 9,
+        "duration_ms": 222758
+      },
+      {
+        "title": "Gaze at Blue (Album Version)",
+        "disc": null,
+        "number": 10,
+        "duration_ms": 234720
+      },
+      {
+        "title": "Fable",
+        "disc": null,
+        "number": 11,
+        "duration_ms": 177824
+      },
+      {
+        "title": "Dream of You",
+        "disc": null,
+        "number": 12,
+        "duration_ms": 249708
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Dreams",
+        "tracks": [
+          {
+            "title": "Anima",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 160199
+          },
+          {
+            "title": "Go Through the Night",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 229952
+          },
+          {
+            "title": "Shadow",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 225663
+          },
+          {
+            "title": "Witches",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 231422
+          },
+          {
+            "title": "Dreamlike",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 216138
+          },
+          {
+            "title": "Wings",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 231454
+          },
+          {
+            "title": "Happy but Sad",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 119462
+          },
+          {
+            "title": "Deities' Party",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 185919
+          },
+          {
+            "title": "Dear Humans - JP Version",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 222758
+          },
+          {
+            "title": "Gaze at Blue",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 234720
+          },
+          {
+            "title": "Fable",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 177824
+          },
+          {
+            "title": "Dream of You",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 249708
+          }
+        ]
+      },
+      {
+        "title": "More Real than Dreams (Original Documentary Soundtrack)",
+        "tracks": [
+          {
+            "title": "Feather - Remix",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 213216
+          },
+          {
+            "title": "Prelude",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 37408
+          },
+          {
+            "title": "On the Road",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 53258
+          },
+          {
+            "title": "Family",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 68938
+          },
+          {
+            "title": "Friendship",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 69866
+          },
+          {
+            "title": "Partners",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 124885
+          },
+          {
+            "title": "Cornered Rat - Extended",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 96885
+          },
+          {
+            "title": "For a long time",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 130986
+          },
+          {
+            "title": "Addiction - Extended",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 128266
+          },
+          {
+            "title": "What a Big Circle",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 80831
+          },
+          {
+            "title": "Dreamwalk",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 69503
+          },
+          {
+            "title": "Patch up",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 65002
+          },
+          {
+            "title": "Partner - Extended",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 216437
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "Elephant Gym",
+    "album": "Underwater",
+    "local": [
+      {
+        "title": "Shower",
+        "disc": null,
+        "number": 1,
+        "duration_ms": 99163
+      },
+      {
+        "title": "Underwater",
+        "disc": null,
+        "number": 2,
+        "duration_ms": 240109
+      },
+      {
+        "title": "Satellite",
+        "disc": null,
+        "number": 3,
+        "duration_ms": 225818
+      },
+      {
+        "title": "Half Asleep",
+        "disc": null,
+        "number": 4,
+        "duration_ms": 90770
+      },
+      {
+        "title": "Bad Dream",
+        "disc": null,
+        "number": 5,
+        "duration_ms": 297924
+      },
+      {
+        "title": "Half",
+        "disc": null,
+        "number": 6,
+        "duration_ms": 264782
+      },
+      {
+        "title": "Shell",
+        "disc": null,
+        "number": 7,
+        "duration_ms": 221193
+      },
+      {
+        "title": "Lake",
+        "disc": null,
+        "number": 8,
+        "duration_ms": 59195
+      },
+      {
+        "title": "Quilt",
+        "disc": null,
+        "number": 9,
+        "duration_ms": 258266
+      },
+      {
+        "title": "Walk",
+        "disc": null,
+        "number": 10,
+        "duration_ms": 276870
+      },
+      {
+        "title": "Speechless",
+        "disc": null,
+        "number": 11,
+        "duration_ms": 36137
+      },
+      {
+        "title": "Moonset",
+        "disc": null,
+        "number": 12,
+        "duration_ms": 211417
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Underwater",
+        "tracks": [
+          {
+            "title": "Underwater",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 240109
+          },
+          {
+            "title": "Satellite",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 225818
+          },
+          {
+            "title": "Bad Dream",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 297924
+          },
+          {
+            "title": "Half",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 264782
+          },
+          {
+            "title": "Shell",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 221193
+          },
+          {
+            "title": "Quilt - International Collaboration Version",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 258265
+          },
+          {
+            "title": "Walk",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 276870
+          },
+          {
+            "title": "Moonset - International Collaboration Version",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 211416
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "Hop Along, Queen Ansleis",
+    "album": "Freshman Year",
+    "local": [
+      {
+        "title": "_",
+        "disc": 1,
+        "number": 1,
+        "duration_ms": 24216
+      },
+      {
+        "title": "Sirens",
+        "disc": 1,
+        "number": 2,
+        "duration_ms": 224104
+      },
+      {
+        "title": "For Sebastian From A Friend",
+        "disc": 1,
+        "number": 3,
+        "duration_ms": 235207
+      },
+      {
+        "title": "Elizabeth & Elizabeth",
+        "disc": 1,
+        "number": 4,
+        "duration_ms": 130508
+      },
+      {
+        "title": "The Cactus",
+        "disc": 1,
+        "number": 5,
+        "duration_ms": 229303
+      },
+      {
+        "title": "Failure",
+        "disc": 1,
+        "number": 6,
+        "duration_ms": 153130
+      },
+      {
+        "title": "The Big House",
+        "disc": 1,
+        "number": 7,
+        "duration_ms": 225358
+      },
+      {
+        "title": "Of My Brothers And The Bear",
+        "disc": 1,
+        "number": 8,
+        "duration_ms": 227997
+      },
+      {
+        "title": "Organ Song",
+        "disc": 1,
+        "number": 9,
+        "duration_ms": 108800
+      },
+      {
+        "title": "Hi Too Loo Rye",
+        "disc": 1,
+        "number": 10,
+        "duration_ms": 168908
+      },
+      {
+        "title": "Laments Of A Mattress",
+        "disc": 1,
+        "number": 11,
+        "duration_ms": 363102
+      },
+      {
+        "title": "Bruno Is Orange",
+        "disc": 1,
+        "number": 12,
+        "duration_ms": 203128
+      },
+      {
+        "title": "Bride And Groom Hot Air Balloon",
+        "disc": 1,
+        "number": 13,
+        "duration_ms": 235128
+      },
+      {
+        "title": "The Goose & The Wren",
+        "disc": 1,
+        "number": 14,
+        "duration_ms": 453878
+      },
+      {
+        "title": "Workers",
+        "disc": 1,
+        "number": 15,
+        "duration_ms": 194116
+      },
+      {
+        "title": "A Drummer's Arm",
+        "disc": 1,
+        "number": 16,
+        "duration_ms": 144013
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Freshman Year",
+        "tracks": [
+          {
+            "title": "-",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 24182
+          },
+          {
+            "title": "Sirens",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 224013
+          },
+          {
+            "title": "For Sebastian from a Friend",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 235112
+          },
+          {
+            "title": "Elizabeth & Elizabeth",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 130403
+          },
+          {
+            "title": "The Cactus",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 228331
+          },
+          {
+            "title": "Failure",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 153076
+          },
+          {
+            "title": "The Big House",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 225290
+          },
+          {
+            "title": "Of My Brothers and the Bear",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 227612
+          },
+          {
+            "title": "Hi Too Loo Rye",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 168819
+          },
+          {
+            "title": "Laments of a Mattress",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 363007
+          },
+          {
+            "title": "Bruno is Orange",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 202269
+          },
+          {
+            "title": "Bride and Groom Hot Air Balloon",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 235065
+          },
+          {
+            "title": "The Goose & the Wren",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 453820
+          },
+          {
+            "title": "Workers",
+            "disc": 1,
+            "number": 14,
+            "duration_ms": 194036
+          },
+          {
+            "title": "A Drummer's Arm",
+            "disc": 1,
+            "number": 15,
+            "duration_ms": 142185
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "You Slut!",
+    "album": "Critical Meat",
+    "local": [
+      {
+        "title": "Cut & Shut by You Slut!",
+        "disc": 1,
+        "number": 1,
+        "duration_ms": 218573
+      },
+      {
+        "title": "On the Count of 13",
+        "disc": 1,
+        "number": 2,
+        "duration_ms": 141453
+      },
+      {
+        "title": "Roofio Shoots, Roofio Scores",
+        "disc": 1,
+        "number": 3,
+        "duration_ms": 139186
+      },
+      {
+        "title": "On the Spot Tina Turner Fine",
+        "disc": 1,
+        "number": 4,
+        "duration_ms": 181773
+      },
+      {
+        "title": "Pie to the Death-Faced Indie Kid",
+        "disc": 1,
+        "number": 5,
+        "duration_ms": 209333
+      },
+      {
+        "title": "1s, 2ns (The original Door)",
+        "disc": 1,
+        "number": 6,
+        "duration_ms": 145573
+      },
+      {
+        "title": "Jarabew",
+        "disc": 1,
+        "number": 7,
+        "duration_ms": 177093
+      },
+      {
+        "title": "Mybloodyjesusexploreronfire",
+        "disc": 1,
+        "number": 8,
+        "duration_ms": 248613
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Critical Meat (Remastered)",
+        "tracks": [
+          {
+            "title": "Cut & Shut by You Slut!",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 216933
+          },
+          {
+            "title": "On the Count of Thirteen",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 139493
+          },
+          {
+            "title": "Roofio Shoots, Roofio Scores",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 139426
+          },
+          {
+            "title": "On-the-Spot Tina Turner Fine",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 181626
+          },
+          {
+            "title": "Pie to the Death-Faced Indie Kid",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 209106
+          },
+          {
+            "title": "1s, 2ns (The Original Door)",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 143946
+          },
+          {
+            "title": "Jarabew",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 177920
+          },
+          {
+            "title": "MyBloodyJesusExplorerOnFire",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 253133
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "artist": "Hella",
+    "album": "Church Gone Wild/Chirpin Hard",
+    "local": [
+      {
+        "title": "Trap Kit Whatever",
+        "disc": 1,
+        "number": 210,
+        "duration_ms": 100049
+      },
+      {
+        "title": "Leaving the Arena of Anthropology (Movement 1)",
+        "disc": 1,
+        "number": 101,
+        "duration_ms": 74214
+      },
+      {
+        "title": "I'm Quitting the Cult (Movement 2)",
+        "disc": 1,
+        "number": 102,
+        "duration_ms": 314488
+      },
+      {
+        "title": "Half Hour Handshake (Movement 3)",
+        "disc": 1,
+        "number": 103,
+        "duration_ms": 356258
+      },
+      {
+        "title": "Imaginary Friends (Movement 4)",
+        "disc": 1,
+        "number": 104,
+        "duration_ms": 348317
+      },
+      {
+        "title": "Wildlife Takes the Loser By Night (Movement 5)",
+        "disc": 1,
+        "number": 105,
+        "duration_ms": 338024
+      },
+      {
+        "title": "Black Metal Blues-Black Mold (Movement 6)",
+        "disc": 1,
+        "number": 106,
+        "duration_ms": 251246
+      },
+      {
+        "title": "Nixed (Movement 7)",
+        "disc": 1,
+        "number": 107,
+        "duration_ms": 188473
+      },
+      {
+        "title": "Earth's First Evening Jimi Hendrix-less and Pissed (Movement 8)",
+        "disc": 1,
+        "number": 108,
+        "duration_ms": 367308
+      },
+      {
+        "title": "Wish I Never Saw a White Man (Movement 9)",
+        "disc": 1,
+        "number": 109,
+        "duration_ms": 332173
+      },
+      {
+        "title": "Baby In a Coma-Child of No Calendar (Movement 10)",
+        "disc": 1,
+        "number": 110,
+        "duration_ms": 344111
+      },
+      {
+        "title": "Bodyguards Harmonic (Movement 11)",
+        "disc": 1,
+        "number": 111,
+        "duration_ms": 242756
+      },
+      {
+        "title": "We Was Just Boys, Living In a Dead Ass German Shepard (Movement 12)",
+        "disc": 1,
+        "number": 112,
+        "duration_ms": 391210
+      },
+      {
+        "title": "Gold Mine, Gold Yours",
+        "disc": 1,
+        "number": 201,
+        "duration_ms": 148820
+      },
+      {
+        "title": "Song From Uncle",
+        "disc": 1,
+        "number": 202,
+        "duration_ms": 221989
+      },
+      {
+        "title": "W",
+        "disc": 1,
+        "number": 203,
+        "duration_ms": 133016
+      },
+      {
+        "title": "Try Dis...",
+        "disc": 1,
+        "number": 204,
+        "duration_ms": 201874
+      },
+      {
+        "title": "Drop Diva",
+        "disc": 1,
+        "number": 205,
+        "duration_ms": 85708
+      },
+      {
+        "title": "Famnail",
+        "disc": 1,
+        "number": 206,
+        "duration_ms": 139050
+      },
+      {
+        "title": "Dad For Song",
+        "disc": 1,
+        "number": 207,
+        "duration_ms": 186096
+      },
+      {
+        "title": "Mind Over Butter",
+        "disc": 1,
+        "number": 208,
+        "duration_ms": 134034
+      },
+      {
+        "title": "Home On the Arrange",
+        "disc": 1,
+        "number": 209,
+        "duration_ms": 257933
+      },
+      {
+        "title": "Proud of the Sun",
+        "disc": 1,
+        "number": 211,
+        "duration_ms": 98586
+      },
+      {
+        "title": "Chirpin Hard",
+        "disc": 1,
+        "number": 212,
+        "duration_ms": 1060728
+      }
+    ],
+    "cached_provider_programs": [
+      {
+        "title": "Church Gone Wild / Chirpin Hard",
+        "tracks": [
+          {
+            "title": "Leaving The Arena of Anthropology",
+            "disc": 1,
+            "number": 1,
+            "duration_ms": 74160
+          },
+          {
+            "title": "I'm Quitting the Cult",
+            "disc": 1,
+            "number": 2,
+            "duration_ms": 314426
+          },
+          {
+            "title": "Half Hour Handshake",
+            "disc": 1,
+            "number": 3,
+            "duration_ms": 356213
+          },
+          {
+            "title": "Imaginary Friends",
+            "disc": 1,
+            "number": 4,
+            "duration_ms": 348253
+          },
+          {
+            "title": "Wildlife Takes the Loser By Night",
+            "disc": 1,
+            "number": 5,
+            "duration_ms": 337973
+          },
+          {
+            "title": "Black Metal Blues/Black Mold",
+            "disc": 1,
+            "number": 6,
+            "duration_ms": 251186
+          },
+          {
+            "title": "Nixed",
+            "disc": 1,
+            "number": 7,
+            "duration_ms": 188426
+          },
+          {
+            "title": "Earth's First Evening Jimi Hendrix-less and Pissed",
+            "disc": 1,
+            "number": 8,
+            "duration_ms": 367253
+          },
+          {
+            "title": "Wish I Never Saw A White Man",
+            "disc": 1,
+            "number": 9,
+            "duration_ms": 332120
+          },
+          {
+            "title": "Baby in a Coma/Child of No Calendar",
+            "disc": 1,
+            "number": 10,
+            "duration_ms": 344053
+          },
+          {
+            "title": "Bodyguards Harmonic",
+            "disc": 1,
+            "number": 11,
+            "duration_ms": 242693
+          },
+          {
+            "title": "We Was Just Boys, Living in a Dead Ass German Shepard",
+            "disc": 1,
+            "number": 12,
+            "duration_ms": 391026
+          },
+          {
+            "title": "Gold Mine, Gold Yours",
+            "disc": 1,
+            "number": 13,
+            "duration_ms": 148760
+          },
+          {
+            "title": "Song From Uncle",
+            "disc": 1,
+            "number": 14,
+            "duration_ms": 221933
+          },
+          {
+            "title": "W",
+            "disc": 1,
+            "number": 15,
+            "duration_ms": 132973
+          },
+          {
+            "title": "Try Dis…",
+            "disc": 1,
+            "number": 16,
+            "duration_ms": 201826
+          },
+          {
+            "title": "Drop Diva",
+            "disc": 1,
+            "number": 17,
+            "duration_ms": 85666
+          },
+          {
+            "title": "Famnail",
+            "disc": 1,
+            "number": 18,
+            "duration_ms": 139000
+          },
+          {
+            "title": "Dad for Song",
+            "disc": 1,
+            "number": 19,
+            "duration_ms": 186053
+          },
+          {
+            "title": "Mind Over Butter",
+            "disc": 1,
+            "number": 20,
+            "duration_ms": 133973
+          },
+          {
+            "title": "Home on the Arrange",
+            "disc": 1,
+            "number": 21,
+            "duration_ms": 257893
+          },
+          {
+            "title": "Trap Kit Whatever",
+            "disc": 1,
+            "number": 22,
+            "duration_ms": 99986
+          },
+          {
+            "title": "Proud of the Sun",
+            "disc": 1,
+            "number": 23,
+            "duration_ms": 98533
+          },
+          {
+            "title": "Chirpin Hard",
+            "disc": 1,
+            "number": 24,
+            "duration_ms": 1060546
+          }
+        ]
+      }
+    ]
+  }
+]

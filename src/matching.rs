@@ -128,9 +128,48 @@ pub fn artist_album_title<'a>(title: &'a str, artist: &str) -> Option<&'a str> {
     }
 }
 
+/// One alternate established-Artist query for an otherwise undiscovered series
+/// title. Evaluation still requires systematic Live-program corroboration.
+pub fn artist_album_discovery_variant(artist: &str, title: &str) -> Option<String> {
+    let title = title.trim();
+    let base = title
+        .rsplit_once(' ')
+        .filter(|(_, suffix)| suffix.eq_ignore_ascii_case("live"))
+        .map_or(title, |(base, _)| base);
+    (base.chars().count() >= 4
+        && base.chars().count() <= 40
+        && base.chars().all(char::is_alphabetic)
+        && !matches!(
+            normalize(base).as_str(),
+            "live" | "demo" | "remaster" | "acoustic"
+        )
+        && !artist.trim().is_empty())
+    .then(|| format!("{} on {} Live", artist.trim(), base))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn established_series_discovery_has_one_variant() {
+        for title in ["Audiotree", "Audiotree Live", "Audiotree LIVE"] {
+            assert_eq!(
+                artist_album_discovery_variant("CHON", title).as_deref(),
+                Some("CHON on Audiotree Live")
+            );
+        }
+        for title in [
+            "Live",
+            "Demo",
+            "Remaster",
+            "Acoustic",
+            "Ordinary Album",
+            "Audiotree (Demo)",
+        ] {
+            assert!(artist_album_discovery_variant("Artist", title).is_none());
+        }
+        assert!(artist_album_discovery_variant("", "Audiotree").is_none());
+    }
     #[test]
     fn apostrophe_typography_is_equivalent_without_losing_version_qualifiers() {
         for title in ["X'ed Out", "X’ed Out", "X‘ed Out", "Xʼed Out", "X＇ed Out"] {

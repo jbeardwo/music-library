@@ -79,7 +79,7 @@ impl Store {
                 crate::album_matching::MatchOutcome::Skipped,
             ));
         }
-        prepare_album_match(&self.connection, id, scope)
+        prepare_album_match(&self.connection, id, scope, false)
     }
     pub fn complete_album_match(
         &mut self,
@@ -118,7 +118,7 @@ impl Store {
             {
                 return Err(Error::Invalid("invalid Artist matching identity".into()));
             }
-            let current = match prepare_album_match(&tx, &reply.input.album_id, scope)? {
+            let current = match prepare_album_match(&tx, &reply.input.album_id, scope, false)? {
                 Preparation::Ready(current) => current,
                 Preparation::Done(outcome) => return Ok(outcome),
             };
@@ -147,7 +147,7 @@ impl Store {
                 canonical_external_artist(&tx, Some(&current.artist_id), &current.artist, identity)?
             };
         }
-        let outcome = match prepare_album_match(&tx, &reply.input.album_id, scope)? {
+        let outcome = match prepare_album_match(&tx, &reply.input.album_id, scope, false)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(current)
                 if current.title != reply.input.title
@@ -253,7 +253,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 32 {
+        } else if version > 33 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -434,6 +434,14 @@ impl Store {
         if version < 32 {
             connection
                 .execute_batch(include_str!("../migrations/0032_playback_preferences.sql"))?;
+        }
+
+        if version < 33 {
+            let tx = connection.transaction()?;
+            tx.execute_batch(include_str!("../migrations/0033_local_artist_context.sql"))?;
+            crate::artist_identity::backfill(&tx)?;
+            tx.pragma_update(None, "user_version", 33)?;
+            tx.commit()?;
         }
 
         Ok(Self {
@@ -2147,10 +2155,11 @@ pub(crate) fn refresh_effective_track_impl(
     Ok(())
 }
 
-fn prepare_album_match(
+pub(crate) fn prepare_album_match(
     db: &Connection,
     id: &crate::domain::AlbumId,
     scope: &crate::catalog::MatchingScope,
+    inspection: bool,
 ) -> Result<crate::album_matching::Preparation> {
     use crate::album_matching::{MatchInput, MatchOutcome, Preparation};
     let (title, artist, year, raw_title): (String, String, Option<i32>, String) = db.query_row(
@@ -2158,7 +2167,7 @@ fn prepare_album_match(
         [id.as_ref()],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    if db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3)", params![id.as_ref(),scope.provider,scope.album_kind], |r|r.get::<_,bool>(0))? {
+    if !inspection && db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider=?2 AND kind=?3)", params![id.as_ref(),scope.provider,scope.album_kind], |r|r.get::<_,bool>(0))? {
         return Ok(Preparation::Done(MatchOutcome::AlreadyMatched));
     }
     if !crate::album_matching::eligible_text(&title, &artist) {
@@ -2290,6 +2299,13 @@ pub(crate) fn merge_artist_tx(
     // Preserve explicit links when an existing identity consolidation replaces a
     // duplicate canonical Artist. This never creates a link from matching names.
     tx.execute("INSERT OR IGNORE INTO artist_equivalence(artist_a,artist_b,confirmed_at) SELECT min(?2,CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END),max(?2,CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END),confirmed_at FROM artist_equivalence WHERE (artist_a=?1 OR artist_b=?1) AND CASE WHEN artist_a=?1 THEN artist_b ELSE artist_a END<>?2",params![source.as_ref(),canonical.as_ref()])?;
+    if tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='hidden_artist_preference')",
+        [],
+        |r| r.get::<_, bool>(0),
+    )? {
+        tx.execute("INSERT OR IGNORE INTO hidden_artist_preference(profile_id,artist_id) SELECT profile_id,?2 FROM hidden_artist_preference WHERE artist_id=?1",params![source.as_ref(),canonical.as_ref()])?;
+    }
     tx.execute("DELETE FROM artist WHERE id=?1", [source.as_ref()])?;
     // Display is unchanged, so effective metadata, FTS and Album keys stay valid.
     Ok(true)
