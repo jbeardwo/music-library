@@ -75,6 +75,43 @@ pub fn inspect_positioned_program(
     local: &[LocalTrackEvidence],
     program: &Program,
 ) -> PositionedProgram {
+    inspect_positioned_program_context(local, program, false)
+}
+fn playable_alignment(
+    local: &[LocalTrackEvidence],
+    program: &Program,
+    alignment: &Alignment,
+) -> bool {
+    let matched = alignment
+        .rows
+        .iter()
+        .filter_map(|r| r.local_index.zip(r.provider_index))
+        .collect::<Vec<_>>();
+    program.complete
+        && matched.len() >= 3
+        && (matched.len() * 5 >= local.len() * 4 || matched.len() * 5 >= program.tracks.len() * 4)
+        && matched.iter().all(|(i, j)| {
+            let a = &local[*i].evidence;
+            let b = &program.tracks[*j];
+            a.artists.first().is_some_and(|artist| {
+                artist.identities.iter().any(|id| {
+                    id.provider == "spotify"
+                        && id.kind == "artist"
+                        && b.artists
+                            .iter()
+                            .any(|artist| artist.identities.contains(id))
+                })
+            }) && !occurrence_identity_conflict(a, b)
+                && a.duration_ms
+                    .zip(b.duration_ms)
+                    .is_none_or(|(a, b)| a.abs_diff(b) <= 10_000)
+        })
+}
+fn inspect_positioned_program_context(
+    local: &[LocalTrackEvidence],
+    program: &Program,
+    playable: bool,
+) -> PositionedProgram {
     let mut positions = BTreeMap::new();
     let mut duplicate_positions = 0;
     for t in &program.tracks {
@@ -105,7 +142,10 @@ pub fn inspect_positioned_program(
             }
         }
     }
-    let alignment = align_program(local, program);
+    let mut alignment = align_program(local, program);
+    if playable && playable_alignment(local, program, &alignment) {
+        alignment.strong = true;
+    }
     if alignment.strong {
         anchors.clear();
         for row in &alignment.rows {
@@ -214,9 +254,36 @@ pub fn inspect_album_program(
     program: &Program,
     album_title: &str,
 ) -> PositionedProgram {
+    inspect_program_context(local, program, album_title, false)
+}
+/// Playback correspondence permits a well-corroborated subset without asserting
+/// canonical Release identity. Artist IDs and unique program context are required.
+pub fn inspect_playable_program(
+    local: &[LocalTrackEvidence],
+    program: &Program,
+    album_title: &str,
+) -> PositionedProgram {
+    inspect_program_context(local, program, album_title, true)
+}
+fn inspect_program_context(
+    local: &[LocalTrackEvidence],
+    program: &Program,
+    album_title: &str,
+    playable: bool,
+) -> PositionedProgram {
     let album = crate::matching::album_representation_title(album_title);
     let mut derived = program.clone();
     let mut known = local.to_vec();
+    if playable {
+        // Existing exact provider occurrences remain attached. They can still
+        // corroborate another edition's program for unresolved Tracks; an
+        // occurrence ID difference alone is not a Recording conflict.
+        for t in &mut known {
+            t.evidence
+                .identities
+                .retain(|id| !(id.provider == "spotify" && id.kind == "track"));
+        }
+    }
     let mut changed = 0;
     for p in &mut derived.tracks {
         if let Some(title) = &p.title
@@ -276,47 +343,148 @@ pub fn inspect_album_program(
             known[index] = local[index].clone();
         }
     }
-    // A repeated short non-Latin token is an annotation only when the remainder
-    // uniquely reconstructs an already corroborated program. Varying translated
-    // titles, meaningful suffixes and arbitrary subtitles are left untouched.
-    let prefixes: Vec<_> = known
-        .iter()
-        .filter_map(|t| {
-            let (prefix, _) = t.evidence.title.as_deref()?.split_once(' ')?;
-            (prefix.chars().count() <= 3
-                && !prefix.is_empty()
-                && prefix.chars().all(|c| c.is_alphabetic() && !c.is_ascii()))
-            .then_some(prefix.to_owned())
-        })
-        .collect();
-    let prefix = prefixes.first().filter(|p| {
-        prefixes.len() >= 3
-            && prefixes.len() * 5 >= local.len() * 4
-            && prefixes.iter().all(|other| other == *p)
-    });
-    let mut prefixes_changed = 0;
-    if let Some(prefix) = prefix {
-        for t in &mut known {
-            if let Some(base) = t
-                .evidence
-                .title
-                .as_deref()
-                .and_then(|s| s.strip_prefix(&format!("{prefix} ")))
+    // Full correspondence always wins. Only unmatched titles may use a contained
+    // component, and only a unique, Artist/duration-compatible whole program
+    // can corroborate that fallback. No script is designated canonical.
+    let mut shared_spans = vec![];
+    let mut pairs = vec![];
+    let mut contextual_pairs = vec![];
+    for (i, t) in known.iter().enumerate() {
+        if derived
+            .tracks
+            .iter()
+            .any(|p| title_relation(&t.evidence, p) == TitleRelation::Agrees)
+        {
+            continue;
+        }
+        for (j, p) in derived.tracks.iter().enumerate() {
+            if known
+                .iter()
+                .any(|other| title_relation(&other.evidence, p) == TitleRelation::Agrees)
             {
-                t.evidence.title = Some(base.into());
-                t.evidence.title_observations.clear();
-                prefixes_changed += 1;
+                continue;
+            }
+            let a = t.evidence.title.as_deref().unwrap_or("");
+            let b = p.title.as_deref().unwrap_or("");
+            let contextual = crate::matching::contextual_title_class(a, b);
+            let weak_annotation =
+                contextual == Some(crate::matching::ContextualTitleClass::AlbumVersion);
+            if t.evidence.title_observations.iter().any(|o| {
+                qualifiers(&comparison_title(&o.value)) != qualifiers(&comparison_title(b))
+                    && !(weak_annotation
+                        && crate::matching::contextual_title_class(&o.value, b) == contextual)
+            }) || qualifiers(&comparison_title(a)) != qualifiers(&comparison_title(b))
+                && !weak_annotation
+                || occurrence_identity_conflict(&t.evidence, p)
+                || t.evidence
+                    .duration_ms
+                    .zip(p.duration_ms)
+                    .is_some_and(|(a, b)| {
+                        a.abs_diff(b)
+                            > if playable
+                                && contextual.is_some_and(|c| {
+                                    c != crate::matching::ContextualTitleClass::TinyTypo
+                                })
+                            {
+                                10_000
+                            } else {
+                                3_000
+                            }
+                    })
+                || !matches!(
+                    crate::artist_credit::compare(&t.evidence.artists, &p.artists),
+                    crate::artist_credit::Compatibility::Equivalent
+                        | crate::artist_credit::Compatibility::Incomplete
+                        | crate::artist_credit::Compatibility::DifferentAdditional
+                )
+            {
+                continue;
+            }
+            if let Some(class) = contextual
+                && position(&t.evidence).is_some()
+                && position(&t.evidence) == position(p)
+                && t.evidence.artists.first().is_some_and(|artist| artist.identities.iter().any(|id| id.provider == "spotify" && p.artists.iter().any(|a| a.identities.contains(id))))
+                // Consider competitors even at other positions: a position cannot
+                // resolve two equally close title observations by itself.
+                && derived.tracks.iter().filter(|other| crate::matching::contextual_title_class(a, other.title.as_deref().unwrap_or("")) == Some(class)).count() == 1
+                && known.iter().filter(|other| crate::matching::contextual_title_class(other.evidence.title.as_deref().unwrap_or(""), b) == Some(class)).count() == 1
+            {
+                contextual_pairs.push((i, j, class));
+            } else if punctuation_placeholder(a)
+                && punctuation_placeholder(b)
+                && position(&t.evidence).is_some()
+                && position(&t.evidence) == position(p)
+            {
+                pairs.push((i, j, "contextual punctuation placeholder".into(), false));
+            } else if let Some(span) = crate::matching::shared_title_span(a, b) {
+                pairs.push((i, j, span, false));
+            } else if playable {
+                let left = crate::matching::normalize_album_title(a).replace('\'', "");
+                let right = crate::matching::normalize_album_title(b).replace('\'', "");
+                if left == right
+                    && left.chars().filter(|c| c.is_alphanumeric()).count() >= 5
+                    && position(&t.evidence) == position(p)
+                    && t.evidence
+                        .duration_ms
+                        .zip(p.duration_ms)
+                        .is_some_and(|(a, b)| a.abs_diff(b) <= 3000)
+                {
+                    pairs.push((i, j, left, true));
+                }
             }
         }
     }
-    let prefix_systematic = prefixes_changed >= 3 && prefixes_changed * 5 >= local.len() * 4;
+    for (i, j, span, apostrophe) in &pairs {
+        if pairs.iter().filter(|(a, _, _, _)| a == i).count() == 1
+            && pairs.iter().filter(|(_, b, _, _)| b == j).count() == 1
+        {
+            shared_spans.push(format!(
+                "{} ↔ {}: {} '{}'",
+                known[*i].evidence.title.as_deref().unwrap_or(""),
+                derived.tracks[*j].title.as_deref().unwrap_or(""),
+                if *apostrophe {
+                    "apostrophe typography under strong playback program"
+                } else {
+                    "shared title span"
+                },
+                span
+            ));
+            known[*i].evidence.title = Some(span.clone());
+            known[*i].evidence.title_observations.clear();
+            derived.tracks[*j].title = Some(span.clone());
+        }
+    }
+    // Existing shared-span/apostrophe evidence can corroborate the program
+    // before weaker spacing/typo rules. Weak rules cannot bootstrap each other.
+    let independent = align_program(&known, &derived);
+    let anchors = independent
+        .rows
+        .iter()
+        .filter(|r| r.local_index.is_some() && r.provider_index.is_some())
+        .count();
+    if program.complete && anchors >= 3 && anchors * 4 >= known.len().max(derived.tracks.len()) * 3
+    {
+        for (i, j, class) in contextual_pairs {
+            let raw_local = known[i].evidence.title.as_deref().unwrap_or("");
+            let raw_provider = derived.tracks[j].title.as_deref().unwrap_or("");
+            shared_spans.push(format!("{raw_local} ↔ {raw_provider}: {}", class.label()));
+            let key = comparison_title(raw_local);
+            known[i].evidence.title = Some(key.clone());
+            known[i].evidence.title_observations.clear();
+            derived.tracks[j].title = Some(key);
+        }
+    }
+    let shared_systematic = !shared_spans.is_empty();
     let systematic = changed >= 3 && changed * 5 >= program.tracks.len() * 4
         || movements >= 3
         || edition_systematic
-        || prefix_systematic;
-    if !systematic || !align_program(&known, &derived).strong {
-        let mut result = inspect_positioned_program(local, program);
-        if movements >= 3 || edition_annotations > 0 || prefixes_changed > 0 {
+        || shared_systematic;
+    let alignment = align_program(&known, &derived);
+    if !systematic
+        || !(alignment.strong || playable && playable_alignment(&known, &derived, &alignment))
+    {
+        let mut result = inspect_positioned_program_context(local, program, playable);
+        if movements >= 3 || edition_annotations > 0 || shared_systematic {
             for row in &mut result.tracks {
                 if row
                     .provider
@@ -329,18 +497,18 @@ pub fn inspect_album_program(
         }
         return result;
     }
-    let mut result = inspect_positioned_program(&known, &derived);
+    let mut result = inspect_positioned_program_context(&known, &derived, playable);
     if edition_systematic {
         result.warnings.push(
             "Systematic edition annotation ignored for program comparison; raw titles retained"
                 .into(),
         );
     }
-    if prefix_systematic {
-        result.warnings.push(format!(
-            "Systematic local prefix '{}' ignored for program comparison; raw titles retained",
-            prefix.unwrap()
-        ));
+    if shared_systematic {
+        result.warnings.extend(shared_spans);
+        result
+            .warnings
+            .push("Contextual shared-title comparison only; all raw metadata retained".into());
     }
     for row in &mut result.tracks {
         if let Some(t) = local.iter().find(|t| t.track_id.as_ref() == row.track_id) {

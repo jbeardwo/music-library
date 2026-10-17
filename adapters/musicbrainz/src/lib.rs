@@ -33,6 +33,90 @@ impl Default for MusicBrainz {
     }
 }
 impl MusicBrainz {
+    /// Normal identity-scoped Artist enrichment. A catalog identity is resolved
+    /// conservatively before any alternate name becomes discovery evidence.
+    pub fn enrich_artist_names(
+        &mut self,
+        library: &mut music_library::Library,
+        album: &music_library::domain::AlbumId,
+    ) -> Result<Option<catalog::ArtistCandidate>, CatalogError> {
+        use music_library::album_matching::{
+            MatchOutcome, MatchReply, Preparation, resolve_artist,
+        };
+        let input = library
+            .prepare_album_match(album)
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        let Preparation::Ready(input) = input else {
+            if let Preparation::Ready(input) = library
+                .spotify_album_review_input(album)
+                .map_err(|e| CatalogError::Other(e.to_string()))?
+            {
+                let known = library
+                    .list_artist_external_identities(&input.artist_id)
+                    .map_err(|e| CatalogError::Other(e.to_string()))?
+                    .into_iter()
+                    .find(|i| i.provider == "musicbrainz" && i.kind == "artist");
+                let identity = match known {
+                    Some(identity) => {
+                        if library
+                            .unobserved_catalog_artist(&input.artist_id)
+                            .map_err(|e| CatalogError::Other(e.to_string()))?
+                            .is_none()
+                        {
+                            return Ok(None);
+                        }
+                        identity
+                    }
+                    None => {
+                        match resolve_artist(&input.artist, &self.search_artists(&input.artist)?) {
+                            Ok(identity) => identity,
+                            Err(_) => return Ok(None),
+                        }
+                    }
+                };
+                let observation = self.artist_observation(&identity)?;
+                if let Some(observation) = &observation {
+                    library
+                        .ingest_resolved_catalog_artist(&input.artist_id, observation)
+                        .map_err(|e| CatalogError::Other(e.to_string()))?;
+                }
+                return Ok(observation);
+            }
+            return Ok(None);
+        };
+        if library
+            .unobserved_catalog_artist(&input.artist_id)
+            .map_err(|e| CatalogError::Other(e.to_string()))?
+            .is_none()
+            && input.known_artist.is_some()
+        {
+            return Ok(None);
+        }
+        let identity = match &input.known_artist {
+            Some(identity) => identity.clone(),
+            None => match resolve_artist(&input.artist, &self.search_artists(&input.artist)?) {
+                Ok(identity) => identity,
+                Err(_) => return Ok(None),
+            },
+        };
+        let observation = self.artist_observation(&identity)?;
+        library
+            .complete_album_match(MatchReply {
+                input,
+                artist: Some(identity),
+                artist_observation: None,
+                outcome: MatchOutcome::NoConfidentMatch,
+                matched_album: None,
+                diagnostic: None,
+            })
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
+        if let Some(observation) = &observation {
+            library
+                .ingest_trusted_artist_names(observation)
+                .map_err(|e| CatalogError::Other(e.to_string()))?;
+        }
+        Ok(observation)
+    }
     pub fn new() -> Self {
         Self::at(Url::parse("https://musicbrainz.org/ws/2/").unwrap())
     }
@@ -588,6 +672,31 @@ impl CatalogProvider for MusicBrainz {
             items,
             next_offset: None,
         })
+    }
+    fn artist_observation(
+        &mut self,
+        artist: &ExternalIdentity,
+    ) -> Result<Option<catalog::ArtistCandidate>, CatalogError> {
+        mbid(&artist.external_id)?;
+        if artist.provider != "musicbrainz" || artist.kind != "artist" {
+            return Ok(None);
+        }
+        let a: ArtistSearch = self.request(
+            &format!("artist/{}", artist.external_id),
+            &[("inc", "aliases".into())],
+        )?;
+        if a.id != artist.external_id {
+            return Err(CatalogError::Other("Artist lookup identity changed".into()));
+        }
+        Ok(Some(catalog::ArtistCandidate {
+            identity: artist.clone(),
+            name: a.name,
+            aliases: a.aliases.into_iter().map(|v| v.name).collect(),
+            comment: a.disambiguation.unwrap_or_default(),
+            country: a.country.unwrap_or_default(),
+            artist_type: a.artist_type.unwrap_or_default(),
+            score: a.score,
+        }))
     }
     fn search_artists(
         &mut self,
@@ -1306,6 +1415,66 @@ mod tests {
             !edition_evidence(serde_json::from_value(json).unwrap())
                 .unwrap()
                 .tracklist_complete
+        );
+    }
+    #[test]
+    fn fresh_catalog_artist_ingestion_retains_preferred_and_alias_names_without_equivalence() {
+        use music_library::{Library, domain::*};
+        let mut library = Library::open_in_memory().unwrap();
+        let release = library
+            .create_catalog_release(&CatalogReleaseInput {
+                title: "Album".into(),
+                year: None,
+                artists: vec![ArtistCreditInput {
+                    name: "Artist A".into(),
+                    role: None,
+                }],
+                tracks: vec![CatalogTrackInput {
+                    title: "Song".into(),
+                    disc_number: Some(1),
+                    track_number: Some(1),
+                    artists: vec![],
+                }],
+            })
+            .unwrap();
+        library.add_to_library(&release.track_ids[0]).unwrap();
+        let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+        let (mut provider, requests, thread) = mock(vec![
+            (
+                200,
+                r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000001","name":"Artist B","aliases":[{"name":"Artist A"}]}]}"#,
+            ),
+            (
+                200,
+                r#"{"id":"00000000-0000-4000-8000-000000000001","name":"Artist B","aliases":[{"name":"Artist A"},{"name":"Former Name"}]}"#,
+            ),
+        ]);
+        let observation = provider
+            .enrich_artist_names(&mut library, &album)
+            .unwrap()
+            .unwrap();
+        assert_eq!(observation.name, "Artist B");
+        assert_eq!(
+            library.trusted_artist_search_names("Artist A").unwrap(),
+            vec!["Artist B", "Former Name"]
+        );
+        assert!(
+            library
+                .trusted_artist_search_names("Artist AA")
+                .unwrap()
+                .is_empty()
+        );
+        let first = requests.recv().unwrap().1;
+        let second = requests.recv().unwrap().1;
+        assert!(first.contains("artist?"));
+        assert!(second.contains("inc=aliases"));
+        thread.join().unwrap();
+        assert!(
+            provider
+                .enrich_artist_names(&mut library, &album)
+                .unwrap()
+                .is_none(),
+            "completed names are not fetched repeatedly"
         );
     }
     fn mock(

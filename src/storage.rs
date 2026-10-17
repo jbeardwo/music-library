@@ -93,6 +93,15 @@ impl Store {
         scope: &crate::catalog::MatchingScope,
     ) -> Result<crate::album_matching::MatchOutcome> {
         use crate::album_matching::{MatchOutcome, Preparation};
+        let playback_edition = scope.provider == "spotify"
+            && reply.diagnostic.as_ref().is_some_and(|r| {
+                r.decision == "Accepted"
+                    && r.candidates.iter().any(|c| {
+                        c.decision == "Accepted"
+                            && c.title.comparison
+                                == crate::album_candidates::TitleComparison::PlayableEdition
+                    })
+            });
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -147,6 +156,23 @@ impl Store {
                 canonical_external_artist(&tx, Some(&current.artist_id), &current.artist, identity)?
             };
         }
+        if let Some(observation) = &reply.artist_observation
+            && reply.artist.as_ref() == Some(&observation.identity)
+            && observation.identity.provider == "musicbrainz"
+        {
+            let mut names_changed = false;
+            for (name, role) in std::iter::once((&observation.name, "preferred"))
+                .chain(observation.aliases.iter().map(|name| (name, "alias")))
+            {
+                let key = crate::matching::normalize(name);
+                if !key.is_empty() {
+                    names_changed |= tx.execute("INSERT INTO trusted_artist_name(provider,kind,external_id,name,name_key,role) VALUES(?1,'artist',?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![observation.identity.provider,observation.identity.external_id,name,key,role])? > 0;
+                }
+            }
+            if names_changed {
+                tx.execute("UPDATE spotify_connection_review SET stale=1 WHERE track_id IN(SELECT t.id FROM track t JOIN release r ON r.id=t.release_id JOIN album_artist_credit ac ON ac.album_id=r.album_id WHERE ac.artist_id=?1) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')", [canonical.as_ref()])?;
+            }
+        }
         let outcome = match prepare_album_match(&tx, &reply.input.album_id, scope, false)? {
             Preparation::Done(outcome) => outcome,
             Preparation::Ready(current)
@@ -168,7 +194,9 @@ impl Store {
                     {
                         return Err(Error::Invalid("invalid Album matching identity".into()));
                     }
-                    tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING", params![reply.input.album_id.as_ref(), identity.provider, identity.kind, identity.external_id])?;
+                    if !playback_edition {
+                        tx.execute("INSERT INTO album_external_identity(album_id,provider,kind,external_id) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING", params![reply.input.album_id.as_ref(), identity.provider, identity.kind, identity.external_id])?;
+                    }
                     reply.outcome
                 }
                 MatchOutcome::AlbumEquivalent { .. } => {
@@ -206,6 +234,7 @@ impl Store {
             },
         };
         if let Some(candidate) = &reply.matched_album
+            && !playback_edition
             && matches!(
                 outcome,
                 MatchOutcome::Matched(_)
@@ -253,7 +282,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 33 {
+        } else if version > 35 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -443,7 +472,16 @@ impl Store {
             tx.pragma_update(None, "user_version", 33)?;
             tx.commit()?;
         }
+        if version < 34 {
+            connection
+                .execute_batch(include_str!("../migrations/0034_trusted_artist_names.sql"))?;
+        }
 
+        if version < 35 {
+            connection.execute_batch(include_str!(
+                "../migrations/0035_catalog_artist_provider_names.sql"
+            ))?;
+        }
         Ok(Self {
             connection,
             provenance_validator: crate::filesystem::provenance::validate,

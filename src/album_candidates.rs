@@ -12,7 +12,7 @@ mod evidence;
 #[allow(unused_imports)]
 pub use evidence::{
     CandidateEvidence, Reason, Report, Resolution, TitleComparison, TitleEvidence,
-    explain_positioned_program, initial_report, title_evidence,
+    explain_positioned_program, initial_report, playable_edition_pair, title_evidence,
 };
 
 pub const MAX_PROGRAM_CANDIDATES: usize = 3;

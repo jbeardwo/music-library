@@ -173,6 +173,7 @@ impl Bridge {
         }));
     }
     pub fn local_import_schedule_next(&mut self) {
+        let was_busy = self.local_import_state.busy;
         let chunk: Vec<_> = self
             .local_import_state
             .releases
@@ -187,6 +188,9 @@ impl Bridge {
         }
         if self.local_import_state.releases.is_empty() && self.local_import_state.worker.is_none() {
             self.local_import_state.busy = false;
+            if was_busy {
+                self.request_automatic_spotify_reconciliation();
+            }
         }
         self.local_import_changed();
     }

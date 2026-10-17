@@ -348,6 +348,7 @@ fn persist_candidates(
             input,
             artist: Some(id("artist", "artist")),
             outcome,
+            artist_observation: None,
             matched_album: None,
             diagnostic: None,
         },
@@ -548,6 +549,7 @@ fn stale_catalog_track_evidence_rejects_independent_persistence() {
                 input,
                 artist: Some(id("artist", "artist")),
                 outcome,
+                artist_observation: None,
                 matched_album: None,
                 diagnostic: None,
             },
@@ -619,6 +621,7 @@ fn independent_occurrence_persistence_timing() {
                 input,
                 artist: Some(id("artist", "artist")),
                 outcome,
+                artist_observation: None,
                 matched_album: None,
                 diagnostic: None,
             },
@@ -906,6 +909,7 @@ fn preferred_catalog_program_persists_occurrences_without_exact_edition_claim() 
             input,
             artist: Some(id("artist", "artist")),
             outcome,
+            artist_observation: None,
             matched_album: Some(page.items[0].clone()),
             diagnostic: None,
         },
@@ -1027,6 +1031,7 @@ fn changed_album_date_rejects_stale_representation_choice() {
                 input,
                 artist: Some(id("artist", "artist")),
                 outcome: MatchOutcome::Matched(id("album", "a")),
+                artist_observation: None,
                 matched_album: Some(candidate("a")),
                 diagnostic: None,
             },
@@ -1532,6 +1537,108 @@ mod spotify_reconciliation {
             &mut vec![],
         )
         .unwrap()
+    }
+    #[test]
+    fn exact_program_dominates_similar_release_titles_even_on_an_open_search_page() {
+        for local_title in ["Garden I", "Garden II"] {
+            for reverse in [false, true] {
+                let mut p = SpotifyPrograms::new();
+                for track in &mut p.provider.programs.get_mut("b").unwrap().programs[0].tracks {
+                    track.title = Some(format!("Unrelated {}", track.number.unwrap()));
+                    track.identities =
+                        vec![sid("track", &format!("wrong{}", track.number.unwrap()))];
+                }
+                let other_title = if local_title == "Garden I" {
+                    "Garden II"
+                } else {
+                    "Garden I"
+                };
+                let mut items = vec![
+                    album("a", local_title, "Album"),
+                    album("b", other_title, "Album"),
+                ];
+                if reverse {
+                    items.reverse();
+                }
+                let result = resolve_with_report(
+                    &mut p,
+                    (local_title, None),
+                    &sid("artist", "artist"),
+                    &Page {
+                        items,
+                        next_offset: Some(50),
+                    },
+                    false,
+                    &locals(&[1, 2, 3]),
+                    &mut vec![],
+                )
+                .unwrap();
+                assert_eq!(
+                    result.outcome,
+                    MatchOutcome::Matched(sid("album", "a")),
+                    "{:#?}",
+                    result.report
+                );
+                assert_eq!(result.report.candidates[0].identity, sid("album", "a"));
+                assert_eq!(result.report.candidates[0].programs[0].anchors, 3);
+            }
+        }
+    }
+    #[test]
+    fn shared_album_component_requires_strong_program_and_retains_versions() {
+        let mut provider = SpotifyPrograms::new();
+        let result = evaluate(
+            &mut provider,
+            "Work",
+            vec![album("a", "工作 Work", "Single")],
+            &locals(&[1, 2, 3]),
+        );
+        assert!(matches!(result.outcome, MatchOutcome::MatchedClose(_)));
+        assert_eq!(
+            result.report.candidates[0].title.comparison,
+            TitleComparison::SharedTitleSpan
+        );
+        assert!(!result.report.candidates[0].warnings.is_empty());
+        let weak = evaluate(
+            &mut provider,
+            "Work",
+            vec![album("a", "工作 Work", "Single")],
+            &locals(&[1]),
+        );
+        assert_eq!(weak.outcome, MatchOutcome::NoConfidentMatch);
+        for title in ["工作 Work Live", "工作 Work Acoustic", "工作 Work Demo"] {
+            let blocked = evaluate(
+                &mut provider,
+                "Work",
+                vec![album("a", title, "Single")],
+                &locals(&[1, 2, 3]),
+            );
+            assert!(!matches!(
+                blocked.outcome,
+                MatchOutcome::Matched(_) | MatchOutcome::MatchedClose(_)
+            ));
+            assert!(!blocked.report.reasons.is_empty());
+        }
+    }
+    #[test]
+    fn homeboy_release_type_suffix_uses_exact_complete_program() {
+        let mut p = SpotifyPrograms::new();
+        let result = evaluate(
+            &mut p,
+            "Homeboy",
+            vec![album("a", "Homeboy EP", "Single")],
+            &locals(&[1, 2, 3]),
+        );
+        assert_eq!(
+            result.outcome,
+            MatchOutcome::MatchedClose(sid("album", "a"))
+        );
+        assert!(
+            result
+                .report
+                .reasons
+                .contains(&Reason::AcceptedReleaseTypeSuffix)
+        );
     }
     #[test]
     fn established_artist_boilerplate_requires_strong_program_and_identity() {
@@ -2148,7 +2255,12 @@ mod spotify_reconciliation {
             t.evidence.disc = Some(0);
         }
         let result = evaluate(&mut p, "Album", vec![album("a", "Album", "Album")], &local);
-        assert_eq!(result.outcome, MatchOutcome::Matched(sid("album", "a")));
+        assert_eq!(
+            result.outcome,
+            MatchOutcome::Matched(sid("album", "a")),
+            "{:?}",
+            result.report
+        );
         assert_eq!(result.report.candidates[0].programs[0].anchors, 3);
         assert!(
             result.report.candidates[0].programs[0]
@@ -2209,6 +2321,42 @@ mod spotify_reconciliation {
                     .decision,
                 "Accepted"
             );
+        }
+    }
+    #[test]
+    fn cleaner_track_artist_credits_win_independently_of_api_order() {
+        for reverse in [false, true] {
+            let mut provider = SpotifyPrograms::new();
+            for (key, program) in &mut provider.provider.programs {
+                for track in &mut program.programs[0].tracks {
+                    track.artists = vec![ArtistEvidence {
+                        name: "Artist".into(),
+                        identities: vec![sid("artist", "artist")],
+                        join_phrase: String::new(),
+                    }];
+                    if key == "b" {
+                        track.artists.push(ArtistEvidence {
+                            name: "Guest".into(),
+                            identities: vec![sid("artist", "guest")],
+                            join_phrase: String::new(),
+                        });
+                    }
+                }
+            }
+            let mut candidates = vec![album("a", "Album", "Album"), album("b", "Album", "Album")];
+            if reverse {
+                candidates.reverse();
+            }
+            let result = evaluate(&mut provider, "Album", candidates, &locals(&[1, 2, 3]));
+            assert_eq!(result.outcome, MatchOutcome::Matched(sid("album", "a")));
+            let weaker = result
+                .report
+                .candidates
+                .iter()
+                .find(|c| c.identity == sid("album", "b"))
+                .unwrap();
+            assert_eq!(weaker.reasons, vec![Reason::WeakerArtistCredit]);
+            assert_eq!(weaker.decision, "Rejected");
         }
     }
     #[test]
@@ -2286,6 +2434,7 @@ mod spotify_reconciliation {
                 input,
                 artist: Some(sid("artist", "artist")),
                 outcome: result.outcome,
+                artist_observation: None,
                 matched_album: Some(album("a", "Album", "Album")),
                 diagnostic: Some(result.report),
             },
@@ -2453,6 +2602,7 @@ mod spotify_reconciliation {
                 input,
                 artist: Some(sid("artist", "old-provider-id")),
                 outcome: result.outcome,
+                artist_observation: None,
                 matched_album: Some(c),
                 diagnostic: Some(result.report),
             },

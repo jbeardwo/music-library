@@ -224,6 +224,7 @@ impl Bridge {
         self.metadata_state.busy = false;
         match result {
             Ok(outcome) => {
+                self.request_automatic_spotify_reconciliation();
                 self.metadata_state.save_revision += 1;
                 let updated = outcome.files.iter().filter(|f| f.error.is_none()).count();
                 let failures: Vec<_> = outcome

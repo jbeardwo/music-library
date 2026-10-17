@@ -1,20 +1,21 @@
 # Spotify provider discovery and quota lifecycle
 
-Current behavior is recorded in the [propagation/retry audit](spotify-propagation-retry-audit.md).
-Album searches use strategy 3 with at most one established-Artist series fallback.
-Other endpoint keys retain version 1. Offline inspection can reuse legacy Album
-query observations without renewing freshness. Evaluator version is 10; version
-statements below describe historical stages.
+The [fresh-database regression audit](spotify-discovery-regressions-audit.md)
+records evaluation version **15** and Album search strategy **6**. The primary
+Album query always retains an established Artist name, including self-titled
+Releases and multiple trusted provider identities. A relevant exact/typographic/
+release-type result suppresses unnecessary alternates. Otherwise one alternate
+uses the other trusted provider Artist name, a literal title span in mixed-script
+metadata, or a plain Artist-and-title query. Apostrophe and explicitly Live-series
+variants share that same single alternate allowance. No typo search expansion,
+translation, transliteration or title-only fallback is introduced.
 
-The series fallback now uses an unfiltered plain-text `Artist on Series Live`
-query. Cached CHON searches demonstrated that both quoted `album:`/`artist:`
-queries returned empty pages, so repeating those field restrictions could not
-discover its Audiotree release. Returned objects still pass established Artist
-IDs and unchanged Album/program matching. The initial query plus at most one
-alternate remains the bound; the alternate replaces the earlier filtered query.
-Normal freshness uses current keys; offline inspection can replay version 2/1
-observations without fetching or renewing TTL. Search Spotify again explicitly
-executes the new strategy. No live result is claimed without configured access.
+Canonical Artist discovery precedes catalog-attested aliases. Alternate or
+ambiguous names require independent complete Album-program corroboration before
+adding provider name evidence. Alias acquisition remains bounded, and recursive
+alias lookups cannot cycle. Existing provider IDs and canonical entities remain
+intact. Retained provider names prioritize trusted aliases already observed in
+Spotify, rather than a lexical first alias that may not be searchable.
 
 Reconciliation now separates successful catalog discovery from candidate acceptance. Migration 31 adds `spotify_discovery(fingerprint, response_json, completed_at)` and `provider_cooldown(provider, until_epoch)`. Existing Track candidate snapshots, established Album programs, trusted identities and manual exclusions keep their separate ownership.
 
@@ -24,11 +25,11 @@ The Spotify adapter attaches an independent Library connection before worker con
 
 A fingerprint is a deterministic, unhashed request key: `spotify:<SEARCH_STRATEGY_VERSION>:<complete catalog URL>`. It includes the provider endpoint/base URL, market and all actual query parameters, including endpoint scope, query text, limit and offset. No credentials or bearer token appear in it. Canonical Album IDs group batch work; identical resulting provider queries can share a result even across distinct canonical entities without merging those entities.
 
-Album query generation uses the existing Album title variants, presentation/typography normalization and the resolved Spotify Artist search name(s). One shared Artist name permits an Artist-qualified query; multiple different names produce the existing Album-only query. Equivalent Artist IDs continue to filter/evaluate the returned page locally. An empty full-title query can perform the existing single distinctive-token fallback. Both queries are cached separately.
+Album query generation uses the existing Album title variants, presentation/typography normalization and the resolved Spotify Artist search name(s). The first established provider name constrains the primary query; a second different trusted name may supply its one bounded alternate. Equivalent Artist IDs continue to filter/evaluate the returned page locally. An empty full-title query can perform the existing single distinctive-token fallback. Both queries are cached separately.
 
 Track query generation uses presentation/typography-normalized Track title and the structured primary Artist search name. A uniquely known Spotify Artist supplies its observed provider name. Album title, positions, duration, date, program size and canonical evidence affect evaluation, **not this Track query**. An explicit diagnostic Artist lookup name changes the query without changing canonical metadata. Observed Spotify Artist names also persist with market/version/Artist-ID keys, so establishing Artist identity or restarting does not introduce a new detail request for a name already discovered.
 
-`SEARCH_STRATEGY_VERSION = 1` covers candidate discovery only. `EVALUATION_VERSION = 5` remains independent. Query construction, endpoint breadth or pagination changes require a discovery version change; acceptance-rule changes normally require only evaluator version changes. Cached pages/programs pass through current confidence rules; these rules were not loosened.
+`SEARCH_STRATEGY_VERSION = 5` covers Album candidate discovery only. `EVALUATION_VERSION = 14` remains independent. Query construction, endpoint breadth or pagination changes require a discovery version change; acceptance-rule changes normally require only evaluator version changes. Cached pages/programs pass through current confidence rules; these rules were not loosened.
 
 Title and query-relevant Artist changes naturally produce different keys. Genre, file paths, source availability, display-only fields and evaluation-only MusicBrainz evidence do not. Artist equivalence invalidates discovery only when it changes the actual query; acceptance-only changes reuse the same responses.
 
@@ -79,3 +80,16 @@ including expired observations for inspection without renewing TTL. Ordinary dis
 freshness remains unchanged. Explicit true Needs-retry contexts refresh discovery;
 completed Album evaluations clear the retry state. The evaluator is version 6, while
 discovery strategy stays at version 1. Batches remain Album-scoped with no Track fan-out.
+
+Trusted catalog Artist names are retained by catalog identity with preferred/alias
+provenance (migrations 34/35). Normal MusicBrainz matching and missing-name
+enrichment acquire these names; bounded alternate Spotify discovery may use them.
+An observed provider credit alone is never an alias. See the
+[exception inbox follow-up](spotify-exception-inbox-audit.md) for attested credit
+bindings and stable bulk provider-search windows.
+
+A literal remaster/reissue base corresponding to the requested Album now counts as
+useful primary discovery. Acceptance still requires the sole-edition strong-program
+policy; search correspondence never establishes release identity. Strategy 6 avoids
+mixing this result with a broad alternate's incomplete page. Retained responses from
+older strategies remain available for cache-only inspection without refreshing TTL.

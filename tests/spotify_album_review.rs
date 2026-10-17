@@ -234,6 +234,7 @@ fn fresh_album_report_clears_retry_state_and_needed_contexts_ignore_old_cursor()
         vec![album.clone()]
     );
     let report = music_library::album_candidates::Report {
+        discovery_queries: vec![],
         local_title: "Example".into(),
         established_artist: None,
         candidate_count: 0,

@@ -58,6 +58,12 @@ mod recording;
 #[allow(dead_code)]
 #[path = "../src/song_resolution.rs"]
 mod song_resolution;
+#[allow(dead_code)]
+#[path = "../src/spotify_playable_program.rs"]
+mod spotify_playable_program;
+#[allow(dead_code)]
+#[path = "../src/spotify_review.rs"]
+mod spotify_review;
 use music_library::{catalog_date, matching};
 #[allow(dead_code)]
 #[path = "../src/application.rs"]

@@ -18,7 +18,21 @@ ApplicationWindow {
     readonly property var bridge: diagnostic
     // qmllint enable unqualified
     readonly property var library: window.bridge.browse_snapshot
-    Component.onCompleted: { window.bridge.browse_action("refresh", 0, ""); syncQueue(); }
+    Component.onCompleted: {
+        window.bridge.browse_action("refresh", 0, "");
+        syncQueue();
+        // Initial child bindings can settle after the first notification. Populate
+        // their derived models once they are ready, using the existing query page.
+        Qt.callLater(function() { artistsPane.syncRows(); albumsPane.syncRows(); songsPane.syncRows(); });
+    }
+    // One deadline wakeup, not a polling loop. Cached reconciliation can run
+    // during cooldown; deferred provider work resumes only when it expires.
+    Timer {
+        interval: Math.max(1, window.library.reviewCooldownDelay || 0) * 1000
+        running: (window.library.reviewCooldownDelay || 0) > 0
+        repeat: false
+        onTriggered: window.bridge.browse_action("spotify-reconcile-wake", 0, "")
+    }
     // Independent table widths live with the window for the current session.
     property var songsColumnWidths: []
     property var reviewColumnWidths: []
@@ -76,6 +90,19 @@ ApplicationWindow {
                             }
                             Label { visible: program.truncated; text: "First 200 established Tracks shown; full decision evidence retained below." }
                         }
+    Dialog {
+        id: spotifyAlbumExclusion
+        objectName: "spotifyAlbumExclusionConfirmation"
+        property string albumId: ""
+        property int count: 0
+        title: "Not on Spotify"
+        width: Math.min(480, window.width - 40)
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        contentItem: Label { text: "Mark " + spotifyAlbumExclusion.count + " unresolved tracks on this album as not on Spotify?"; wrapMode: Text.Wrap }
+        onAccepted: window.bridge.spotify_review_action("mark-unresolved", albumId, 0)
+    }
     function openSpotifyConnection(trackId) {
         spotifySongChoice.currentIndex=-1;
         spotifyTrackPaste.text="";
@@ -121,6 +148,18 @@ ApplicationWindow {
             ColumnLayout {
                 width: parent.width
                 Label { text: spotifyAlbumDialog.inspection.error || spotifyAlbumDialog.inspection.message || "Known Album: " + (spotifyAlbumDialog.inspection.known_album || "") + " — " + (spotifyAlbumDialog.inspection.known_artist || "Unknown Artist"); wrapMode: Text.Wrap; Layout.fillWidth: true }
+                Label {
+                    objectName: "spotifyAutomaticDecision"
+                    text: spotifyAlbumDialog.inspection.candidate ?
+                        "Automatic match: " + spotifyAlbumDialog.inspection.decision +
+                        (spotifyAlbumDialog.inspection.decision === "Accepted" ? "\nWhy: corresponding Artist and Album program; canonical Release retained" : "\nPrimary blocker: " + (spotifyAlbumDialog.inspection.primary_reason || "No blocker")) +
+                        "\nSearch queries: " + ((spotifyAlbumDialog.inspection.discovery_queries || []).join("; ") || "No retained search") +
+                        "\nCandidate: " + spotifyAlbumDialog.inspection.candidate.title.provider_raw :
+                        "Primary blocker: " + (spotifyAlbumDialog.inspection.primary_reason || "No retained candidate discovery") + "\nSearch queries: " + ((spotifyAlbumDialog.inspection.discovery_queries || []).join("; ") || "No retained search")
+                    font.bold: true
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                }
                 Label {text:spotifyAlbumDialog.inspection.lifecycle || "";wrapMode:Text.Wrap;Layout.fillWidth:true}
                 Label {text:"Known Album: "+(spotifyAlbumDialog.inspection.known_album || "")+" — "+(spotifyAlbumDialog.inspection.known_artist || "");visible:!spotifyAlbumDialog.inspection.candidate;wrapMode:Text.Wrap;Layout.fillWidth:true}
                 RowLayout {
@@ -137,12 +176,6 @@ ApplicationWindow {
                 RowLayout {
                     TextField {id:spotifyAlbumPaste;placeholderText:"Spotify Album URL / URI / ID";Layout.fillWidth:true}
                     Button {text:"Paste Spotify Album…";onClicked:{const r=JSON.parse(window.bridge.spotify_review_action("paste-album",spotifyAlbumPaste.text,0));albumResult.text=r.error || r.message;}}
-                }
-                Repeater { model: spotifyAlbumDialog.inspection.programs || []; delegate: SpotifyProgramComparison { required property var modelData; program:modelData } }
-                Label {
-                    property var plan: spotifyAlbumDialog.inspection.plan
-                    text: plan ? plan.matches.length + " positioned Tracks can be connected. " + plan.unmatched_local + " local and " + plan.unmatched_provider + " provider Tracks unmatched.\n" + plan.warnings.join("\n") : "Candidate program is not cached. Retry Album to retrieve bounded evidence."
-                    wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Flow {
                     Layout.fillWidth:true
@@ -162,6 +195,12 @@ ApplicationWindow {
                     Button { text: "Search Spotify again"; onClicked: {const r=JSON.parse(window.bridge.spotify_review_action("refresh",spotifyAlbumDialog.albumId,0));albumResult.text=r.error || r.message;} }
                     Button { text: "Mark album as not on Spotify"; onClicked: { const r=JSON.parse(window.bridge.spotify_review_action("mark-album",spotifyAlbumDialog.albumId,0));albumResult.text=r.error || r.message; } }
                     Button { text: "Reload cached candidates"; onClicked: spotifyAlbumDialog.inspection=JSON.parse(window.bridge.spotify_review_action("open",spotifyAlbumDialog.albumId,0)) }
+                }
+                Repeater { model: spotifyAlbumDialog.inspection.programs || []; delegate: SpotifyProgramComparison { required property var modelData; program:modelData } }
+                Label {
+                    property var plan: spotifyAlbumDialog.inspection.plan
+                    text: plan ? plan.matches.length + " positioned Tracks can be connected. " + plan.unmatched_local + " local and " + plan.unmatched_provider + " provider Tracks unmatched.\n" + plan.warnings.join("\n") : "Candidate program is not cached. Retry Album to retrieve bounded evidence."
+                    wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Label { id: albumResult; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true }
             }
@@ -1985,7 +2024,7 @@ ApplicationWindow {
             visible: pane.reviewTable
             Button { text:pane.reviewShowTracks ? "Review Albums" : "Show Track list"; onClicked:pane.reviewShowTracks=!pane.reviewShowTracks }
             ComboBox { objectName: "spotifyReviewMode"; model: ["Unresolved", "Marked Not on Spotify"]; currentIndex: window.library.reviewMarked ? 1 : 0; onActivated: window.bridge.browse_action("review-mode",2,currentIndex === 1 ? "marked" : "unresolved") }
-            Button { objectName: "spotifyRetryUnresolved"; text: "Retry unresolved"; ToolTip.visible: hovered; ToolTip.text: "Re-evaluates up to 20 Albums using fresh cached discovery where available. Unresolved Tracks can be searched individually. Click again for the next Album batch."; enabled: !window.library.reviewRetryPending && !window.library.reviewLocalActive; visible: !window.library.reviewMarked; onClicked: window.bridge.browse_action("review-retry",2,"") }
+            Button { objectName: "spotifyRetryUnresolved"; text: "Retry unresolved"; ToolTip.visible: hovered; ToolTip.text: "Drains actionable Albums in bounded batches, reusing cached evidence before Spotify discovery."; enabled: !window.library.reviewRetryPending && !window.library.reviewLocalActive; visible: !window.library.reviewMarked; onClicked: window.bridge.browse_action("review-retry",2,"") }
             Label { text: window.library.reviewMessage || ""; Layout.fillWidth: true; wrapMode: Text.Wrap }
         }
         RowLayout {
@@ -2262,6 +2301,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             clip: true
             model: spotifyAlbumGroups
+            ScrollBar.vertical: ScrollBar { objectName: "spotifyGroupsScrollbar"; policy: ScrollBar.AlwaysOn }
             property var expanded: ({})
             property string after: ""
             property var pages: [""]
@@ -2298,7 +2338,12 @@ ApplicationWindow {
             delegate: ColumnLayout {
                 id: albumGroup
                 required property var group
-                width: spotifyGroupList.width
+                width: spotifyGroupList.width - spotifyGroupList.ScrollBar.vertical.width
+                HoverHandler { id: albumHover }
+                property bool highlighted: albumHover.hovered || albumReview.activeFocus || albumRetry.activeFocus || albumExpand.activeFocus
+                Item { Layout.preferredHeight: 0; Layout.fillWidth: true; z: -1; Rectangle { objectName: "spotifyAlbumHover"; width: albumGroup.width; height: albumGroup.height; color: albumGroup.highlighted ? "#eeece9" : "transparent" } }
+                TapHandler { acceptedButtons: Qt.RightButton; onTapped: albumMenu.popup() }
+                Menu { id: albumMenu; objectName: "spotifyAlbumContextMenu"; MenuItem { objectName: "spotifyMarkAlbumUnavailable"; text: "Mark all unresolved tracks as not on Spotify"; onTriggered: { spotifyAlbumExclusion.albumId=albumGroup.group.id; spotifyAlbumExclusion.count=albumGroup.group.unresolved; spotifyAlbumExclusion.open(); } } }
                 property bool expanded: !!spotifyGroupList.expanded[group.id]
                 property var tracks: []
                 function refreshTracks() { if(expanded) { const r=JSON.parse(window.bridge.spotify_review_action("tracks",group.id,0)); tracks=Array.isArray(r)?r:[]; } }
@@ -2306,10 +2351,10 @@ ApplicationWindow {
                 onGroupChanged: refreshTracks()
                 RowLayout {
                     Layout.fillWidth: true
-                    ToolButton { text: albumGroup.expanded ? "▾" : "▸"; onClicked: {const e=Object.assign({},spotifyGroupList.expanded);e[albumGroup.group.id]=!albumGroup.expanded;spotifyGroupList.expanded=e;} }
+                    ToolButton { id: albumExpand; text: albumGroup.expanded ? "▾" : "▸"; onClicked: {const e=Object.assign({},spotifyGroupList.expanded);e[albumGroup.group.id]=!albumGroup.expanded;spotifyGroupList.expanded=e;} }
                     Label { text: (albumGroup.group.title || "Singles / Unassigned") + " — " + (albumGroup.group.artist || "Unknown Artist") + " · " + albumGroup.group.unresolved + " unresolved · " + albumGroup.group.status; wrapMode: Text.Wrap; Layout.fillWidth:true; MouseArea { anchors.fill:parent; onDoubleClicked:window.openSpotifyAlbumConnection(albumGroup.group.id) } }
-                    Button { text: "Review…"; onClicked: window.openSpotifyAlbumConnection(albumGroup.group.id) }
-                    Button { text: "Retry Album"; onClicked: {const r=JSON.parse(window.bridge.spotify_review_action("retry",albumGroup.group.id,0));groupResult.text=r.error || r.message;} }
+                    Button { id: albumReview; objectName: "spotifyAlbumReview"; text: "Review…"; onClicked: window.openSpotifyAlbumConnection(albumGroup.group.id) }
+                    Button { id: albumRetry; objectName: "spotifyAlbumRetry"; text: "Retry Album"; onClicked: {const r=JSON.parse(window.bridge.spotify_review_action("retry",albumGroup.group.id,0));groupResult.text=r.error || r.message;} }
                 }
                 Label { id: groupResult; visible:text.length>0; wrapMode:Text.Wrap; Layout.fillWidth:true }
                 Repeater {
@@ -2647,9 +2692,9 @@ ApplicationWindow {
         }
         Label {
             visible: text.length > 0
-            text: window.library.error || window.view.error || (window.library.pending ? "Preparing selection or tracks…" : "")
+            text: window.library.error || window.view.error || (window.library.pending ? "Preparing selection or tracks…" : (window.library.reviewMessage || ""))
             textFormat: Text.PlainText
-            color: window.library.pending ? "#68636a" : "#9d263d"
+            color: window.library.error || window.view.error ? "#9d263d" : "#68636a"
             wrapMode: Text.Wrap
             Layout.fillWidth: true; Layout.margins: visible ? 12 : 0
         }

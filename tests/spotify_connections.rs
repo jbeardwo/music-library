@@ -114,6 +114,7 @@ fn persisted_structured_reason_sort_filter_and_keyset_pages() {
     let b = release(&mut l, "Second", true);
     let album = l.album_id_for_track(&a.track_ids[0]).unwrap();
     let report = Report {
+        discovery_queries: vec![],
         local_title: "First".into(),
         established_artist: None,
         candidate_count: 0,
@@ -181,8 +182,8 @@ fn persisted_structured_reason_sort_filter_and_keyset_pages() {
     assert_eq!(rows.len(), 3);
     assert!(
         rows.iter()
-            .all(|r| r.connection_reason_code == "track_count_mismatch"
-                && r.connection_reason == "Album program mismatch")
+            .all(|r| r.connection_reason_code == "no_candidates"
+                && r.connection_reason == "No Spotify candidate")
     );
     assert!(
         rows.iter()

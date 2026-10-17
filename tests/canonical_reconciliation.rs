@@ -189,9 +189,18 @@ fn missing_fields_are_neutral_and_provider_metadata_supplies_evidence() {
     );
     db.execute("UPDATE track SET disc_number=2", []).unwrap();
     let input = l.song_resolution_input(&r.track_ids[0]).unwrap();
+    let playback = evaluate(&input, &p, 0, &[]).unwrap();
     assert_eq!(
-        evaluate(&input, &p, 0, &[]).unwrap().primary_code,
-        Some("position_mismatch")
+        playback.final_decision,
+        music_library::song_resolution::FinalDecision::Accept
+    );
+    assert!(
+        playback
+            .fields
+            .iter()
+            .any(|f| f.label == "Disc" && f.status == "warning"),
+        "structural difference remains inspectable: {:?}",
+        playback.fields
     );
 }
 #[test]

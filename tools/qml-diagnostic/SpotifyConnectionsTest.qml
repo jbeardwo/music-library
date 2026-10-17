@@ -13,7 +13,26 @@
             if (!large) {
                 reviewCheck(groups.count===1,"Album grouping and unresolved context");
                 reviewCheck(groups.model.get(0).group.unresolved===450,"Album unresolved aggregation");
+                groups.forceLayout();
+                const groupRow=groups.itemAtIndex(0);
+                const reviewButton=reviewTest.findChild(groupRow,"spotifyAlbumReview");
+                reviewTest.mouseMove(reviewButton,reviewButton.width/2,reviewButton.height/2); reviewWait();
+                reviewCheck(groupRow.highlighted,"full row remains highlighted over Review button");
+                const retryButton=reviewTest.findChild(groupRow,"spotifyAlbumRetry");
+                reviewTest.mouseMove(retryButton,retryButton.width/2,retryButton.height/2); reviewWait();
+                reviewCheck(groupRow.highlighted,"full row remains highlighted over Retry button");
+                retryButton.forceActiveFocus(); reviewWait();
+                reviewCheck(groupRow.highlighted,"keyboard focus identifies Album row");
                 const expanded={};expanded[groups.model.get(0).group.id]=true;groups.expanded=expanded;groups.forceLayout();reviewWait();
+                const scrollbar=reviewTest.findChild(groups,"spotifyGroupsScrollbar");
+                reviewCheck(scrollbar && scrollbar.visible && scrollbar.interactive && scrollbar.size<1,"real draggable scrollbar");
+                const oldOffset=groups.contentY;
+                const thumbY=(scrollbar.position+scrollbar.size/2)*scrollbar.height;
+                reviewTest.mousePress(scrollbar,scrollbar.width/2,thumbY);
+                reviewTest.mouseMove(scrollbar,scrollbar.width/2,Math.min(scrollbar.height-4,thumbY+150),30);
+                reviewTest.mouseRelease(scrollbar,scrollbar.width/2,Math.min(scrollbar.height-4,thumbY+150));reviewWait();
+                reviewCheck(groups.contentY>oldOffset,"dragging scrollbar navigates list");
+                groups.positionViewAtBeginning();reviewWait();
                 const mark=reviewTest.findChild(groups,"spotifyGroupTrackMark");
                 reviewCheck(mark && mark.text==="Mark as not on Spotify","inline Track marking button");
                 const markedTrack=mark.parent.modelData.id;
@@ -206,4 +225,23 @@
             reviewCheck(state===JSON.stringify([window.reviewColumnWidths,library.songsColumn,library.songsDescending,view.currentId,view.queue,view.status]),"bulk action preserves table and playback state");
             return "ok";
         } catch(e) {return String(e);}
+    }
+
+    function reviewAlbumExclusion() {
+        try {
+            bridge.browse_action("review-album",2,"");
+            songsPane.reviewShowTracks=false;reviewWait();
+            const groups=reviewTest.findChild(songsPane,"spotifyAlbumGroups");groups.positionViewAtBeginning();groups.forceLayout();reviewWait();
+            const row=groups.itemAtIndex(0), count=groups.model.get(0).group.unresolved;
+            reviewTest.mouseClick(row,20,20,Qt.RightButton);reviewWait();
+            const menu=reviewTest.findChild(row,"spotifyAlbumContextMenu");
+            reviewCheck(menu.visible,"Album right-click menu opens");
+            reviewTest.findChild(menu,"spotifyMarkAlbumUnavailable").triggered();menu.close();reviewWait();
+            reviewCheck(spotifyAlbumExclusion.visible && spotifyAlbumExclusion.count===count,"confirmation scopes current unresolved Tracks");
+            spotifyAlbumExclusion.accept();reviewWait();
+            reviewCheck(groups.count===0,"Album disappears from unresolved view");
+            bridge.browse_action("review-mode",2,"marked");reviewWait();
+            reviewCheck(library.panes[2].rows.length>0,"bulk excluded Tracks appear in existing management view");
+            return "ok";
+        } catch(e){return String(e);}
     }

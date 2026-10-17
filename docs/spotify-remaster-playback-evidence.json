@@ -1,0 +1,3732 @@
+{
+  "before": {
+    "discovery_queries": [
+      "album:\"critical meat\" artist:\"You Slut!\""
+    ],
+    "local_title": "Critical Meat",
+    "established_artist": {
+      "provider": "spotify",
+      "kind": "artist",
+      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+    },
+    "candidate_count": 1,
+    "more_candidates": false,
+    "candidates": [
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "7zc9EkiGkY5HQQL17JjyE3"
+        },
+        "artist": "You Slut!",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "57FhnNHVDTmK7wsrNAq84o"
+          }
+        ],
+        "artist_accepted": true,
+        "warnings": [
+          "Spotify edition differs; using corresponding songs as playable sources without changing the canonical Release",
+          "Local source release year 2006 differs from Spotify 2012; source observation retained, canonical year unchanged"
+        ],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Critical Meat (Remastered)",
+          "local_normalized": "critical meat",
+          "provider_normalized": "critical meat remastered",
+          "comparison": "playable_edition",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2012",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 8,
+        "programs": [
+          {
+            "warnings": [],
+            "alignment": {
+              "rows": [
+                {
+                  "local_index": 0,
+                  "provider_index": 0,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 1,
+                  "provider_index": 1,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 2,
+                  "provider_index": 2,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 3,
+                  "provider_index": 3,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 4,
+                  "provider_index": 4,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 5,
+                  "provider_index": 5,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 6,
+                  "provider_index": 6,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 7,
+                  "provider_index": 7,
+                  "kind": "Exact"
+                }
+              ],
+              "strong": true,
+              "unreliable_positions": false
+            },
+            "complete": true,
+            "provider_count": 8,
+            "anchors": 8,
+            "duplicate_positions": 0,
+            "tracks": [
+              {
+                "track_id": "59d47d7c-c199-4e36-9ff5-f9a899390551",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Cut & Shut by You Slut!",
+                  "title_observations": [
+                    {
+                      "value": "Cut & Shut by You Slut!",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 1
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 218573,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "2f6a4902-be5c-4381-8a93-2c65bb2bda85"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2T9etViq1x0wIAM3Fw24ux"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Cut & Shut by You Slut!",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 216933,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "977f36a8-c328-474c-a1a1-efa10646fa09",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "On the Count of 13",
+                  "title_observations": [
+                    {
+                      "value": "On the Count of 13",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 2
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 141453,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "98dbd9b1-a4f4-4fb7-b462-ac02d9c78c72"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "239neBfDfsB6TG5EsFDeRz"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "On the Count of Thirteen",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139493,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "cc0b1c9c-7696-4b97-921d-738f883f2397",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "Roofio Shoots, Roofio Scores",
+                  "title_observations": [
+                    {
+                      "value": "Roofio Shoots, Roofio Scores",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 3
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139186,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9649512e-b1f5-4931-a4d8-5822804a4fa8"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "4rrcQhEO0oaH260K9AzTZm"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "Roofio Shoots, Roofio Scores",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139426,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "f4b42cd3-24c9-4224-a84c-091cfe4fb1df",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "On the Spot Tina Turner Fine",
+                  "title_observations": [
+                    {
+                      "value": "On the Spot Tina Turner Fine",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 4
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 181773,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "4981e404-45c3-4bd8-88ef-4ce5b2844b7a"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1pv1RFsNRGH21Aponf0mwF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "On-the-Spot Tina Turner Fine",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 181626,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "8856c746-95e5-4b9c-a9a4-e57d44bd94b5",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 5,
+                  "title": "Pie to the Death-Faced Indie Kid",
+                  "title_observations": [
+                    {
+                      "value": "Pie to the Death-Faced Indie Kid",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 5
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 209333,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9a9e0c58-a24c-4baa-afb8-d1723f9703f4"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 5,
+                  "title": "Pie to the Death-Faced Indie Kid",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 209106,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "b0b6c594-9443-4196-aba6-4252a2815035",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 6,
+                  "title": "1s, 2ns (The original Door)",
+                  "title_observations": [
+                    {
+                      "value": "1s, 2ns (The original Door)",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 6
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 145573,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "c5e50423-161c-4b87-a5d1-ea25e8a3b18f"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1dkVnRxTOxORxX6dyhyluN"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 6,
+                  "title": "1s, 2ns (The Original Door)",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 143946,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "a474f624-b709-4d54-b0f4-8e2323ed6f1d",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 7,
+                  "title": "Jarabew",
+                  "title_observations": [
+                    {
+                      "value": "Jarabew",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 7
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 177093,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9b4bf265-2793-4255-9a0e-a57ec0712317"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 7,
+                  "title": "Jarabew",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 177920,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "7a3b49af-10d7-4b64-bec0-757477e7fe05",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 8,
+                  "title": "Mybloodyjesusexploreronfire",
+                  "title_observations": [
+                    {
+                      "value": "Mybloodyjesusexploreronfire",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 8
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 248613,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "33f6cc1c-06d5-416d-80a0-7c2aade50cb8"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "45Z38gLIK8e5TxsZm66mNF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 8,
+                  "title": "MyBloodyJesusExplorerOnFire",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 253133,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              }
+            ]
+          }
+        ],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Accepted",
+        "reasons": [
+          "accepted_playable_edition"
+        ]
+      }
+    ],
+    "decision": "Accepted",
+    "reasons": [
+      "accepted_playable_edition"
+    ]
+  },
+  "programs": [
+    {
+      "album": {
+        "provider": "spotify",
+        "kind": "album",
+        "external_id": "7zc9EkiGkY5HQQL17JjyE3"
+      },
+      "programs": [
+        {
+          "identity": null,
+          "tracks": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "2T9etViq1x0wIAM3Fw24ux"
+                }
+              ],
+              "disc": 1,
+              "number": 1,
+              "title": "Cut & Shut by You Slut!",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 216933,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "239neBfDfsB6TG5EsFDeRz"
+                }
+              ],
+              "disc": 1,
+              "number": 2,
+              "title": "On the Count of Thirteen",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 139493,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "4rrcQhEO0oaH260K9AzTZm"
+                }
+              ],
+              "disc": 1,
+              "number": 3,
+              "title": "Roofio Shoots, Roofio Scores",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 139426,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "1pv1RFsNRGH21Aponf0mwF"
+                }
+              ],
+              "disc": 1,
+              "number": 4,
+              "title": "On-the-Spot Tina Turner Fine",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 181626,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+                }
+              ],
+              "disc": 1,
+              "number": 5,
+              "title": "Pie to the Death-Faced Indie Kid",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 209106,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "1dkVnRxTOxORxX6dyhyluN"
+                }
+              ],
+              "disc": 1,
+              "number": 6,
+              "title": "1s, 2ns (The Original Door)",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 143946,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+                }
+              ],
+              "disc": 1,
+              "number": 7,
+              "title": "Jarabew",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 177920,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "45Z38gLIK8e5TxsZm66mNF"
+                }
+              ],
+              "disc": 1,
+              "number": 8,
+              "title": "MyBloodyJesusExplorerOnFire",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 253133,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            }
+          ],
+          "complete": true
+        }
+      ],
+      "note": "Spotify market US; catalog song occurrences, no Recording or exact edition claim"
+    }
+  ],
+  "result": {
+    "artist_revisions": [],
+    "examined": 0,
+    "updated": [
+      "59d47d7c-c199-4e36-9ff5-f9a899390551",
+      "977f36a8-c328-474c-a1a1-efa10646fa09",
+      "cc0b1c9c-7696-4b97-921d-738f883f2397",
+      "f4b42cd3-24c9-4224-a84c-091cfe4fb1df",
+      "8856c746-95e5-4b9c-a9a4-e57d44bd94b5",
+      "b0b6c594-9443-4196-aba6-4252a2815035",
+      "a474f624-b709-4d54-b0f4-8e2323ed6f1d",
+      "7a3b49af-10d7-4b64-bec0-757477e7fe05"
+    ],
+    "accepted": [
+      "59d47d7c-c199-4e36-9ff5-f9a899390551",
+      "977f36a8-c328-474c-a1a1-efa10646fa09",
+      "cc0b1c9c-7696-4b97-921d-738f883f2397",
+      "f4b42cd3-24c9-4224-a84c-091cfe4fb1df",
+      "8856c746-95e5-4b9c-a9a4-e57d44bd94b5",
+      "b0b6c594-9443-4196-aba6-4252a2815035",
+      "a474f624-b709-4d54-b0f4-8e2323ed6f1d",
+      "7a3b49af-10d7-4b64-bec0-757477e7fe05"
+    ],
+    "needs_retry": 0,
+    "provider_searches": 0,
+    "still_unresolved": 0,
+    "errors": []
+  },
+  "after": {
+    "discovery_queries": [
+      "album:\"critical meat\" artist:\"You Slut!\""
+    ],
+    "local_title": "Critical Meat",
+    "established_artist": {
+      "provider": "spotify",
+      "kind": "artist",
+      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+    },
+    "candidate_count": 1,
+    "more_candidates": false,
+    "candidates": [
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "7zc9EkiGkY5HQQL17JjyE3"
+        },
+        "artist": "You Slut!",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "57FhnNHVDTmK7wsrNAq84o"
+          }
+        ],
+        "artist_accepted": true,
+        "warnings": [
+          "Spotify edition differs; using corresponding songs as playable sources without changing the canonical Release",
+          "Local source release year 2006 differs from Spotify 2012; source observation retained, canonical year unchanged"
+        ],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Critical Meat (Remastered)",
+          "local_normalized": "critical meat",
+          "provider_normalized": "critical meat remastered",
+          "comparison": "playable_edition",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2012",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 8,
+        "programs": [
+          {
+            "warnings": [],
+            "alignment": {
+              "rows": [
+                {
+                  "local_index": 0,
+                  "provider_index": 0,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 1,
+                  "provider_index": 1,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 2,
+                  "provider_index": 2,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 3,
+                  "provider_index": 3,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 4,
+                  "provider_index": 4,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 5,
+                  "provider_index": 5,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 6,
+                  "provider_index": 6,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 7,
+                  "provider_index": 7,
+                  "kind": "Exact"
+                }
+              ],
+              "strong": true,
+              "unreliable_positions": false
+            },
+            "complete": true,
+            "provider_count": 8,
+            "anchors": 8,
+            "duplicate_positions": 0,
+            "tracks": [
+              {
+                "track_id": "59d47d7c-c199-4e36-9ff5-f9a899390551",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2T9etViq1x0wIAM3Fw24ux"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Cut & Shut by You Slut!",
+                  "title_observations": [
+                    {
+                      "value": "Cut & Shut by You Slut!",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 1
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 218573,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "2f6a4902-be5c-4381-8a93-2c65bb2bda85"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2T9etViq1x0wIAM3Fw24ux"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Cut & Shut by You Slut!",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 216933,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "977f36a8-c328-474c-a1a1-efa10646fa09",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "239neBfDfsB6TG5EsFDeRz"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "On the Count of 13",
+                  "title_observations": [
+                    {
+                      "value": "On the Count of 13",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 2
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 141453,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "98dbd9b1-a4f4-4fb7-b462-ac02d9c78c72"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "239neBfDfsB6TG5EsFDeRz"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "On the Count of Thirteen",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139493,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "cc0b1c9c-7696-4b97-921d-738f883f2397",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "4rrcQhEO0oaH260K9AzTZm"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "Roofio Shoots, Roofio Scores",
+                  "title_observations": [
+                    {
+                      "value": "Roofio Shoots, Roofio Scores",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 3
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139186,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9649512e-b1f5-4931-a4d8-5822804a4fa8"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "4rrcQhEO0oaH260K9AzTZm"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "Roofio Shoots, Roofio Scores",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 139426,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "f4b42cd3-24c9-4224-a84c-091cfe4fb1df",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1pv1RFsNRGH21Aponf0mwF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "On the Spot Tina Turner Fine",
+                  "title_observations": [
+                    {
+                      "value": "On the Spot Tina Turner Fine",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 4
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 181773,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "4981e404-45c3-4bd8-88ef-4ce5b2844b7a"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1pv1RFsNRGH21Aponf0mwF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "On-the-Spot Tina Turner Fine",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 181626,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "8856c746-95e5-4b9c-a9a4-e57d44bd94b5",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 5,
+                  "title": "Pie to the Death-Faced Indie Kid",
+                  "title_observations": [
+                    {
+                      "value": "Pie to the Death-Faced Indie Kid",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 5
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 209333,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9a9e0c58-a24c-4baa-afb8-d1723f9703f4"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 5,
+                  "title": "Pie to the Death-Faced Indie Kid",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 209106,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "b0b6c594-9443-4196-aba6-4252a2815035",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1dkVnRxTOxORxX6dyhyluN"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 6,
+                  "title": "1s, 2ns (The original Door)",
+                  "title_observations": [
+                    {
+                      "value": "1s, 2ns (The original Door)",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 6
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 145573,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "c5e50423-161c-4b87-a5d1-ea25e8a3b18f"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "1dkVnRxTOxORxX6dyhyluN"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 6,
+                  "title": "1s, 2ns (The Original Door)",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 143946,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "a474f624-b709-4d54-b0f4-8e2323ed6f1d",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 7,
+                  "title": "Jarabew",
+                  "title_observations": [
+                    {
+                      "value": "Jarabew",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 7
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 177093,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "9b4bf265-2793-4255-9a0e-a57ec0712317"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 7,
+                  "title": "Jarabew",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 177920,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "7a3b49af-10d7-4b64-bec0-757477e7fe05",
+                "local": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "45Z38gLIK8e5TxsZm66mNF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 8,
+                  "title": "Mybloodyjesusexploreronfire",
+                  "title_observations": [
+                    {
+                      "value": "Mybloodyjesusexploreronfire",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 8
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 248613,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "33f6cc1c-06d5-416d-80a0-7c2aade50cb8"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "45Z38gLIK8e5TxsZm66mNF"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 8,
+                  "title": "MyBloodyJesusExplorerOnFire",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                        }
+                      ],
+                      "name": "You Slut!",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 253133,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              }
+            ]
+          }
+        ],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Accepted",
+        "reasons": [
+          "accepted_playable_edition"
+        ]
+      }
+    ],
+    "decision": "Accepted",
+    "reasons": [
+      "accepted_playable_edition"
+    ]
+  },
+  "after_programs": [
+    {
+      "album": {
+        "provider": "spotify",
+        "kind": "album",
+        "external_id": "7zc9EkiGkY5HQQL17JjyE3"
+      },
+      "programs": [
+        {
+          "identity": null,
+          "tracks": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "2T9etViq1x0wIAM3Fw24ux"
+                }
+              ],
+              "disc": 1,
+              "number": 1,
+              "title": "Cut & Shut by You Slut!",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 216933,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "239neBfDfsB6TG5EsFDeRz"
+                }
+              ],
+              "disc": 1,
+              "number": 2,
+              "title": "On the Count of Thirteen",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 139493,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "4rrcQhEO0oaH260K9AzTZm"
+                }
+              ],
+              "disc": 1,
+              "number": 3,
+              "title": "Roofio Shoots, Roofio Scores",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 139426,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "1pv1RFsNRGH21Aponf0mwF"
+                }
+              ],
+              "disc": 1,
+              "number": 4,
+              "title": "On-the-Spot Tina Turner Fine",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 181626,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+                }
+              ],
+              "disc": 1,
+              "number": 5,
+              "title": "Pie to the Death-Faced Indie Kid",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 209106,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "1dkVnRxTOxORxX6dyhyluN"
+                }
+              ],
+              "disc": 1,
+              "number": 6,
+              "title": "1s, 2ns (The Original Door)",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 143946,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+                }
+              ],
+              "disc": 1,
+              "number": 7,
+              "title": "Jarabew",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 177920,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            },
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "track",
+                  "external_id": "45Z38gLIK8e5TxsZm66mNF"
+                }
+              ],
+              "disc": 1,
+              "number": 8,
+              "title": "MyBloodyJesusExplorerOnFire",
+              "title_observations": [],
+              "position_observations": [],
+              "artists": [
+                {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "artist",
+                      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                    }
+                  ],
+                  "name": "You Slut!",
+                  "join_phrase": ""
+                }
+              ],
+              "duration_ms": 253133,
+              "duration_approximate": false,
+              "recording": {
+                "identities": [],
+                "isrcs": []
+              }
+            }
+          ],
+          "complete": true
+        }
+      ],
+      "note": "Spotify market US; catalog song occurrences, no Recording or exact edition claim"
+    }
+  ],
+  "playback": {
+    "warnings": [],
+    "alignment": {
+      "rows": [
+        {
+          "local_index": 0,
+          "provider_index": 0,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 1,
+          "provider_index": 1,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 2,
+          "provider_index": 2,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 3,
+          "provider_index": 3,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 4,
+          "provider_index": 4,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 5,
+          "provider_index": 5,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 6,
+          "provider_index": 6,
+          "kind": "Exact"
+        },
+        {
+          "local_index": 7,
+          "provider_index": 7,
+          "kind": "Exact"
+        }
+      ],
+      "strong": true,
+      "unreliable_positions": false
+    },
+    "complete": true,
+    "provider_count": 8,
+    "anchors": 8,
+    "duplicate_positions": 0,
+    "tracks": [
+      {
+        "track_id": "59d47d7c-c199-4e36-9ff5-f9a899390551",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2T9etViq1x0wIAM3Fw24ux"
+            }
+          ],
+          "disc": 1,
+          "number": 1,
+          "title": "Cut & Shut by You Slut!",
+          "title_observations": [
+            {
+              "value": "Cut & Shut by You Slut!",
+              "origin": {
+                "source": "local",
+                "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 1
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "f1763197-c49c-44d4-8fd5-b9c7c3ea0d3f"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 218573,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "2f6a4902-be5c-4381-8a93-2c65bb2bda85"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2T9etViq1x0wIAM3Fw24ux"
+            }
+          ],
+          "disc": 1,
+          "number": 1,
+          "title": "Cut & Shut by You Slut!",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 216933,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "977f36a8-c328-474c-a1a1-efa10646fa09",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "239neBfDfsB6TG5EsFDeRz"
+            }
+          ],
+          "disc": 1,
+          "number": 2,
+          "title": "On the Count of 13",
+          "title_observations": [
+            {
+              "value": "On the Count of 13",
+              "origin": {
+                "source": "local",
+                "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 2
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "092093a4-e912-4002-914f-8cbe72355490"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 141453,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "98dbd9b1-a4f4-4fb7-b462-ac02d9c78c72"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "239neBfDfsB6TG5EsFDeRz"
+            }
+          ],
+          "disc": 1,
+          "number": 2,
+          "title": "On the Count of Thirteen",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 139493,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "cc0b1c9c-7696-4b97-921d-738f883f2397",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "4rrcQhEO0oaH260K9AzTZm"
+            }
+          ],
+          "disc": 1,
+          "number": 3,
+          "title": "Roofio Shoots, Roofio Scores",
+          "title_observations": [
+            {
+              "value": "Roofio Shoots, Roofio Scores",
+              "origin": {
+                "source": "local",
+                "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 3
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "63e59093-2a61-4478-bff0-bbaf57d546ca"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 139186,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "9649512e-b1f5-4931-a4d8-5822804a4fa8"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "4rrcQhEO0oaH260K9AzTZm"
+            }
+          ],
+          "disc": 1,
+          "number": 3,
+          "title": "Roofio Shoots, Roofio Scores",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 139426,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "f4b42cd3-24c9-4224-a84c-091cfe4fb1df",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1pv1RFsNRGH21Aponf0mwF"
+            }
+          ],
+          "disc": 1,
+          "number": 4,
+          "title": "On the Spot Tina Turner Fine",
+          "title_observations": [
+            {
+              "value": "On the Spot Tina Turner Fine",
+              "origin": {
+                "source": "local",
+                "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 4
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "30144d8a-e3f9-411f-923f-bd215cfcc8a1"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 181773,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "4981e404-45c3-4bd8-88ef-4ce5b2844b7a"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1pv1RFsNRGH21Aponf0mwF"
+            }
+          ],
+          "disc": 1,
+          "number": 4,
+          "title": "On-the-Spot Tina Turner Fine",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 181626,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "8856c746-95e5-4b9c-a9a4-e57d44bd94b5",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+            }
+          ],
+          "disc": 1,
+          "number": 5,
+          "title": "Pie to the Death-Faced Indie Kid",
+          "title_observations": [
+            {
+              "value": "Pie to the Death-Faced Indie Kid",
+              "origin": {
+                "source": "local",
+                "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 5
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "25ba6e09-47d9-4dae-b38d-5a94c12b2e84"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 209333,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "9a9e0c58-a24c-4baa-afb8-d1723f9703f4"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "2HW4kdBjTHZAkJYONOMxeM"
+            }
+          ],
+          "disc": 1,
+          "number": 5,
+          "title": "Pie to the Death-Faced Indie Kid",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 209106,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "b0b6c594-9443-4196-aba6-4252a2815035",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1dkVnRxTOxORxX6dyhyluN"
+            }
+          ],
+          "disc": 1,
+          "number": 6,
+          "title": "1s, 2ns (The original Door)",
+          "title_observations": [
+            {
+              "value": "1s, 2ns (The original Door)",
+              "origin": {
+                "source": "local",
+                "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 6
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "2afa3b45-02d5-40ef-808a-9b83eb825378"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 145573,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "c5e50423-161c-4b87-a5d1-ea25e8a3b18f"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "1dkVnRxTOxORxX6dyhyluN"
+            }
+          ],
+          "disc": 1,
+          "number": 6,
+          "title": "1s, 2ns (The Original Door)",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 143946,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "a474f624-b709-4d54-b0f4-8e2323ed6f1d",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+            }
+          ],
+          "disc": 1,
+          "number": 7,
+          "title": "Jarabew",
+          "title_observations": [
+            {
+              "value": "Jarabew",
+              "origin": {
+                "source": "local",
+                "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 7
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "4fbfc325-bca3-4664-a120-b96c818a48f4"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 177093,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "9b4bf265-2793-4255-9a0e-a57ec0712317"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "0jVE9FeH9aPEVXCoD9teU5"
+            }
+          ],
+          "disc": 1,
+          "number": 7,
+          "title": "Jarabew",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 177920,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      },
+      {
+        "track_id": "7a3b49af-10d7-4b64-bec0-757477e7fe05",
+        "local": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "45Z38gLIK8e5TxsZm66mNF"
+            }
+          ],
+          "disc": 1,
+          "number": 8,
+          "title": "Mybloodyjesusexploreronfire",
+          "title_observations": [
+            {
+              "value": "Mybloodyjesusexploreronfire",
+              "origin": {
+                "source": "local",
+                "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+              }
+            }
+          ],
+          "position_observations": [
+            {
+              "value": {
+                "disc": 1,
+                "number": 8
+              },
+              "origin": {
+                "source": "local",
+                "source_id": "a1883a88-9896-48ba-baa6-7e426262562b"
+              }
+            }
+          ],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "musicbrainz",
+                  "kind": "artist",
+                  "external_id": "a0b43936-dbc4-4fe1-b810-ed60e8d22985"
+                },
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 248613,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [
+              {
+                "provider": "musicbrainz",
+                "kind": "recording",
+                "external_id": "33f6cc1c-06d5-416d-80a0-7c2aade50cb8"
+              }
+            ],
+            "isrcs": []
+          }
+        },
+        "provider": {
+          "identities": [
+            {
+              "provider": "spotify",
+              "kind": "track",
+              "external_id": "45Z38gLIK8e5TxsZm66mNF"
+            }
+          ],
+          "disc": 1,
+          "number": 8,
+          "title": "MyBloodyJesusExplorerOnFire",
+          "title_observations": [],
+          "position_observations": [],
+          "artists": [
+            {
+              "identities": [
+                {
+                  "provider": "spotify",
+                  "kind": "artist",
+                  "external_id": "57FhnNHVDTmK7wsrNAq84o"
+                }
+              ],
+              "name": "You Slut!",
+              "join_phrase": ""
+            }
+          ],
+          "duration_ms": 253133,
+          "duration_approximate": false,
+          "recording": {
+            "identities": [],
+            "isrcs": []
+          }
+        },
+        "normalized_disc": 1,
+        "decision": "exact_anchor"
+      }
+    ]
+  },
+  "canonical_album_id": "f1a594de-5ca0-4615-a024-adbe47203f43",
+  "canonical_title": "Critical Meat",
+  "canonical_year": null,
+  "local_file_release_years": [
+    2006
+  ],
+  "provider_album_id": "7zc9EkiGkY5HQQL17JjyE3",
+  "provider_title": "Critical Meat (Remastered)",
+  "provider_year": 2012,
+  "old_stored_blockers": [
+    [
+      "album_version_mismatch",
+      "Version qualifier conflict",
+      14,
+      0
+    ]
+  ],
+  "preservation_checks": {
+    "album": true,
+    "album_application_metadata": true,
+    "album_metadata_override": true,
+    "album_external_identity": true,
+    "release": true,
+    "release_application_metadata": true,
+    "release_external_identity": true,
+    "track": true,
+    "track_application_metadata": true,
+    "track_metadata_override": true,
+    "library_membership": true
+  },
+  "connected_summaries": [
+    [
+      "already_associated",
+      "Connected from compatible Spotify program; canonical Release retained. Provider release differs: Critical Meat ↔ Critical Meat (Remastered). Warning: Spotify remaster/reissue or edition differs; established Artist and unique strong program, no competing provider representation. Warning: release year differs: 2006 ↔ 2012"
+    ]
+  ],
+  "provider_requests": 0,
+  "evidence_provenance": {
+    "canonical_database": "/tmp/music-library-fresh.sqlite",
+    "disposable_validation_database": "/tmp/remaster-validated.sqlite",
+    "retained_track_page_database": "/tmp/discovery-full-lifecycle.sqlite",
+    "transferred_rows": 1,
+    "transferred_fingerprint": "spotify:1:https://api.spotify.com/v1/albums/7zc9EkiGkY5HQQL17JjyE3/tracks?market=US&limit=50&offset=0"
+  },
+  "old_cache_only_reevaluation": {
+    "discovery_queries": [
+      "album:\"critical meat\" artist:\"You Slut!\"",
+      "\"You Slut!\" critical meat"
+    ],
+    "local_title": "Critical Meat",
+    "established_artist": {
+      "provider": "spotify",
+      "kind": "artist",
+      "external_id": "57FhnNHVDTmK7wsrNAq84o"
+    },
+    "candidate_count": 10,
+    "more_candidates": true,
+    "candidates": [
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "7zc9EkiGkY5HQQL17JjyE3"
+        },
+        "artist": "You Slut!",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "57FhnNHVDTmK7wsrNAq84o"
+          }
+        ],
+        "artist_accepted": true,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Critical Meat (Remastered)",
+          "local_normalized": "critical meat",
+          "provider_normalized": "critical meat remastered",
+          "comparison": "version_conflict",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2012",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 8,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "album_version_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "103JZf7UmjjZECiHez9cPW"
+        },
+        "artist": "Gwar",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "3dnH7fdVm2X07MK6Fkbhbt"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Scumdogs of the Universe",
+          "local_normalized": "critical meat",
+          "provider_normalized": "scumdogs of the universe",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "1990-01-08",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 13,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "18liOIWZVclN96uk7SY7Xm"
+        },
+        "artist": "Ayesha Erotica",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "7M5pDtJpCdnftEQZtczYco"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Fresh Meat",
+          "local_normalized": "critical meat",
+          "provider_normalized": "fresh meat",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2017-10-25",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 14,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "3FOpyZAjPSwS40KUHfouUe"
+        },
+        "artist": "Myq Kaplan",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "5H1u3kcNM0d7DJlihbXvBp"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Meat Robot",
+          "local_normalized": "critical meat",
+          "provider_normalized": "meat robot",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2013-06-11",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 15,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "6poivi23IEakYWrDe03pVX"
+        },
+        "artist": "STOMACH BOOK",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "079cEjjSpv5dOLH5xsGdvN"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "SOPHOMORE SLUMP CALLITHUMP",
+          "local_normalized": "critical meat",
+          "provider_normalized": "sophomore slump callithump",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Album"
+        },
+        "local_date": null,
+        "provider_date": "2024-02-28",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 10,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "0RqSHxahadfXnYzdq8hi3z"
+        },
+        "artist": "S3RL",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "11aa081aKYUzmeFm0yHdT2"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Bass Slut / It Went / Crazy Ass Bitch",
+          "local_normalized": "critical meat",
+          "provider_normalized": "bass slut it went crazy ass bitch",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2011-02-15",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 3,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch",
+          "track_count_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "0fn64CBZriYEhXvaRRa0dd"
+        },
+        "artist": "BJ Lips, Mika Montag",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "22jHNXFZFhbCjUcEAm5xl9"
+          },
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "6NcQWEPeopEYoT80nJiVGQ"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Your Slut",
+          "local_normalized": "critical meat",
+          "provider_normalized": "your slut",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2022-04-08",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 1,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch",
+          "track_count_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "1mJeFpDCQVH8KCQX8tNnt9"
+        },
+        "artist": "japanesecoffee",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "3Y6wMNWuISLxTuAAILWhpL"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "THE MEAT GRINDER",
+          "local_normalized": "critical meat",
+          "provider_normalized": "the meat grinder",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2022-12-22",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 1,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch",
+          "track_count_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "4qaOfAUuWaLmPqXHXlbUzx"
+        },
+        "artist": "MrBohlin",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "4zxStKH2C7D6DaCukXT5n1"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "Name My Meat (Official Audio)",
+          "local_normalized": "critical meat",
+          "provider_normalized": "name my meat official audio",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2026-08-14",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 1,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch",
+          "track_count_mismatch"
+        ]
+      },
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "7IuBCO9AbNLumLKK52YkP4"
+        },
+        "artist": "ppcocaine",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "2u1aL8XADqj0nJFHMKRjNw"
+          }
+        ],
+        "artist_accepted": false,
+        "warnings": [],
+        "title": {
+          "local_raw": "Critical Meat",
+          "provider_raw": "S.L.U.T.",
+          "local_normalized": "critical meat",
+          "provider_normalized": "s l u t",
+          "comparison": "conflict",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2020-12-18",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 8,
+        "required_tracks": 8,
+        "provider_tracks": 1,
+        "programs": [],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Rejected",
+        "reasons": [
+          "artist_mismatch",
+          "album_title_mismatch",
+          "track_count_mismatch"
+        ]
+      }
+    ],
+    "decision": "Withheld",
+    "reasons": [
+      "incomplete_candidate_page"
+    ]
+  }
+}

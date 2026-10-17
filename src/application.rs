@@ -76,7 +76,11 @@ impl Library {
         };
         let code = serde_json::to_value(reason)
             .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
-        self.store.connection.execute(
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute(
             "UPDATE spotify_connection_review SET reason_code=?2,reason=?3 WHERE track_id=?1",
             rusqlite::params![
                 input.track_id.as_ref(),
@@ -84,7 +88,8 @@ impl Library {
                 reason.review_label()
             ],
         )?;
-        self.cache_spotify_attempt(input, page)?;
+        Self::cache_spotify_attempt_tx(&tx, input, page)?;
+        tx.commit()?;
         Ok(())
     }
     /// Persist per-Track summaries of the existing Album decision, without provider work.
@@ -93,7 +98,10 @@ impl Library {
         album: &AlbumId,
         report: &crate::album_candidates::Report,
     ) -> Result<()> {
-        let tx = self.store.connection.transaction()?;
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let tracks = tx
             .prepare(
                 "SELECT t.id FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1",
@@ -101,11 +109,15 @@ impl Library {
             .query_map([album.as_ref()], |r| r.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for track in tracks {
-            let reason = report.review_reason(&track);
+            let reason = if report.candidates.is_empty() {
+                crate::album_candidates::Reason::NoCandidates
+            } else {
+                report.review_reason(&track)
+            };
             let code = serde_json::to_value(reason)
                 .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
             tx.execute(
-                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3,state='unresolved',stale=0,evaluation_version=?4 WHERE track_id=?1",
+                "UPDATE spotify_connection_review SET reason_code=?2,reason=?3,state='unresolved',stale=0,evaluation_version=?4 WHERE track_id=?1 AND NOT (reason_code='already_associated' AND ?2='accepted_playable_edition')",
                 rusqlite::params![
                     track,
                     code.as_str().unwrap_or("not_evaluated"),
@@ -194,7 +206,12 @@ impl Library {
         // An empty generic page has no provider namespace. Explicit Spotify
         // review recording handles empty Spotify pages independently.
         if !page.items.is_empty() && page.items.iter().all(|c| c.identity.provider == "spotify") {
-            self.cache_spotify_attempt(input, page)?;
+            let tx = self
+                .store
+                .connection
+                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            Self::cache_spotify_attempt_tx(&tx, input, page)?;
+            tx.commit()?;
         }
         let result = self.store.apply_song_evaluation(input, page);
         let reason = match &result {
@@ -327,7 +344,66 @@ impl Library {
         reply: crate::album_matching::MatchReply,
         scope: &crate::catalog::MatchingScope,
     ) -> Result<crate::album_matching::MatchOutcome> {
-        self.store.complete_album_match_for(reply, scope)
+        let playback = reply
+            .diagnostic
+            .as_ref()
+            .filter(|r| {
+                scope.provider == "spotify" && r.decision == "Accepted" && !r.more_candidates
+            })
+            .and_then(|r| {
+                r.candidates.iter().find(|c| {
+                    c.decision == "Accepted"
+                        && c.title.comparison
+                            == crate::album_candidates::TitleComparison::PlayableEdition
+                })
+            })
+            .map(|row| {
+                (
+                    crate::catalog::ArtistAlbumCandidate {
+                        identity: row.identity.clone(),
+                        title: row.title.provider_raw.clone(),
+                        artist: row.artist.clone(),
+                        artist_ids: row.artist_ids.clone(),
+                        primary_type: row.title.provider_type.clone(),
+                        date: row.provider_date.clone(),
+                        comment: String::new(),
+                    },
+                    crate::album_program::Programs {
+                        album: row.identity.clone(),
+                        note: String::new(),
+                        programs: row
+                            .programs
+                            .iter()
+                            .map(|p| crate::album_program::Program {
+                                identity: None,
+                                // Review rows describe local correspondences. If the
+                                // provider has extras, use its retained raw program
+                                // through the cache reconciliation path instead.
+                                complete: p.complete
+                                    && p.tracks.iter().filter(|t| t.provider.is_some()).count()
+                                        == p.provider_count,
+                                tracks: p
+                                    .tracks
+                                    .iter()
+                                    .filter_map(|t| t.provider.clone())
+                                    .collect(),
+                            })
+                            .collect(),
+                    },
+                )
+            });
+        let album = reply.input.album_id.clone();
+        let outcome = self.store.complete_album_match_for(reply, scope)?;
+        if let Some(context) = playback
+            && matches!(
+                outcome,
+                crate::album_matching::MatchOutcome::Matched(_)
+                    | crate::album_matching::MatchOutcome::MatchedClose(_)
+            )
+        {
+            self.reconcile_spotify_program_playables(&album, &[context])?;
+        }
+        Ok(outcome)
     }
     pub fn complete_album_match(
         &mut self,

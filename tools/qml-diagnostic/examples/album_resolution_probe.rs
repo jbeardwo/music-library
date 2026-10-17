@@ -165,6 +165,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     input,
                     artist: Some(identity),
                     outcome,
+                    artist_observation: None,
                     matched_album: None,
                 },
                 &scope,

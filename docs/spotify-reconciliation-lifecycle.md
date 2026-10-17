@@ -1,10 +1,23 @@
 > Provider discovery and batch retry policy were updated by [Spotify provider discovery and quota lifecycle](spotify-provider-discovery.md). Its persisted query cache, 30-day TTL, shared Retry-After deadline and removal of automatic per-Track batch fallback supersede the older retry descriptions below.
 
+Current behavior and fresh-import validation are recorded in the
+[focused robustness audit](spotify-focused-robustness-audit.md). Evaluation version
+is 15; Album search strategy is 6. Retry drains keyset-paged Album contexts and
+newly enabled local evidence; its standalone Track-search budget remains two per
+click. Canonical Release identity stays separate from compatible provider-family
+and contextual shared-title evidence used only for playable sources.
+
+The [coordinator follow-up](spotify-reconciliation-coordinator-audit.md) corrects
+the asynchronous Track-fallback handoff that still stopped after one internal
+chunk. A complete run now spans all chunks, and configured startup/import-ready
+events schedule it automatically. Stable negative decisions do not create an
+automatic retry loop. The two-search allowance counts actual calls across the run.
+
 # Spotify reconciliation lifecycle
 
 ## Versioned local reconciliation
 
-`spotify_lifecycle::EVALUATION_VERSION` is currently **11**. Increment it when matcher/evidence semantics change. Migration 0029 adds the last evaluation version, an indexed stale flag and a separate `needs_retry` state to Spotify review bookkeeping. Existing trusted associations are preserved. Legacy unresolved rows start stale; successful associations receive only bookkeeping initialization, never identity replacement.
+`spotify_lifecycle::EVALUATION_VERSION` is currently **14**. Increment it when matcher/evidence semantics change. Migration 0029 adds the last evaluation version, an indexed stale flag and a separate `needs_retry` state to Spotify review bookkeeping. Existing trusted associations are preserved. Legacy unresolved rows start stale; successful associations receive only bookkeeping initialization, never identity replacement.
 
 Version 3 treats ordinary apostrophe typography as equivalent title evidence under the standard exact-title program requirements, rather than imposing the additional title-relaxation anchor threshold. Straight, left/right typographic, modifier-letter and fullwidth apostrophes normalize to the straight apostrophe in title comparison/discovery. Version words and other structural gates remain meaningful. The real Library's `X’ed Out` contains U+2019, which normalizes to `X'ed Out`; this observation alone does not establish an Album association.
 
@@ -95,3 +108,18 @@ Browsing joins no candidate/provenance payloads. Lists remain bounded to 600 QML
 ## Deferred
 
 Optional Album bulk marking, marked-date columns, a generic provider management UI, metadata correction/tag rewriting and unbounded/background provider retries remain deferred. There is no removal/re-import, fuzzy merging, source-priority change or playlist redesign. Historical absent candidate data cannot be retroactively recovered locally. No commit was created.
+
+
+## Fresh-database regression follow-up
+
+Evaluation 14 replays accepted complete Album evidence that could remain behind
+an old terminal `incomplete_program` summary. Canonical Artist names precede alias
+acquisition, and cache inspection uses the same query/Artist filters as discovery.
+The coordinator explicitly refreshes Connections at completion. Missing/currently
+unusable discovery and failed local reevaluation receive exact actionable retry
+reasons. Exhausted standalone Track allowance is terminal **Provider search
+deferred**, with its cause visible; it is not unexplained Needs Retry. Exclusions
+and existing associations are omitted from actionable retry audits.
+
+See the [fresh-database audit](spotify-discovery-regressions-audit.md) for actual
+QML workflow counts, named-case evidence and unchanged canonical/user data.

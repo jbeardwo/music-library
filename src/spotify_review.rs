@@ -8,7 +8,7 @@ use crate::{
 };
 use rusqlite::params;
 
-const STATUS_SQL: &str = "CASE WHEN max(v.state='needs_retry') AND EXISTS(SELECT 1 FROM provider_cooldown WHERE provider='spotify' AND until_epoch>unixepoch()) THEN 'Waiting for Spotify' WHEN max(v.state='needs_retry') AND a.match_title!='' AND a.match_artist_credit!='' AND (SELECT count(*) FROM album_artist_credit ac WHERE ac.album_id=a.album_id)=1 THEN 'Needs retry' WHEN max(v.state='needs_retry') THEN 'Manual review required' WHEN max(v.reason_code='no_candidates') THEN 'No candidates' WHEN min(v.reason_code='not_evaluated') THEN 'Not searched' ELSE 'Needs review' END";
+const STATUS_SQL: &str = "CASE WHEN max(v.state='needs_retry') AND EXISTS(SELECT 1 FROM provider_cooldown WHERE provider='spotify' AND until_epoch>unixepoch()) THEN 'Waiting for Spotify' WHEN max(v.reason_code='provider_unavailable') THEN 'Waiting for Spotify' WHEN max(v.reason_code='provider_search_deferred') THEN 'Provider search deferred' WHEN max(v.state='needs_retry') AND a.match_title!='' AND a.match_artist_credit!='' AND (SELECT count(*) FROM album_artist_credit ac WHERE ac.album_id=a.album_id)=1 THEN 'Needs retry' WHEN max(v.state='needs_retry') THEN 'Manual review required' WHEN max(v.reason_code='no_candidates') THEN 'No candidates' WHEN max(v.reason_code='artist_unresolved') THEN 'Artist identity needs review' WHEN min(v.reason_code='not_evaluated') THEN 'Not searched' ELSE 'Needs review' END";
 
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Group {

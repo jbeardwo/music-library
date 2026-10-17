@@ -3,8 +3,9 @@
 Canonical Release identity and Spotify playable Track identity are separate. A
 Track occurrence may use Spotify playback from a single, remaster or another
 release without moving the canonical Track, changing Release metadata, or
-asserting Album/Recording equivalence. Evaluation version is 11; the existing
-Artist-scoped search query and provider search-strategy version are unchanged.
+asserting Album/Recording equivalence. Evaluation version is 15; Album discovery
+strategy is 6. See the [focused robustness audit](spotify-focused-robustness-audit.md)
+for provider-family, shared-title and fresh-database evidence.
 
 ## Decision and persistence
 
@@ -18,9 +19,10 @@ title or a narrowly recognized terminal version annotation, compatible supplied
 durations (Spotify's existing 10-second tolerance), and no contradictory trusted
 Recording identity/ISRC. A single established Release Artist can corroborate an
 otherwise identity-free matching Track credit. Trusted conflicting Track identities
-and existing associations still prevent automatic replacement. A same-title Release
-with contradictory normal positions, size or type remains guarded; Album program
-alignment and explicit review handle that case.
+and existing associations still prevent automatic replacement. Provider Release
+positions, size and type remain visible warnings for independent playable-source
+selection; they do not alone veto a uniquely sensible song. Canonical Album identity
+retains its separate structural gates.
 
 Additional provider credits and their ordering do not invalidate the match when
 all known credits are present. Replacement collaborators remain conflicts. Raw
@@ -60,8 +62,9 @@ A reconstructible `playable-track-search:1` discovery marker records completed f
 scopes (Track, normalized title, established Artist evidence). Its indexed key and
 30-day lifetime prevent repeated unsuccessful local retries consuming the budget.
 Changing the search scope permits new work. This marker is not an identity or user
-preference. Remaining work retains the existing review/retry actions; larger batches
-can continue on a later explicit Retry unresolved invocation. Ordinary navigation
+preference. Retry automatically advances through bounded Album batches and newly enabled local
+evidence until its queue is drained. Work outside the two-search global fallback
+bound retains individual review/retry actions. Ordinary navigation
 never invokes this provider phase.
 
 ## Manual correction
@@ -125,3 +128,30 @@ Qt graphics/timer warnings did not fail assertions. No live provider requests an
 no commits were made. A new 200k timing run was not performed; new discovery work
 is bounded to two Track contexts and the marker query uses the existing primary-key
 index rather than scanning the library.
+
+## Sole remaster/reissue Album programs
+
+A remaster/reissue title remains meaningful provider evidence. Its literal base may
+make the primary Artist-scoped search useful without invoking a broader alternate.
+This is discovery correspondence, not automatic release identity.
+
+The existing sole-edition fallback now also supplies playback through the shared
+program-to-Track source policy. It requires an established Artist, a bounded complete
+candidate page with one Artist-compatible representation, an explicit corresponding
+release title, a complete provider program with at least three independent anchors
+and at least 80% canonical coverage, unique correspondence, compatible durations,
+and no trusted Recording conflict on any attached Track. Live/Acoustic/Demo qualifiers
+are not release-edition equivalences. Comparable editions stay reviewable; an available
+matching original is preferred. One meaningful unmatched Track can stay unresolved
+while the strongly corroborated remainder connects.
+
+Both cached reconciliation and the general Album completion boundary preserve canonical
+Album/Release identities and metadata. Only corresponding Spotify Track occurrences
+and provider observations are persisted. Original title/year, Track IDs, and membership
+remain unchanged. Raw provider title/year remain in retained candidate evidence, with
+edition and differing year warnings. A local file year is explicitly a source observation
+when the canonical year is unset. Accepted program explanations survive subsequent
+Album review persistence instead of becoming the misleading “Album needs review”.
+
+See [the cache-only Critical Meat audit](spotify-remaster-playback-audit.md). No live
+provider request is needed when retained discovery and Track-program pages exist.

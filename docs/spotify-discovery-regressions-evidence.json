@@ -1,0 +1,2260 @@
+{
+  "evaluation_version": 14,
+  "album_search_strategy": 5,
+  "albums": [
+    {
+      "canonical_artist": "Clown Core",
+      "canonical_album": "1234",
+      "normalized_artist": "clown core",
+      "normalized_album": "1234",
+      "trusted_artist_names": [
+        {
+          "name": "clown core",
+          "role": "preferred"
+        },
+        {
+          "name": "ClownCore",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"1234\" artist:\"Clowncore\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%221234%22+artist%3A%22Clowncore%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"1234\" artist:\"Clown Core\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%221234%22+artist%3A%22Clown+Core%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "1234",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "755eSsuAVASN3rAouQzBfj",
+              "date": "2021-04-16",
+              "type": "single",
+              "track_count": 4
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "1234",
+          "artist": "Clown Core",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "6mtABo05yeYtPftYEVfGoV"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 4,
+      "final_connected_tracks": 4,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Clown Core",
+      "canonical_album": "Clown Core",
+      "normalized_artist": "clown core",
+      "normalized_album": "clown core",
+      "trusted_artist_names": [
+        {
+          "name": "clown core",
+          "role": "preferred"
+        },
+        {
+          "name": "ClownCore",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"clown core\" artist:\"Clowncore\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22clown+core%22+artist%3A%22Clowncore%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        },
+        {
+          "query": "album:\"clown\" artist:\"Clowncore\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22clown%22+artist%3A%22Clowncore%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Welcome to Clown School",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/5Qc2za3TrkakZjS2nP3r8H"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/5Qc2za3TrkakZjS2nP3r8H",
+                  "id": "5Qc2za3TrkakZjS2nP3r8H",
+                  "name": "3AM CLOWNCORE",
+                  "type": "artist",
+                  "uri": "spotify:artist:5Qc2za3TrkakZjS2nP3r8H"
+                }
+              ],
+              "id": "5INo3gZ7ICzg0guTRsy04F",
+              "date": "2026-02-02",
+              "type": "album",
+              "track_count": 24
+            }
+          ]
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"clown core\" artist:\"Clown Core\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22clown+core%22+artist%3A%22Clown+Core%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Clown Core",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "1VPYwjMqtz6hV963WJHHSE",
+              "date": "2010-03-01",
+              "type": "album",
+              "track_count": 13
+            }
+          ]
+        }
+      ],
+      "ranking_before": [
+        {
+          "rank": 1,
+          "title": "Welcome to Clown School",
+          "artist": "3AM CLOWNCORE",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "5Qc2za3TrkakZjS2nP3r8H"
+            }
+          ],
+          "title_class": "conflict",
+          "decision": "Rejected",
+          "reasons": [
+            "artist_mismatch",
+            "album_title_mismatch"
+          ]
+        }
+      ],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Clown Core",
+          "artist": "Clown Core",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "6mtABo05yeYtPftYEVfGoV"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 13,
+      "final_connected_tracks": 13,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "artist_mismatch",
+          "Artist / trusted identity conflict"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Clown Core",
+      "canonical_album": "Toilet",
+      "normalized_artist": "clown core",
+      "normalized_album": "toilet",
+      "trusted_artist_names": [
+        {
+          "name": "clown core",
+          "role": "preferred"
+        },
+        {
+          "name": "ClownCore",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"toilet\" artist:\"Clowncore\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22toilet%22+artist%3A%22Clowncore%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        },
+        {
+          "query": "Clowncore on toilet Live",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=Clowncore+on+toilet+Live&type=album&limit=10&offset=0",
+          "total": 97,
+          "results": [
+            {
+              "title": "Toilet",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "4arqmekzS1Qnzu74ZTl7uV",
+              "date": "2018-03-03",
+              "type": "album",
+              "track_count": 9
+            },
+            {
+              "title": "live",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "5X4ujEklzH1VZR8KYw9D0w",
+              "date": "2024-02-17",
+              "type": "album",
+              "track_count": 17
+            },
+            {
+              "title": "Clown Core",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "1VPYwjMqtz6hV963WJHHSE",
+              "date": "2010-03-01",
+              "type": "album",
+              "track_count": 13
+            },
+            {
+              "title": "ClownPierce's Official Theme Song",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6ljLO5A329ym1FARh4xAz4"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6ljLO5A329ym1FARh4xAz4",
+                  "id": "6ljLO5A329ym1FARh4xAz4",
+                  "name": "Nombra101",
+                  "type": "artist",
+                  "uri": "spotify:artist:6ljLO5A329ym1FARh4xAz4"
+                }
+              ],
+              "id": "55P2kQhJJ32fiqJgH63yNZ",
+              "date": "2021-12-10",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "1234",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "755eSsuAVASN3rAouQzBfj",
+              "date": "2021-04-16",
+              "type": "single",
+              "track_count": 4
+            },
+            {
+              "title": "Clown $how",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/5gcsuhKWVn5tKItHfM9SNU"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/5gcsuhKWVn5tKItHfM9SNU",
+                  "id": "5gcsuhKWVn5tKItHfM9SNU",
+                  "name": "$wag Nightmare",
+                  "type": "artist",
+                  "uri": "spotify:artist:5gcsuhKWVn5tKItHfM9SNU"
+                }
+              ],
+              "id": "0iLVSoTB9IsjMh6FKCNKkL",
+              "date": "2024-11-26",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "clown",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/5v3DEzWuRDahVpFHd4Iy8c"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/5v3DEzWuRDahVpFHd4Iy8c",
+                  "id": "5v3DEzWuRDahVpFHd4Iy8c",
+                  "name": "thorne",
+                  "type": "artist",
+                  "uri": "spotify:artist:5v3DEzWuRDahVpFHd4Iy8c"
+                }
+              ],
+              "id": "3CVtdil6dw10fXw8RAjiDi",
+              "date": "2025-11-14",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "Van",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "7f5AP647DfTSWf0OmZRrPe",
+              "date": "2020-09-23",
+              "type": "album",
+              "track_count": 12
+            },
+            {
+              "title": "Clown World",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6DvlemMOlMH6VD9tB7BPRf"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6DvlemMOlMH6VD9tB7BPRf",
+                  "id": "6DvlemMOlMH6VD9tB7BPRf",
+                  "name": "Tom MacDonald",
+                  "type": "artist",
+                  "uri": "spotify:artist:6DvlemMOlMH6VD9tB7BPRf"
+                }
+              ],
+              "id": "3A7Dkhi36jlTMOYplMGx9S",
+              "date": "2021-02-26",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "The Bite, Vol. 2",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/0B7Y5KDNScTBzeN7DY74YG"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/0B7Y5KDNScTBzeN7DY74YG",
+                  "id": "0B7Y5KDNScTBzeN7DY74YG",
+                  "name": "Tryhardninja",
+                  "type": "artist",
+                  "uri": "spotify:artist:0B7Y5KDNScTBzeN7DY74YG"
+                }
+              ],
+              "id": "0Fp63lUqkNvVwVyKAB0ujt",
+              "date": "2015-03-03",
+              "type": "album",
+              "track_count": 23
+            }
+          ]
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"toilet\" artist:\"Clown Core\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22toilet%22+artist%3A%22Clown+Core%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Toilet",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "4arqmekzS1Qnzu74ZTl7uV",
+              "date": "2018-03-03",
+              "type": "album",
+              "track_count": 9
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Toilet",
+          "artist": "Clown Core",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "6mtABo05yeYtPftYEVfGoV"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 9,
+      "final_connected_tracks": 9,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Clown Core",
+      "canonical_album": "Van",
+      "normalized_artist": "clown core",
+      "normalized_album": "van",
+      "trusted_artist_names": [
+        {
+          "name": "clown core",
+          "role": "preferred"
+        },
+        {
+          "name": "ClownCore",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"van\" artist:\"Clowncore\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22van%22+artist%3A%22Clowncore%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"van\" artist:\"Clown Core\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22van%22+artist%3A%22Clown+Core%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Van",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6mtABo05yeYtPftYEVfGoV"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6mtABo05yeYtPftYEVfGoV",
+                  "id": "6mtABo05yeYtPftYEVfGoV",
+                  "name": "Clown Core",
+                  "type": "artist",
+                  "uri": "spotify:artist:6mtABo05yeYtPftYEVfGoV"
+                }
+              ],
+              "id": "7f5AP647DfTSWf0OmZRrPe",
+              "date": "2020-09-23",
+              "type": "album",
+              "track_count": 12
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Van",
+          "artist": "Clown Core",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "6mtABo05yeYtPftYEVfGoV"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 12,
+      "final_connected_tracks": 12,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Hop Along",
+      "canonical_album": "Get Disowned",
+      "normalized_artist": "hop along",
+      "normalized_album": "get disowned",
+      "trusted_artist_names": [
+        {
+          "name": "Hop Along",
+          "role": "preferred"
+        },
+        {
+          "name": "Hop Along, Queen Ansleis",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"get disowned\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22get+disowned%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        },
+        {
+          "query": "album:\"disowned\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22disowned%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"get disowned\" artist:\"Hop Along\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22get+disowned%22+artist%3A%22Hop+Along%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Get Disowned",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/3yYUV3hkJit05YIUEODqgp"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/3yYUV3hkJit05YIUEODqgp",
+                  "id": "3yYUV3hkJit05YIUEODqgp",
+                  "name": "Hop Along",
+                  "type": "artist",
+                  "uri": "spotify:artist:3yYUV3hkJit05YIUEODqgp"
+                }
+              ],
+              "id": "0M21gt5nGY8lqVmCxQxEiL",
+              "date": "2012-05-05",
+              "type": "album",
+              "track_count": 10
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Get Disowned",
+          "artist": "Hop Along",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "3yYUV3hkJit05YIUEODqgp"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 10,
+      "final_connected_tracks": 10,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Hop Along",
+      "canonical_album": "Painted Shut",
+      "normalized_artist": "hop along",
+      "normalized_album": "painted shut",
+      "trusted_artist_names": [
+        {
+          "name": "Hop Along",
+          "role": "preferred"
+        },
+        {
+          "name": "Hop Along, Queen Ansleis",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"painted shut\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22painted+shut%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        },
+        {
+          "query": "album:\"painted\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22painted%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"painted shut\" artist:\"Hop Along\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22painted+shut%22+artist%3A%22Hop+Along%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Painted Shut",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/3yYUV3hkJit05YIUEODqgp"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/3yYUV3hkJit05YIUEODqgp",
+                  "id": "3yYUV3hkJit05YIUEODqgp",
+                  "name": "Hop Along",
+                  "type": "artist",
+                  "uri": "spotify:artist:3yYUV3hkJit05YIUEODqgp"
+                }
+              ],
+              "id": "7bR9KYRb6jfhlle5Y9U4BD",
+              "date": "2015-05-04",
+              "type": "album",
+              "track_count": 10
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Painted Shut",
+          "artist": "Hop Along",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "3yYUV3hkJit05YIUEODqgp"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 10,
+      "final_connected_tracks": 10,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Hop Along",
+      "canonical_album": "Bark Your Head Off, Dog",
+      "normalized_artist": "hop along",
+      "normalized_album": "bark your head off, dog",
+      "trusted_artist_names": [
+        {
+          "name": "Hop Along",
+          "role": "preferred"
+        },
+        {
+          "name": "Hop Along, Queen Ansleis",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"bark your head off, dog\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22bark+your+head+off%2C+dog%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        },
+        {
+          "query": "album:\"head\" artist:\"Hop Along, Queen Ansleis\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22head%22+artist%3A%22Hop+Along%2C+Queen+Ansleis%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"bark your head off, dog\" artist:\"Hop Along\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22bark+your+head+off%2C+dog%22+artist%3A%22Hop+Along%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Bark Your Head Off, Dog",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/3yYUV3hkJit05YIUEODqgp"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/3yYUV3hkJit05YIUEODqgp",
+                  "id": "3yYUV3hkJit05YIUEODqgp",
+                  "name": "Hop Along",
+                  "type": "artist",
+                  "uri": "spotify:artist:3yYUV3hkJit05YIUEODqgp"
+                }
+              ],
+              "id": "5S0GDz2d3EeTS6zb5oJeKI",
+              "date": "2018-04-06",
+              "type": "album",
+              "track_count": 9
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Bark Your Head Off, Dog",
+          "artist": "Hop Along",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "3yYUV3hkJit05YIUEODqgp"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        }
+      ],
+      "final_saved_tracks": 9,
+      "final_connected_tracks": 9,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Elephant Gym",
+      "canonical_album": "Dreams",
+      "normalized_artist": "elephant gym",
+      "normalized_album": "dreams",
+      "trusted_artist_names": [
+        {
+          "name": "大象體操",
+          "role": "preferred"
+        },
+        {
+          "name": "Elephant Gym",
+          "role": "alias"
+        },
+        {
+          "name": "エレファントジム",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"dreams\" artist:\"Elephant Gym\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22dreams%22+artist%3A%22Elephant+Gym%22&type=album&limit=10&offset=0",
+          "total": 2,
+          "results": [
+            {
+              "title": "Dreams",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/2rqNUPgkBgbhcRabUQ5C9g"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/2rqNUPgkBgbhcRabUQ5C9g",
+                  "id": "2rqNUPgkBgbhcRabUQ5C9g",
+                  "name": "Elephant Gym",
+                  "type": "artist",
+                  "uri": "spotify:artist:2rqNUPgkBgbhcRabUQ5C9g"
+                }
+              ],
+              "id": "3TymUlSYZsMS09A5NnY7Hc",
+              "date": "2022-05-11",
+              "type": "album",
+              "track_count": 12
+            },
+            {
+              "title": "More Real than Dreams (Original Documentary Soundtrack)",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/2rqNUPgkBgbhcRabUQ5C9g"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/2rqNUPgkBgbhcRabUQ5C9g",
+                  "id": "2rqNUPgkBgbhcRabUQ5C9g",
+                  "name": "Elephant Gym",
+                  "type": "artist",
+                  "uri": "spotify:artist:2rqNUPgkBgbhcRabUQ5C9g"
+                }
+              ],
+              "id": "3dVAoxGLONO7xe3WyAhoQr",
+              "date": "2026-02-03",
+              "type": "album",
+              "track_count": 13
+            }
+          ]
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"dreams\" artist:\"Elephant Gym\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22dreams%22+artist%3A%22Elephant+Gym%22&type=album&limit=10&offset=0",
+          "total": 2,
+          "results": [
+            {
+              "title": "Dreams",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/2rqNUPgkBgbhcRabUQ5C9g"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/2rqNUPgkBgbhcRabUQ5C9g",
+                  "id": "2rqNUPgkBgbhcRabUQ5C9g",
+                  "name": "Elephant Gym",
+                  "type": "artist",
+                  "uri": "spotify:artist:2rqNUPgkBgbhcRabUQ5C9g"
+                }
+              ],
+              "id": "3TymUlSYZsMS09A5NnY7Hc",
+              "date": "2022-05-11",
+              "type": "album",
+              "track_count": 12
+            },
+            {
+              "title": "More Real than Dreams (Original Documentary Soundtrack)",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/2rqNUPgkBgbhcRabUQ5C9g"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/2rqNUPgkBgbhcRabUQ5C9g",
+                  "id": "2rqNUPgkBgbhcRabUQ5C9g",
+                  "name": "Elephant Gym",
+                  "type": "artist",
+                  "uri": "spotify:artist:2rqNUPgkBgbhcRabUQ5C9g"
+                }
+              ],
+              "id": "3dVAoxGLONO7xe3WyAhoQr",
+              "date": "2026-02-03",
+              "type": "album",
+              "track_count": 13
+            }
+          ]
+        }
+      ],
+      "ranking_before": [
+        {
+          "rank": 1,
+          "title": "Dreams",
+          "artist": "Elephant Gym",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "2rqNUPgkBgbhcRabUQ5C9g"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        },
+        {
+          "rank": 2,
+          "title": "More Real than Dreams (Original Documentary Soundtrack)",
+          "artist": "Elephant Gym",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "2rqNUPgkBgbhcRabUQ5C9g"
+            }
+          ],
+          "title_class": "shared_title_span",
+          "decision": "Rejected",
+          "reasons": [
+            "album_version_mismatch"
+          ]
+        }
+      ],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Dreams",
+          "artist": "Elephant Gym",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "2rqNUPgkBgbhcRabUQ5C9g"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        },
+        {
+          "rank": 2,
+          "title": "More Real than Dreams (Original Documentary Soundtrack)",
+          "artist": "Elephant Gym",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "2rqNUPgkBgbhcRabUQ5C9g"
+            }
+          ],
+          "title_class": "shared_title_span",
+          "decision": "Rejected",
+          "reasons": [
+            "album_version_mismatch"
+          ]
+        }
+      ],
+      "final_saved_tracks": 12,
+      "final_connected_tracks": 12,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "accepted_exact_title",
+          "Album needs review"
+        ],
+        [
+          "unresolved",
+          "incomplete_program",
+          "Insufficient evidence"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "Hella",
+      "canonical_album": "Homeboy",
+      "normalized_artist": "hella",
+      "normalized_album": "homeboy",
+      "trusted_artist_names": [
+        {
+          "name": "Hella",
+          "role": "preferred"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"homeboy\" artist:\"Hella\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22homeboy%22+artist%3A%22Hella%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Homeboy EP",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/1n861RIk6CTAWncgHR9UHg"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/1n861RIk6CTAWncgHR9UHg",
+                  "id": "1n861RIk6CTAWncgHR9UHg",
+                  "name": "Hella",
+                  "type": "artist",
+                  "uri": "spotify:artist:1n861RIk6CTAWncgHR9UHg"
+                }
+              ],
+              "id": "5TgI4E1qDUKJqc9zqcVfMV",
+              "date": "2005-11-08",
+              "type": "single",
+              "track_count": 4
+            }
+          ]
+        },
+        {
+          "query": "Hella on homeboy Live",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=Hella+on+homeboy+Live&type=album&limit=10&offset=0",
+          "total": 10,
+          "results": [
+            {
+              "title": "Hell At Night (feat. Ella Langley)",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6qxpnaukVayrQn6ViNvu9I"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6qxpnaukVayrQn6ViNvu9I",
+                  "id": "6qxpnaukVayrQn6ViNvu9I",
+                  "name": "BigXthaPlug",
+                  "type": "artist",
+                  "uri": "spotify:artist:6qxpnaukVayrQn6ViNvu9I"
+                },
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6BRxQ8cD3eqnrVj6WKDok8"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6BRxQ8cD3eqnrVj6WKDok8",
+                  "id": "6BRxQ8cD3eqnrVj6WKDok8",
+                  "name": "Ella Langley",
+                  "type": "artist",
+                  "uri": "spotify:artist:6BRxQ8cD3eqnrVj6WKDok8"
+                }
+              ],
+              "id": "1Nn0cOJPNZqKJlkq4AgY2V",
+              "date": "2025-08-08",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "HELLBOY",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/2kCcBybjl3SAtIcwdWpUe3"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/2kCcBybjl3SAtIcwdWpUe3",
+                  "id": "2kCcBybjl3SAtIcwdWpUe3",
+                  "name": "Lil Peep",
+                  "type": "artist",
+                  "uri": "spotify:artist:2kCcBybjl3SAtIcwdWpUe3"
+                }
+              ],
+              "id": "2XCSTHVFG50wCnWPnkerRh",
+              "date": "2016-09-25",
+              "type": "album",
+              "track_count": 16
+            },
+            {
+              "title": "Homebody",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/7iKgSlIINjat3bsCYiNMYX"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/7iKgSlIINjat3bsCYiNMYX",
+                  "id": "7iKgSlIINjat3bsCYiNMYX",
+                  "name": "EBK Jaaybo",
+                  "type": "artist",
+                  "uri": "spotify:artist:7iKgSlIINjat3bsCYiNMYX"
+                }
+              ],
+              "id": "4pIExXaffoTARqsBbANRLq",
+              "date": "2025-04-18",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "Hell Hole",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/5YQT7e8jtdgdaT8lJsOx9A"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/5YQT7e8jtdgdaT8lJsOx9A",
+                  "id": "5YQT7e8jtdgdaT8lJsOx9A",
+                  "name": "CARV",
+                  "type": "artist",
+                  "uri": "spotify:artist:5YQT7e8jtdgdaT8lJsOx9A"
+                }
+              ],
+              "id": "35J8bRHX31h1E49qwKBbDH",
+              "date": "2025-09-26",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "Down Home Boy",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/5edcHuf8pWH3I00WTorajM"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/5edcHuf8pWH3I00WTorajM",
+                  "id": "5edcHuf8pWH3I00WTorajM",
+                  "name": "Kidd G",
+                  "type": "artist",
+                  "uri": "spotify:artist:5edcHuf8pWH3I00WTorajM"
+                }
+              ],
+              "id": "4qJXgmxckQ2YDBurSy42AS",
+              "date": "2021-09-24",
+              "type": "album",
+              "track_count": 14
+            },
+            {
+              "title": "Future Days Ahead",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/30s7ciNzZ7ULqyMmFvpEeE"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/30s7ciNzZ7ULqyMmFvpEeE",
+                  "id": "30s7ciNzZ7ULqyMmFvpEeE",
+                  "name": "Homeboy",
+                  "type": "artist",
+                  "uri": "spotify:artist:30s7ciNzZ7ULqyMmFvpEeE"
+                }
+              ],
+              "id": "3QEyxhWAcICLkcNtlKinzD",
+              "date": "2025-09-26",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "Home (feat. Shaboozey)",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/6qxpnaukVayrQn6ViNvu9I"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/6qxpnaukVayrQn6ViNvu9I",
+                  "id": "6qxpnaukVayrQn6ViNvu9I",
+                  "name": "BigXthaPlug",
+                  "type": "artist",
+                  "uri": "spotify:artist:6qxpnaukVayrQn6ViNvu9I"
+                },
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/3y2cIKLjiOlp1Np37WiUdH"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/3y2cIKLjiOlp1Np37WiUdH",
+                  "id": "3y2cIKLjiOlp1Np37WiUdH",
+                  "name": "Shaboozey",
+                  "type": "artist",
+                  "uri": "spotify:artist:3y2cIKLjiOlp1Np37WiUdH"
+                }
+              ],
+              "id": "50Gz1176FyXKAnBmVvc6GQ",
+              "date": "2025-06-27",
+              "type": "single",
+              "track_count": 1
+            },
+            {
+              "title": "Welcome Home",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/1qh1aHXy7LRcb7eyriuJTS"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/1qh1aHXy7LRcb7eyriuJTS",
+                  "id": "1qh1aHXy7LRcb7eyriuJTS",
+                  "name": "Rehab",
+                  "type": "artist",
+                  "uri": "spotify:artist:1qh1aHXy7LRcb7eyriuJTS"
+                }
+              ],
+              "id": "2GNebkc7GvoORBmIysFFKl",
+              "date": "2010-01-01",
+              "type": "album",
+              "track_count": 10
+            },
+            {
+              "title": "Welcome Home",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/4hxDvVq5t8ebPYPdBl1F9f"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/4hxDvVq5t8ebPYPdBl1F9f",
+                  "id": "4hxDvVq5t8ebPYPdBl1F9f",
+                  "name": "HELLYEAH",
+                  "type": "artist",
+                  "uri": "spotify:artist:4hxDvVq5t8ebPYPdBl1F9f"
+                }
+              ],
+              "id": "1cWJUvXYMpNTIp7WD1aap4",
+              "date": "2019-09-27",
+              "type": "album",
+              "track_count": 11
+            },
+            {
+              "title": "Home",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/7x8nK0m0cP2ksQf0mjWdPS"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/7x8nK0m0cP2ksQf0mjWdPS",
+                  "id": "7x8nK0m0cP2ksQf0mjWdPS",
+                  "name": "Dierks Bentley",
+                  "type": "artist",
+                  "uri": "spotify:artist:7x8nK0m0cP2ksQf0mjWdPS"
+                }
+              ],
+              "id": "4WYx3Z81yhA09dBIAktauv",
+              "date": "2012-01-01",
+              "type": "album",
+              "track_count": 12
+            }
+          ]
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"homeboy\" artist:\"Hella\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22homeboy%22+artist%3A%22Hella%22&type=album&limit=10&offset=0",
+          "total": 1,
+          "results": [
+            {
+              "title": "Homeboy EP",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/1n861RIk6CTAWncgHR9UHg"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/1n861RIk6CTAWncgHR9UHg",
+                  "id": "1n861RIk6CTAWncgHR9UHg",
+                  "name": "Hella",
+                  "type": "artist",
+                  "uri": "spotify:artist:1n861RIk6CTAWncgHR9UHg"
+                }
+              ],
+              "id": "5TgI4E1qDUKJqc9zqcVfMV",
+              "date": "2005-11-08",
+              "type": "single",
+              "track_count": 4
+            }
+          ]
+        }
+      ],
+      "ranking_before": [
+        {
+          "rank": 1,
+          "title": "Homeboy EP",
+          "artist": "Hella",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "1n861RIk6CTAWncgHR9UHg"
+            }
+          ],
+          "title_class": "release_type_suffix",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_release_type_suffix"
+          ]
+        }
+      ],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "Homeboy EP",
+          "artist": "Hella",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "1n861RIk6CTAWncgHR9UHg"
+            }
+          ],
+          "title_class": "release_type_suffix",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_release_type_suffix"
+          ]
+        }
+      ],
+      "final_saved_tracks": 4,
+      "final_connected_tracks": 4,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "incomplete_program",
+          "Insufficient evidence"
+        ]
+      ]
+    },
+    {
+      "canonical_artist": "オレスカバンド",
+      "canonical_album": "WAO!!",
+      "normalized_artist": "オレスカバンド",
+      "normalized_album": "wao!!",
+      "trusted_artist_names": [
+        {
+          "name": "オレスカバンド",
+          "role": "preferred"
+        },
+        {
+          "name": "Ore Ska Band",
+          "role": "alias"
+        },
+        {
+          "name": "Oreska Band",
+          "role": "alias"
+        },
+        {
+          "name": "ORESKABAND",
+          "role": "alias"
+        }
+      ],
+      "queries_before": [
+        {
+          "query": "album:\"wao!!\" artist:\"オレスカバンド\"",
+          "fingerprint": "spotify:4:https://api.spotify.com/v1/search?market=US&q=album%3A%22wao%21%21%22+artist%3A%22%E3%82%AA%E3%83%AC%E3%82%B9%E3%82%AB%E3%83%90%E3%83%B3%E3%83%89%22&type=album&limit=10&offset=0",
+          "total": 0,
+          "results": []
+        }
+      ],
+      "queries_after": [
+        {
+          "query": "album:\"wao!!\" artist:\"ORESKABAND\"",
+          "fingerprint": "spotify:5:https://api.spotify.com/v1/search?market=US&q=album%3A%22wao%21%21%22+artist%3A%22ORESKABAND%22&type=album&limit=10&offset=0",
+          "total": 2,
+          "results": [
+            {
+              "title": "WAO!!",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/56OQWVhAWYw1yRxD0R2HSR"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/56OQWVhAWYw1yRxD0R2HSR",
+                  "id": "56OQWVhAWYw1yRxD0R2HSR",
+                  "name": "ORESKABAND",
+                  "type": "artist",
+                  "uri": "spotify:artist:56OQWVhAWYw1yRxD0R2HSR"
+                }
+              ],
+              "id": "0dyEtIksUU6PYFBsttExjk",
+              "date": "2007-05-23",
+              "type": "album",
+              "track_count": 13
+            },
+            {
+              "title": "Wao!!",
+              "artists": [
+                {
+                  "external_urls": {
+                    "spotify": "https://open.spotify.com/artist/56OQWVhAWYw1yRxD0R2HSR"
+                  },
+                  "href": "https://api.spotify.com/v1/artists/56OQWVhAWYw1yRxD0R2HSR",
+                  "id": "56OQWVhAWYw1yRxD0R2HSR",
+                  "name": "ORESKABAND",
+                  "type": "artist",
+                  "uri": "spotify:artist:56OQWVhAWYw1yRxD0R2HSR"
+                }
+              ],
+              "id": "2FY7NTcxo2WPZzxG4y9DEL",
+              "date": "2007-05-23",
+              "type": "album",
+              "track_count": 13
+            }
+          ]
+        }
+      ],
+      "ranking_before": [],
+      "ranking_after": [
+        {
+          "rank": 1,
+          "title": "WAO!!",
+          "artist": "ORESKABAND",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "56OQWVhAWYw1yRxD0R2HSR"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Accepted",
+          "reasons": [
+            "accepted_exact_title"
+          ]
+        },
+        {
+          "rank": 2,
+          "title": "Wao!!",
+          "artist": "ORESKABAND",
+          "artist_ids": [
+            {
+              "provider": "spotify",
+              "kind": "artist",
+              "external_id": "56OQWVhAWYw1yRxD0R2HSR"
+            }
+          ],
+          "title_class": "exact",
+          "decision": "Rejected",
+          "reasons": [
+            "track_title_mismatch"
+          ]
+        }
+      ],
+      "final_saved_tracks": 13,
+      "final_connected_tracks": 13,
+      "final_decision": "Connected",
+      "old_stored_review": [
+        [
+          "unresolved",
+          "no_candidates",
+          "No Spotify candidate"
+        ]
+      ]
+    }
+  ],
+  "tracks": [
+    {
+      "requested_example": "Guy Vs. D.C. Sniper",
+      "local_title": "Guy Vs. D.C. Sniper",
+      "album": "Drugs to the Dear Youth",
+      "comparison_before": [
+        {
+          "candidate": "Drugs To The Dear Youth",
+          "decision": "local_only",
+          "anchors": 5,
+          "alignment": true
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Guy vs DC Sniper",
+      "warnings": [
+        "Guy Vs. D.C. Sniper ↔ Guy vs DC Sniper: contextual punctuation equivalence",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 6,
+      "program_tracks": 6,
+      "alignment_strong": true,
+      "local_duration": 122133,
+      "provider_duration": 125226,
+      "final_review": [
+        [
+          "accepted_exact_title",
+          "Album needs review"
+        ]
+      ]
+    },
+    {
+      "requested_example": "fifzteen",
+      "local_title": "Fifzteen",
+      "album": "Medium Bastard",
+      "comparison_before": [
+        {
+          "candidate": "Medium Bastard",
+          "decision": "local_only",
+          "anchors": 9,
+          "alignment": true
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Fiftzeen",
+      "warnings": [
+        "Fifzteen ↔ Fiftzeen: contextual tiny typo",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 10,
+      "program_tracks": 10,
+      "alignment_strong": true,
+      "local_duration": 182901,
+      "provider_duration": 182813,
+      "final_review": [
+        [
+          "track_title_mismatch",
+          "Track title / version mismatch"
+        ]
+      ]
+    },
+    {
+      "requested_example": "Soundtrack to Insecurity",
+      "local_title": "Soundtrack to Insecurity",
+      "album": "There’s No 666 in Outer Space",
+      "comparison_before": [
+        {
+          "candidate": "There's No 666 in Outer Space",
+          "decision": "local_only",
+          "anchors": 10,
+          "alignment": true
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Sound Track to Insecurity",
+      "warnings": [
+        "The Things That People Do When They Think No One’s Looking ↔ The Things That People Do When They Think No Ones Looking: apostrophe typography under strong playback program 'the things that people do when they think no ones looking'",
+        "Hand That Rocks the Cradle ↔ The Hand That Rocks the Cradle: shared title span 'hand that rocks the cradle'",
+        "Soundtrack to Insecurity ↔ Sound Track to Insecurity: contextual token-boundary equivalence",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 11,
+      "program_tracks": 11,
+      "alignment_strong": true,
+      "local_duration": 324049,
+      "provider_duration": 324013,
+      "final_review": [
+        [
+          "track_title_mismatch",
+          "Track title / version mismatch"
+        ]
+      ]
+    },
+    {
+      "requested_example": "Dodr",
+      "local_title": "Dodr",
+      "album": "This Is The Album Of A Band Called Adebisi Shank",
+      "comparison_before": [
+        {
+          "candidate": "This Is the Album of a Band Called Adebisi Shank",
+          "decision": "corroborated_position",
+          "anchors": 3,
+          "alignment": false
+        },
+        {
+          "candidate": "This Is The Album of a band Called Adebisi Shank",
+          "decision": "corroborated_position",
+          "anchors": 3,
+          "alignment": false
+        },
+        {
+          "candidate": "This is the Second Album of a band called Adebisi Shank",
+          "decision": "insufficient_anchors",
+          "anchors": 0,
+          "alignment": false
+        },
+        {
+          "candidate": "This Is the Third Album of a Band Called Adebisi Shank",
+          "decision": "insufficient_anchors",
+          "anchors": 0,
+          "alignment": false
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Dotr",
+      "warnings": [
+        "Dodr ↔ Dotr: contextual tiny typo",
+        "Mini Rockers ↔ Minirockers: contextual token-boundary equivalence",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 8,
+      "program_tracks": 8,
+      "alignment_strong": true,
+      "local_duration": 190986,
+      "provider_duration": 190986,
+      "final_review": [
+        [
+          "album_title_mismatch",
+          "Album title mismatch"
+        ]
+      ]
+    },
+    {
+      "requested_example": "Mini Rockers",
+      "local_title": "Mini Rockers",
+      "album": "This Is The Album Of A Band Called Adebisi Shank",
+      "comparison_before": [
+        {
+          "candidate": "This Is the Album of a Band Called Adebisi Shank",
+          "decision": "corroborated_position",
+          "anchors": 3,
+          "alignment": false
+        },
+        {
+          "candidate": "This Is The Album of a band Called Adebisi Shank",
+          "decision": "corroborated_position",
+          "anchors": 3,
+          "alignment": false
+        },
+        {
+          "candidate": "This is the Second Album of a band called Adebisi Shank",
+          "decision": "insufficient_anchors",
+          "anchors": 0,
+          "alignment": false
+        },
+        {
+          "candidate": "This Is the Third Album of a Band Called Adebisi Shank",
+          "decision": "insufficient_anchors",
+          "anchors": 0,
+          "alignment": false
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Minirockers",
+      "warnings": [
+        "Dodr ↔ Dotr: contextual tiny typo",
+        "Mini Rockers ↔ Minirockers: contextual token-boundary equivalence",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 8,
+      "program_tracks": 8,
+      "alignment_strong": true,
+      "local_duration": 209586,
+      "provider_duration": 209586,
+      "final_review": [
+        [
+          "album_title_mismatch",
+          "Album title mismatch"
+        ]
+      ]
+    },
+    {
+      "requested_example": "Gaze at Blue",
+      "local_title": "Gaze at Blue (Album Version)",
+      "album": "Dreams",
+      "comparison_before": [
+        {
+          "candidate": "Dreams",
+          "decision": "local_only",
+          "anchors": 11,
+          "alignment": true
+        },
+        {
+          "candidate": "More Real than Dreams (Original Documentary Soundtrack)",
+          "decision": "version_conflict",
+          "anchors": 0,
+          "alignment": false
+        }
+      ],
+      "comparison_after": "exact_anchor",
+      "provider_title": "Gaze at Blue",
+      "warnings": [
+        "Gaze at Blue (Album Version) ↔ Gaze at Blue: weak Album Version annotation",
+        "Contextual shared-title comparison only; all raw metadata retained"
+      ],
+      "program_anchors": 12,
+      "program_tracks": 12,
+      "alignment_strong": true,
+      "local_duration": 234720,
+      "provider_duration": 234720,
+      "final_review": [
+        [
+          "track_title_mismatch",
+          "Track title / version mismatch"
+        ]
+      ]
+    }
+  ],
+  "homeboy_complete_evidence": {
+    "local_title": "Homeboy",
+    "established_artist": {
+      "provider": "spotify",
+      "kind": "artist",
+      "external_id": "1n861RIk6CTAWncgHR9UHg"
+    },
+    "candidate_count": 1,
+    "more_candidates": false,
+    "candidates": [
+      {
+        "identity": {
+          "provider": "spotify",
+          "kind": "album",
+          "external_id": "5TgI4E1qDUKJqc9zqcVfMV"
+        },
+        "artist": "Hella",
+        "artist_ids": [
+          {
+            "provider": "spotify",
+            "kind": "artist",
+            "external_id": "1n861RIk6CTAWncgHR9UHg"
+          }
+        ],
+        "artist_accepted": true,
+        "warnings": [],
+        "title": {
+          "local_raw": "Homeboy",
+          "provider_raw": "Homeboy EP",
+          "local_normalized": "homeboy",
+          "provider_normalized": "homeboy",
+          "comparison": "release_type_suffix",
+          "local_type_hint": null,
+          "provider_type": "Single"
+        },
+        "local_date": null,
+        "provider_date": "2005-11-08",
+        "date_agreement": "UnknownOrDifferent",
+        "local_tracks": 4,
+        "required_tracks": 4,
+        "provider_tracks": 4,
+        "programs": [
+          {
+            "warnings": [],
+            "alignment": {
+              "rows": [
+                {
+                  "local_index": 0,
+                  "provider_index": 0,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 1,
+                  "provider_index": 1,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 2,
+                  "provider_index": 2,
+                  "kind": "Exact"
+                },
+                {
+                  "local_index": 3,
+                  "provider_index": 3,
+                  "kind": "Exact"
+                }
+              ],
+              "strong": true,
+              "unreliable_positions": false
+            },
+            "complete": true,
+            "provider_count": 4,
+            "anchors": 4,
+            "duplicate_positions": 0,
+            "tracks": [
+              {
+                "track_id": "4f546fbe-d175-4607-a74c-6dd030e70345",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Gothspel for You Not Them",
+                  "title_observations": [
+                    {
+                      "value": "Gothspel for You Not Them",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1332706-0d41-43cc-abb1-6fa009a0b3eb"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 1
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "f1332706-0d41-43cc-abb1-6fa009a0b3eb"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "1ecbc7e5-6e33-4062-997d-abc550dd63e6"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 671922,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "a7015e9a-4027-4f4b-9692-17482cbb485b"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "3Wk401ghI8bRFbi34Vnn0I"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 1,
+                  "title": "Gothspel for You Not Them",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 671826,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "ee6c684e-7c99-4dfa-9933-671c527b5cad",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "Madonna Approaches R&B Blonde Wreckages",
+                  "title_observations": [
+                    {
+                      "value": "Madonna Approaches R&B Blonde Wreckages",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "b756b310-fae9-49f3-bd80-745527ff7ae7"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 2
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "b756b310-fae9-49f3-bd80-745527ff7ae7"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "1ecbc7e5-6e33-4062-997d-abc550dd63e6"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 142681,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "2698df3e-8dc6-440f-b793-5c9fb6835e80"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "37ECnMEQ6tYjPkVfaHKD42"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 2,
+                  "title": "Madonna Approaches R&B Blonde Wreckages",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 142600,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "d43ef2fc-29a9-4002-8bd7-e5f40258e416",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "BC but Not Before Christ",
+                  "title_observations": [
+                    {
+                      "value": "BC but Not Before Christ",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "3d41ded6-6e49-4b56-81d3-7fc82b5afa86"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 3
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "3d41ded6-6e49-4b56-81d3-7fc82b5afa86"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "1ecbc7e5-6e33-4062-997d-abc550dd63e6"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 229329,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "22c75c63-cbd4-4936-9ee4-986de2028d4a"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "798yB1rVbAomwCkwQu4vwp"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 3,
+                  "title": "BC but Not Before Christ",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 229240,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              },
+              {
+                "track_id": "777c3b0d-ea01-43cb-8ae0-9c9a5c2af3e7",
+                "local": {
+                  "identities": [],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "If I Were in Hella I Would Eat Lick",
+                  "title_observations": [
+                    {
+                      "value": "If I Were in Hella I Would Eat Lick",
+                      "origin": {
+                        "source": "local",
+                        "source_id": "aa1d350f-7830-4c99-80ca-f4effba1f350"
+                      }
+                    }
+                  ],
+                  "position_observations": [
+                    {
+                      "value": {
+                        "disc": 1,
+                        "number": 4
+                      },
+                      "origin": {
+                        "source": "local",
+                        "source_id": "aa1d350f-7830-4c99-80ca-f4effba1f350"
+                      }
+                    }
+                  ],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "musicbrainz",
+                          "kind": "artist",
+                          "external_id": "1ecbc7e5-6e33-4062-997d-abc550dd63e6"
+                        },
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 720980,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [
+                      {
+                        "provider": "musicbrainz",
+                        "kind": "recording",
+                        "external_id": "55366da1-40eb-4708-8fd3-f447d5d8c59d"
+                      }
+                    ],
+                    "isrcs": []
+                  }
+                },
+                "provider": {
+                  "identities": [
+                    {
+                      "provider": "spotify",
+                      "kind": "track",
+                      "external_id": "3agAe1ukhVz5VO2JlQdvA8"
+                    }
+                  ],
+                  "disc": 1,
+                  "number": 4,
+                  "title": "If I Were in Hella I Would Eat Lick",
+                  "title_observations": [],
+                  "position_observations": [],
+                  "artists": [
+                    {
+                      "identities": [
+                        {
+                          "provider": "spotify",
+                          "kind": "artist",
+                          "external_id": "1n861RIk6CTAWncgHR9UHg"
+                        }
+                      ],
+                      "name": "Hella",
+                      "join_phrase": ""
+                    }
+                  ],
+                  "duration_ms": 720893,
+                  "duration_approximate": false,
+                  "recording": {
+                    "identities": [],
+                    "isrcs": []
+                  }
+                },
+                "normalized_disc": 1,
+                "decision": "exact_anchor"
+              }
+            ]
+          }
+        ],
+        "equivalent_to": null,
+        "playable_family": null,
+        "decision": "Accepted",
+        "reasons": [
+          "accepted_release_type_suffix"
+        ]
+      }
+    ],
+    "decision": "Accepted",
+    "reasons": [
+      "accepted_release_type_suffix"
+    ]
+  },
+  "full_qml_workflow": {
+    "initial_unresolved": 315,
+    "newly_connected": 96,
+    "remaining": 219,
+    "internal_batches": 2,
+    "displayed_rows": 149,
+    "stale_rows": 0,
+    "final_states": {
+      "Connected": 691,
+      "Needs Review": 207,
+      "No Candidates": 12,
+      "Waiting for Spotify": 0,
+      "Needs Retry": 0,
+      "Not on Spotify": 20,
+      "Provider search deferred": 0
+    },
+    "actionable_needs_retry": [],
+    "standalone_search_observations_added": 2
+  },
+  "preservation": {
+    "track": {
+      "rows": 930,
+      "unchanged": true
+    },
+    "recording": {
+      "rows": 930,
+      "unchanged": true
+    },
+    "release": {
+      "rows": 96,
+      "unchanged": true
+    },
+    "album": {
+      "rows": 96,
+      "unchanged": true
+    },
+    "artist": {
+      "rows": 26,
+      "unchanged": true
+    },
+    "library_membership": {
+      "rows": 930,
+      "unchanged": true
+    },
+    "playable_source": {
+      "rows": 930,
+      "unchanged": true
+    },
+    "track_source": {
+      "rows": 930,
+      "unchanged": true
+    },
+    "track_metadata_override": {
+      "rows": 0,
+      "unchanged": true
+    },
+    "album_metadata_override": {
+      "rows": 0,
+      "unchanged": true
+    }
+  }
+}

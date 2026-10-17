@@ -44,6 +44,16 @@ impl Bridge {
                     .spotify_review_groups(if id.is_empty() { None } else { Some(&album) }, 200)
                     .map_err(|e| e.to_string())?
             )),
+            "mark-unresolved" => {
+                let count = self
+                    .session
+                    .library
+                    .mark_album_unresolved_not_on_spotify(&album)
+                    .map_err(|e| e.to_string())?;
+                self.refresh_spotify_review();
+                self.browse_changed();
+                Ok(serde_json::json!({"marked": count}))
+            }
             "tracks" => {
                 let request = music_library::browse::Request {
                     pane: music_library::browse::Pane::Songs,
@@ -63,6 +73,13 @@ impl Bridge {
                 self.spotify_review_generation = self.spotify_review_generation.wrapping_add(1);
                 self.spotify_review_fetch_pending = false;
                 self.spotify_resolution_message.clear();
+                self.spotify_resolution_generation =
+                    self.spotify_resolution_generation.wrapping_add(1);
+                self.spotify_resolution_pending = false;
+                self.spotify_resolution_selection = None;
+                self.spotify_resolution_more = false;
+                self.spotify_resolution_counts = (0, 0);
+                self.spotify_artist_proposal = None;
                 self.spotify_review_album = Some(album.clone());
                 self.spotify_review_selection = None;
                 self.spotify_review_programs.clear();
@@ -82,6 +99,10 @@ impl Bridge {
                         music_library_spotify::Spotify::cached_album_review(&path, &market, &input)
                             .map_err(|e| e.to_string())?
                 {
+                    self.session
+                        .library
+                        .persist_spotify_review(&album, &report)
+                        .map_err(|e| e.to_string())?;
                     self.spotify_review_report = Some(report);
                     self.spotify_review_programs = programs;
                 }
@@ -93,6 +114,14 @@ impl Bridge {
                             self.spotify_review_programs.push(p.clone());
                         }
                     }
+                }
+                if self.spotify_review_report.is_none() {
+                    self.session
+                        .library
+                        .spotify_album_review_evidence_unavailable(&album)
+                        .map_err(|e| e.to_string())?;
+                    self.refresh_spotify_review();
+                    self.browse_changed();
                 }
                 // Inspection never turns an expired/incomplete cached evaluation
                 // into the current reconciliation lifecycle decision.
@@ -141,7 +170,9 @@ impl Bridge {
                             if !b.spotify_review_result_is_current(
                                 generation,
                                 (kind == "track").then_some(song_generation),
-                            ) {
+                            ) || (kind == "album" && b.spotify_review_album != album)
+                                || (kind == "track" && b.spotify_playback_track != track)
+                            {
                                 return;
                             }
                             b.spotify_review_fetch_pending = false;
@@ -299,6 +330,15 @@ impl Bridge {
                 )
             }
             "inspect" => {
+                if let Some(report) = self
+                    .spotify_review_report
+                    .as_ref()
+                    .filter(|r| r.candidates.is_empty())
+                {
+                    return Ok(
+                        serde_json::json!({"target_id":self.spotify_review_album,"generation":self.spotify_review_generation,"count":0,"index":0,"known_album":report.local_title,"known_artist":self.spotify_review_album.as_ref().and_then(|a|self.session.library.spotify_album_review_input(a).ok()).and_then(|p|if let Preparation::Ready(i)=p{Some(i.artist)}else{None}),"primary_reason":report.reasons.first().map(|r|r.label()),"discovery_queries":report.discovery_queries,"message":report.explain_track("")}),
+                    );
+                }
                 let Some(report) = self
                     .spotify_review_report
                     .as_ref()
@@ -324,13 +364,30 @@ impl Bridge {
                         })
                         .unwrap_or_default();
                     return Ok(
-                        serde_json::json!({"count":0,"index":0,"known_album":known.as_ref().map(|i|i.album.as_str()),"known_artist":known.as_ref().map(|i|i.artist.as_str()),"lifecycle":lifecycle,"message":"No cached Album candidates. Retry Album performs bounded discovery."}),
+                        serde_json::json!({"target_id":self.spotify_review_album,"generation":self.spotify_review_generation,"count":0,"index":0,"known_album":known.as_ref().map(|i|i.album.as_str()),"known_artist":known.as_ref().map(|i|i.artist.as_str()),"lifecycle":lifecycle,"message":"No cached Album candidates. Retry Album performs bounded discovery."}),
                     );
                 };
                 let c = report
                     .candidates
                     .get(index.max(0) as usize)
                     .ok_or("Select a cached candidate")?;
+                let unresolved_reason = if c.decision == "Accepted" {
+                    self.spotify_review_album
+                        .as_ref()
+                        .and_then(|album| {
+                            self.session
+                                .library
+                                .spotify_retry_tracks(std::slice::from_ref(album), 1)
+                                .ok()
+                        })
+                        .and_then(|tracks| {
+                            tracks
+                                .first()
+                                .map(|track| report.review_reason(track.as_ref()))
+                        })
+                } else {
+                    None
+                };
                 let mut plan = None;
                 if let Some(p) = self
                     .spotify_review_programs
@@ -401,7 +458,7 @@ impl Bridge {
                     }
                 }
                 Ok(
-                    serde_json::json!({"lifecycle":format!("Current lifecycle: {}. Cached comparison shown; inspection does not refresh discovery.", self.spotify_review_album.as_ref().map(|a| self.session.library.spotify_album_review_lifecycle(a)).transpose().map_err(|e|e.to_string())?.unwrap_or_default()),"our_rank":index.max(0)+1,"provider_rank":c.provider_rank,"count":report.candidates.len(),"index":index.max(0),"known_album":report.local_title,"known_artist":self.spotify_review_album.as_ref().and_then(|album|self.session.library.spotify_album_review_input(album).ok()).and_then(|input|if let Preparation::Ready(input)=input {Some(input.artist)} else {None}),"candidate":c,"decision":if c.decision=="Withheld" {"Needs review"} else {&c.decision},"primary_reason":c.reasons.first().or(report.reasons.first()).map(|r|r.label()),"warnings":c.warnings.iter().cloned().chain(c.reasons.iter().skip(1).map(|r|r.label().to_owned())).collect::<Vec<_>>(),"requirements":c.acceptance_requirements(),"preferred":c.decision=="Accepted","plan":plan,"programs":comparisons}),
+                    serde_json::json!({"target_id":self.spotify_review_album,"generation":self.spotify_review_generation,"lifecycle":format!("Current lifecycle: {}. Cached comparison shown; inspection does not refresh discovery.", self.spotify_review_album.as_ref().map(|a| self.session.library.spotify_album_review_lifecycle(a)).transpose().map_err(|e|e.to_string())?.unwrap_or_default()),"our_rank":index.max(0)+1,"provider_rank":c.provider_rank,"count":report.candidates.len(),"index":index.max(0),"known_album":report.local_title,"known_artist":self.spotify_review_album.as_ref().and_then(|album|self.session.library.spotify_album_review_input(album).ok()).and_then(|input|if let Preparation::Ready(input)=input {Some(input.artist)} else {None}),"discovery_queries":report.discovery_queries,"candidate":c,"decision":if c.decision=="Withheld" {"Needs review"} else {&c.decision},"primary_reason":unresolved_reason.as_ref().or_else(|| if c.decision == "Accepted" { None } else { c.reasons.first().or(report.reasons.first()) }).map(|r|r.label()),"warnings":c.warnings.iter().cloned().chain(c.reasons.iter().skip(1).map(|r|r.label().to_owned())).collect::<Vec<_>>(),"requirements":c.acceptance_requirements(),"preferred":c.decision=="Accepted","plan":plan,"programs":comparisons}),
                 )
             }
             "fetch-program" => {
@@ -442,7 +499,9 @@ impl Bridge {
                     move |result: Result<music_library::album_program::Programs, String>| {
                         if let Some(object) = pointer.as_pinned() {
                             let mut b = object.borrow_mut();
-                            if !b.spotify_review_result_is_current(generation, None) {
+                            if !b.spotify_review_result_is_current(generation, None)
+                                || b.spotify_review_album.as_ref() != Some(&album)
+                            {
                                 return;
                             }
                             b.spotify_review_fetch_pending = false;
@@ -512,6 +571,39 @@ impl Bridge {
                 Ok(serde_json::json!({"connected":count}))
             }
             "retry" | "refresh" => {
+                if action == "refresh" {
+                    self.session
+                        .library
+                        .clear_spotify_bulk_window(&AlbumId(id.into()))
+                        .map_err(|e| e.to_string())?;
+                }
+                if action == "refresh" {
+                    self.browser.review_retry_force.insert(album.clone());
+                }
+                if self.browser.review_local_active
+                    || self.browser.review_retry_local_active
+                    || !self.browser.review_retry_albums.is_empty()
+                {
+                    if self.browser.review_retry_albums.contains(&album)
+                        || self.browser.review_retry_extra.contains(&album)
+                    {
+                        return Ok(
+                            serde_json::json!({"message":"Album is already queued in the running reconciliation queue."}),
+                        );
+                    }
+                    if self.browser.review_local_active {
+                        if !self.browser.review_retry_requested {
+                            self.browser.review_retry_single = true;
+                        }
+                        self.browser.review_retry_requested = true;
+                    }
+                    self.browser.review_retry_seen.insert(album.clone());
+                    self.browser.review_retry_extra.push(album);
+                    self.browser.review_retry_totals[0] += 1;
+                    return Ok(
+                        serde_json::json!({"message":"Album added to the running reconciliation queue."}),
+                    );
+                }
                 if self
                     .spotify_album_matcher
                     .as_ref()
@@ -519,37 +611,25 @@ impl Bridge {
                 {
                     return Err("Spotify Album reconciliation is running; retry this Album when it finishes".into());
                 }
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs() as i64;
-                let seconds = self
-                    .session
-                    .library
-                    .spotify_cooldown_remaining(now)
-                    .map_err(|e| e.to_string())?;
-                if seconds > 0 {
-                    return Err(format!(
-                        "Waiting for Spotify: retry available in {} minutes; no provider requests issued",
-                        (seconds + 59) / 60
-                    ));
-                }
-                self.ensure_spotify_album_matcher()?;
-                let fresh = action == "refresh"
-                    || self
-                        .session
-                        .library
-                        .spotify_album_needs_retry(&album)
-                        .map_err(|e| e.to_string())?;
-                let matcher = self.spotify_album_matcher.as_mut().unwrap();
-                let result = if fresh {
-                    matcher.refresh_album(&self.session.library, &album)
-                } else {
-                    matcher.match_album(&self.session.library, &album)
-                };
-                result.map_err(|e| e.to_string())?;
+                self.browser.review_run_active = true;
+                self.browser.review_run_automatic = false;
+                self.browser.review_retry_single = true;
+                self.browser.error.clear();
+                self.browser.review_provider_blocked = false;
+                self.browser.review_playable_searches = 0;
+                self.browser.review_retry_prepared = false;
+                self.browser.review_retry_preparing = None;
+                self.browser.review_retry_extra = vec![album];
+                self.browser.review_retry_totals = [
+                    1,
+                    0,
+                    0,
+                    self.session.library.unresolved_spotify_count().unwrap_or(0),
+                    0,
+                ];
+                self.begin_retry_unresolved_spotify();
                 Ok(
-                    serde_json::json!({"message":"Album reconciliation queued; inspect again after completion."}),
+                    serde_json::json!({"message":"Album reconciliation started; cached evidence is reevaluated before bounded discovery."}),
                 )
             }
             "track-album" => {

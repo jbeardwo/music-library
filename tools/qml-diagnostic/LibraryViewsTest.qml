@@ -55,6 +55,10 @@
         try {
             wait();
             check(library.view === "Artists", "Artists default"); headings(true,true);
+            check(library.panes[0].rows.length>0, "initial Artists populated before navigation");
+            const initialList=viewsTest.findChild(window.contentItem,"libraryPane0");
+            initialList.forceLayout();
+            check(initialList.count>0 && initialList.itemAtIndex(0)!==null, "initial Artists delegates populated");
             window.width=800; wait();
             for(const name of ["Artists","Genres","Albums","Songs","Playlists"]) page(name);
             const lastNav=viewsTest.findChild(window.contentItem,"libraryViewPlaylists");

@@ -9,15 +9,20 @@ use crate::{
 use rusqlite::params;
 
 /// Increment when acceptance/evidence semantics change. Successful identities are never invalidated.
-pub const EVALUATION_VERSION: u32 = 11;
+pub const EVALUATION_VERSION: u32 = 15;
 pub const LOCAL_BATCH: u32 = 32;
-pub const RETRY_ALBUMS: u32 = 20;
+/// Memory/query chunk size, never the maximum lifetime of a reconciliation run.
+pub const RECONCILIATION_ALBUM_BATCH_SIZE: u32 = 20;
+/// Compatibility alias for individual bounded Album operations.
+pub const RETRY_ALBUMS: u32 = RECONCILIATION_ALBUM_BATCH_SIZE;
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct LocalBatch {
+    pub artist_revisions: Vec<crate::domain::ArtistId>,
     pub examined: usize,
     pub updated: Vec<TrackId>,
     pub accepted: Vec<TrackId>,
     pub needs_retry: usize,
+    pub provider_searches: usize,
     pub still_unresolved: usize,
     pub errors: Vec<String>,
 }
@@ -35,6 +40,193 @@ pub(crate) fn album_unexcluded(db: &rusqlite::Connection, album: &AlbumId) -> Re
     Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify'))",[album.as_ref()],|r|r.get(0))?)
 }
 impl Library {
+    pub fn defer_spotify_album_provider(&mut self, album: &AlbumId) -> Result<()> {
+        self.store.connection.execute("UPDATE spotify_connection_review SET reason_code='provider_unavailable',reason='Provider work is unavailable; cached/local work completed',stale=0,evaluation_version=?2 WHERE state='needs_retry' AND track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",params![album.as_ref(),EVALUATION_VERSION])?;
+        Ok(())
+    }
+    pub fn clear_spotify_bulk_window(&mut self, album: &AlbumId) -> Result<()> {
+        let key = self.spotify_bulk_window_key(album)?;
+        self.store
+            .connection
+            .execute("DELETE FROM spotify_discovery WHERE fingerprint=?1", [key])?;
+        Ok(())
+    }
+    fn spotify_bulk_window_key(&self, album: &AlbumId) -> Result<String> {
+        let tracks = self.local_album_tracks(album)?;
+        let semantic: Vec<_> = tracks
+            .iter()
+            .map(|t| {
+                (
+                    &t.track_id,
+                    &t.evidence.title,
+                    t.evidence.disc,
+                    t.evidence.number,
+                    t.evidence.duration_ms,
+                    &t.evidence.artists,
+                    &t.evidence.recording,
+                )
+            })
+            .collect();
+        let context = match self.prepare_album_match_for(
+            album,
+            &crate::catalog::MatchingScope {
+                provider: "spotify".into(),
+                artist_kind: "artist".into(),
+                album_kind: "album".into(),
+            },
+        )? {
+            crate::album_matching::Preparation::Ready(input) => Some((
+                input.raw_title,
+                input.artist_id,
+                input.known_artist,
+                input.equivalent_artists,
+                input.evidence,
+            )),
+            crate::album_matching::Preparation::Done(_) => None,
+        };
+        let metadata: (String, String, Option<i64>) = self.store.connection.query_row(
+            "SELECT title,COALESCE(artist_credit,match_artist_credit),year FROM effective_album_metadata WHERE album_id=?1",
+            [album.as_ref()], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let bytes = json(&(EVALUATION_VERSION, metadata, context, semantic))?;
+        // Provider cache fingerprint only; never a canonical entity identifier.
+        Ok(format!(
+            "spotify-bulk-window:{}:{}",
+            album.as_ref(),
+            uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, bytes.as_bytes())
+        ))
+    }
+    pub fn spotify_bulk_window_current(&self, album: &AlbumId) -> Result<bool> {
+        let key = self.spotify_bulk_window_key(album)?;
+        Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM spotify_discovery WHERE fingerprint=?1 AND completed_at>unixepoch()-?2)",params![key,DISCOVERY_TTL_SECONDS],|r|r.get(0))?)
+    }
+    pub fn record_spotify_bulk_window(&mut self, album: &AlbumId) -> Result<()> {
+        let key = self.spotify_bulk_window_key(album)?;
+        self.store.connection.execute("INSERT INTO spotify_discovery(fingerprint,response_json,completed_at) VALUES(?1,'{\"bulk_search_window_exhausted\":true,\"provider_search_performed_for_every_track\":false}',unixepoch()) ON CONFLICT(fingerprint) DO NOTHING",[key])?;
+        self.store.connection.execute("UPDATE spotify_connection_review SET state='unresolved',stale=0,evaluation_version=?2,reason_code='provider_search_deferred',reason='Provider search deferred: the reconciliation run used its bounded standalone Track search allowance; use individual Track search' WHERE state='needs_retry' AND track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)", params![album.as_ref(),EVALUATION_VERSION])?;
+        Ok(())
+    }
+    pub fn trusted_artist_credit_names(
+        &self,
+        artist: &crate::domain::ArtistId,
+    ) -> Result<Vec<String>> {
+        let mut q=self.store.connection.prepare("SELECT DISTINCT n.name FROM artist_external_identity i JOIN trusted_artist_name n ON n.provider=i.provider AND n.kind=i.kind AND n.external_id=i.external_id WHERE i.artist_id=?1 ORDER BY n.role DESC,n.name_key LIMIT 32")?;
+        Ok(q.query_map([artist.as_ref()], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+    /// Resolution by a complete trusted catalog Artist page, independent of an
+    /// already associated Album. Names/aliases must support the current credit.
+    pub fn ingest_resolved_catalog_artist(
+        &mut self,
+        artist: &crate::domain::ArtistId,
+        observation: &crate::catalog::ArtistCandidate,
+    ) -> Result<()> {
+        if observation.identity.provider != "musicbrainz" || observation.identity.kind != "artist" {
+            return Err(crate::Error::Invalid(
+                "Expected catalog Artist identity".into(),
+            ));
+        }
+        let name: String = self.store.connection.query_row(
+            "SELECT name FROM artist WHERE id=?1",
+            [artist.as_ref()],
+            |r| r.get(0),
+        )?;
+        if std::iter::once(&observation.name)
+            .chain(&observation.aliases)
+            .all(|n| crate::matching::normalize(n) != crate::matching::normalize(&name))
+        {
+            return Err(crate::Error::Invalid(
+                "Catalog Artist names do not support the canonical Artist".into(),
+            ));
+        }
+        let ids = self.list_artist_external_identities(artist)?;
+        if ids.iter().any(|i| {
+            i.provider == "musicbrainz" && i.kind == "artist" && i != &observation.identity
+        }) {
+            return Err(crate::Error::Invalid(
+                "Trusted catalog Artist identity conflict".into(),
+            ));
+        }
+        self.attach_artist_external_identity(artist, &observation.identity)?;
+        self.ingest_trusted_artist_names(observation)?;
+        Ok(())
+    }
+    /// Exact provider-name discovery is usable only with retained catalog provenance.
+    pub fn ingest_catalog_artist_provider_name(
+        &mut self,
+        artist: &crate::domain::ArtistId,
+        candidate: &crate::catalog::ArtistCandidate,
+    ) -> Result<bool> {
+        if candidate.identity.provider != "spotify"
+            || candidate.identity.kind != "artist"
+            || candidate.identity.external_id.is_empty()
+        {
+            return Err(crate::Error::Invalid(
+                "Invalid provider Artist identity".into(),
+            ));
+        }
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed=tx.execute("INSERT INTO catalog_artist_provider_name(catalog_artist_id,provider,kind,external_id,name_key) SELECT i.external_id,?2,'artist',?3,n.name_key FROM artist_external_identity i JOIN trusted_artist_name n ON n.provider=i.provider AND n.kind=i.kind AND n.external_id=i.external_id WHERE i.artist_id=?1 AND i.provider='musicbrainz' AND n.name_key=?4 ON CONFLICT DO NOTHING",params![artist.as_ref(),candidate.identity.provider,candidate.identity.external_id,crate::matching::normalize(&candidate.name)])?;
+        if changed > 0 {
+            tx.execute("UPDATE spotify_connection_review SET stale=1 WHERE track_id IN(SELECT t.id FROM album_artist_credit ac JOIN release r ON r.album_id=ac.album_id JOIN track t ON t.release_id=r.id WHERE ac.artist_id=?1) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",[artist.as_ref()])?;
+        }
+        tx.commit()?;
+        Ok(changed > 0)
+    }
+    pub fn unobserved_catalog_artist(
+        &self,
+        artist: &crate::domain::ArtistId,
+    ) -> Result<Option<crate::domain::ExternalIdentity>> {
+        use rusqlite::OptionalExtension;
+        Ok(self.store.connection.query_row("SELECT i.external_id FROM artist_external_identity i WHERE i.artist_id=?1 AND i.provider='musicbrainz' AND i.kind='artist' AND NOT EXISTS(SELECT 1 FROM trusted_artist_name n WHERE n.provider=i.provider AND n.kind=i.kind AND n.external_id=i.external_id) ORDER BY i.external_id LIMIT 1",[artist.as_ref()],|r|Ok(crate::domain::ExternalIdentity{provider:"musicbrainz".into(),kind:"artist".into(),external_id:r.get(0)?})).optional()?)
+    }
+    pub fn ingest_trusted_artist_names(
+        &mut self,
+        observation: &crate::catalog::ArtistCandidate,
+    ) -> Result<usize> {
+        if observation.identity.provider != "musicbrainz" || observation.identity.kind != "artist" {
+            return Err(crate::Error::Invalid(
+                "Artist names require trusted catalog provenance".into(),
+            ));
+        }
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let exists:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM artist_external_identity WHERE provider=?1 AND kind=?2 AND external_id=?3)",params![observation.identity.provider,observation.identity.kind,observation.identity.external_id],|r|r.get(0))?;
+        if !exists {
+            return Err(crate::Error::Invalid(
+                "Artist catalog identity is not established".into(),
+            ));
+        }
+        let mut changed = 0;
+        for (name, role) in std::iter::once((&observation.name, "preferred"))
+            .chain(observation.aliases.iter().map(|n| (n, "alias")))
+        {
+            let key = crate::matching::normalize(name);
+            if !key.is_empty() {
+                changed+=tx.execute("INSERT INTO trusted_artist_name(provider,kind,external_id,name,name_key,role) VALUES(?1,'artist',?2,?3,?4,?5) ON CONFLICT DO NOTHING",params![observation.identity.provider,observation.identity.external_id,name,key,role])?;
+            }
+        }
+        if changed > 0 {
+            tx.execute("UPDATE spotify_connection_review SET stale=1 WHERE track_id IN(SELECT t.id FROM artist_external_identity i JOIN album_artist_credit ac ON ac.artist_id=i.artist_id JOIN release r ON r.album_id=ac.album_id JOIN track t ON t.release_id=r.id WHERE i.provider=?1 AND i.kind=?2 AND i.external_id=?3) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",params![observation.identity.provider,observation.identity.kind,observation.identity.external_id])?;
+        }
+        tx.commit()?;
+        Ok(changed)
+    }
+    /// Names scoped to an established catalog identity, never provider-observed similarity.
+    pub fn trusted_artist_search_names(&self, name: &str) -> Result<Vec<String>> {
+        let mut q = self.store.connection.prepare("SELECT DISTINCT n.name FROM artist a JOIN artist_external_identity i ON i.artist_id=a.id JOIN trusted_artist_name n ON n.provider=i.provider AND n.kind=i.kind AND n.external_id=i.external_id WHERE (lower(a.name)=lower(?1) OR EXISTS(SELECT 1 FROM trusted_artist_name seed WHERE seed.provider=i.provider AND seed.kind=i.kind AND seed.external_id=i.external_id AND seed.name_key=?2)) AND n.name_key<>?2 ORDER BY n.role DESC, EXISTS(SELECT 1 FROM spotify_discovery d WHERE d.fingerprint>='spotify-name:' AND d.fingerprint<'spotify-name;' AND lower(json_extract(d.response_json,'$'))=n.name_key) DESC,n.name_key LIMIT 2")?;
+        Ok(
+            q.query_map(params![name, crate::matching::normalize(name)], |r| {
+                r.get(0)
+            })?
+            .collect::<rusqlite::Result<_>>()?,
+        )
+    }
     /// Bounded offline cache provenance. It never chooses a market for requests.
     pub fn retained_spotify_market(&self) -> Result<Option<String>> {
         let keys=self.store.connection.prepare("SELECT fingerprint FROM spotify_discovery WHERE fingerprint>='spotify:' AND fingerprint<'spotify;' ORDER BY fingerprint LIMIT 64")?.query_map([],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -66,10 +258,26 @@ impl Library {
     }
     /// One atomic user action. Connections established since selection are retained.
     pub fn mark_tracks_not_on_spotify(&mut self, tracks: &[TrackId]) -> Result<usize> {
-        let tx = self.store.connection.transaction()?;
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "INSERT INTO track_provider_exclusion(track_id,provider) SELECT t.id,'spotify' FROM track t WHERE t.id IN(SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id) ON CONFLICT DO NOTHING",
             [json(&tracks)?],
+        )?;
+        tx.commit()?;
+        Ok(changed)
+    }
+    /// Snapshot user action on current saved unresolved Tracks, never an inherited rule.
+    pub fn mark_album_unresolved_not_on_spotify(&mut self, album: &AlbumId) -> Result<usize> {
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "INSERT INTO track_provider_exclusion(track_id,provider) SELECT t.id,'spotify' FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id) ON CONFLICT DO NOTHING",
+            [album.as_ref()],
         )?;
         tx.commit()?;
         Ok(changed)
@@ -81,7 +289,10 @@ impl Library {
     }
     /// Atomically re-enable the selected Tracks without touching associations.
     pub fn check_tracks_spotify_again(&mut self, tracks: &[TrackId]) -> Result<usize> {
-        let tx = self.store.connection.transaction()?;
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let changed = tx.execute(
             "DELETE FROM track_provider_exclusion WHERE track_id IN(SELECT value FROM json_each(?1)) AND provider='spotify'",
             [json(&tracks)?],
@@ -102,9 +313,23 @@ impl Library {
         after: Option<&AlbumId>,
         limit: u32,
     ) -> Result<Vec<AlbumId>> {
-        let mut q=self.store.connection.prepare("SELECT b.album_id FROM album_browse_order b INDEXED BY album_order_title WHERE b.title_key>=COALESCE((SELECT title_key FROM album_browse_order WHERE album_id=?1),'') AND (?1 IS NULL OR (b.title_key,b.album_id)>(SELECT title_key,album_id FROM album_browse_order WHERE album_id=?1)) AND EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=b.album_id AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id)) ORDER BY b.title_key,b.album_id LIMIT ?2")?;
+        self.spotify_reconciliation_albums(after, limit, false)
+    }
+    /// Keyset chunk for a run. Automatic runs ignore stable completed failures.
+    pub fn spotify_reconciliation_albums(
+        &self,
+        after: Option<&AlbumId>,
+        limit: u32,
+        automatic: bool,
+    ) -> Result<Vec<AlbumId>> {
+        let mut q=self.store.connection.prepare("SELECT b.album_id FROM album_browse_order b INDEXED BY album_order_title WHERE b.title_key>=COALESCE((SELECT title_key FROM album_browse_order WHERE album_id=?1),'') AND (?1 IS NULL OR (b.title_key,b.album_id)>(SELECT title_key,album_id FROM album_browse_order WHERE album_id=?1)) AND EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN spotify_connection_review v ON v.track_id=t.id WHERE r.album_id=b.album_id AND (?3=0 OR v.state='needs_retry' OR v.stale=1 OR v.evaluation_version<?4 OR v.reason_code='not_evaluated') AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id)) ORDER BY b.title_key,b.album_id LIMIT ?2")?;
         Ok(q.query_map(
-            params![after.map(AsRef::as_ref), limit.clamp(1, RETRY_ALBUMS)],
+            params![
+                after.map(AsRef::as_ref),
+                limit.clamp(1, RECONCILIATION_ALBUM_BATCH_SIZE),
+                automatic,
+                EVALUATION_VERSION
+            ],
             |r| Ok(AlbumId(r.get(0)?)),
         )?
         .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -118,10 +343,39 @@ impl Library {
                 .collect::<rusqlite::Result<_>>()?,
         )
     }
+    /// Cursor-bounded contexts affected when an established Artist gains provider
+    /// identity. Uses the Artist index, never a library-wide Track reevaluation.
+    pub fn spotify_artist_retry_albums(
+        &self,
+        artist: &crate::domain::ArtistId,
+        after: Option<&AlbumId>,
+        limit: u32,
+    ) -> Result<Vec<AlbumId>> {
+        let mut q = self.store.connection.prepare(
+            "SELECT ac.album_id FROM album_artist_credit ac INDEXED BY album_artist_credit_artist WHERE ac.artist_id=?1 AND (?2 IS NULL OR ac.album_id>?2) AND EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=ac.album_id AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id)) GROUP BY ac.album_id ORDER BY ac.album_id LIMIT ?3")?;
+        Ok(q.query_map(
+            params![
+                artist.as_ref(),
+                after.map(AsRef::as_ref),
+                limit.clamp(1, RETRY_ALBUMS)
+            ],
+            |r| Ok(AlbumId(r.get(0)?)),
+        )?
+        .collect::<rusqlite::Result<_>>()?)
+    }
     /// Fresh discovery is needed when local evaluation could not replay this context.
     /// Used by both the status display and explicit batch retry policy.
     pub fn spotify_album_needs_retry(&self, album: &AlbumId) -> Result<bool> {
         Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN spotify_connection_review v ON v.track_id=t.id WHERE r.album_id=?1 AND v.state='needs_retry' AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=t.id))", [album.as_ref()], |r| r.get(0))?)
+    }
+    /// An old review summary without inspectable Album evidence is retryable,
+    /// not a review decision. Preserve current successful negative discovery.
+    pub fn spotify_album_review_evidence_unavailable(&mut self, album: &AlbumId) -> Result<()> {
+        self.store.connection.execute(
+            "UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0,reason_code='cache_refresh_required',reason='Album discovery/program cache is absent or no longer reusable; provider refresh required' WHERE track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1) AND reason_code NOT IN ('no_candidates','not_evaluated','artist_unresolved') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",
+            params![album.as_ref(), EVALUATION_VERSION],
+        )?;
+        Ok(())
     }
     /// Bounded Track fallback after a batch's Album work; no provider activity here.
     pub fn spotify_retry_tracks(&self, albums: &[AlbumId], limit: u32) -> Result<Vec<TrackId>> {
@@ -169,16 +423,15 @@ impl Library {
         .transpose()
     }
     /// A complete bounded page retains competition evidence, not merely its chosen candidate.
-    pub(crate) fn cache_spotify_attempt(
-        &mut self,
+    pub(crate) fn cache_spotify_attempt_tx(
+        tx: &rusqlite::Transaction<'_>,
         input: &Input,
         page: &Page<Candidate>,
     ) -> Result<()> {
         if input.spotify_excluded || page.items.iter().any(|c| c.identity.provider != "spotify") {
             return Ok(());
         }
-        let tx = self.store.connection.transaction()?;
-        let current = crate::song_resolution::load_input(&tx, &input.track_id)?;
+        let current = crate::song_resolution::load_input(tx, &input.track_id)?;
         if current.spotify_excluded {
             return Ok(());
         }
@@ -191,7 +444,6 @@ impl Library {
             )?;
         }
         tx.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=?3,state='unresolved' WHERE track_id=?1",params![input.track_id.as_ref(),EVALUATION_VERSION,input!=&current])?;
-        tx.commit()?;
         Ok(())
     }
     /// Indexed, cursor-bounded stale scan. Exclusions/trusted identities are filtered in SQL.
@@ -221,7 +473,7 @@ impl Library {
             .filter(|t| !replayable.contains(t.as_ref()))
             .collect();
         if !missing.is_empty() {
-            let changed=self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry' WHERE track_id IN(SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",params![json(&missing)?,EVALUATION_VERSION])?;
+            let changed=self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry',reason_code='cache_refresh_required',reason='No retained Track page or established Album program; provider discovery required' WHERE track_id IN(SELECT value FROM json_each(?1)) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",params![json(&missing)?,EVALUATION_VERSION])?;
             batch.updated.extend(missing.into_iter().cloned());
             batch.examined += changed;
             batch.needs_retry += changed;
@@ -238,7 +490,7 @@ impl Library {
             {
                 batch.errors.push(format!("{}: {error}", track.as_ref()));
                 // Do not spin on an unavailable database/cache; explicit retry remains possible.
-                self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry' WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
+                self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry',reason_code='local_reevaluation_failed',reason=?3 WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION,format!("Local reevaluation failed: {error}; retry local evaluation")])?;
             }
         }
         Ok(batch)
@@ -250,7 +502,7 @@ impl Library {
             return Err(Error::Invalid("Local retry Album bound exceeded".into()));
         }
         let mut batch = LocalBatch::default();
-        for _ in 0..3 {
+        loop {
             let ids = self.spotify_retry_tracks_complete(albums)?;
             if ids.is_empty() {
                 break;
@@ -272,7 +524,7 @@ impl Library {
                     self.reevaluate_one(&track, cached.get(&track), &programs, &mut batch)
                 {
                     batch.errors.push(format!("{}: {error}", track.as_ref()));
-                    self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry' WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
+                    self.store.connection.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='needs_retry',reason_code='local_reevaluation_failed',reason=?3 WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION,format!("Local reevaluation failed: {error}; retry local evaluation")])?;
                 }
             }
             if batch.accepted.len() == before || !batch.errors.is_empty() {
@@ -371,7 +623,7 @@ impl Library {
             batch.still_unresolved += 1;
             return Ok(());
         }
-        self.store.connection.execute("UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0 WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
+        self.store.connection.execute("UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0,reason_code='cache_refresh_required',reason='No reusable discovery for current Track evidence; provider discovery required' WHERE track_id=?1",params![track.as_ref(),EVALUATION_VERSION])?;
         batch.needs_retry += 1;
         Ok(())
     }
@@ -380,7 +632,7 @@ impl Library {
 /// Successful discovery expires lazily; browsing never refreshes it.
 pub const DISCOVERY_TTL_SECONDS: i64 = 30 * 24 * 60 * 60;
 /// Query construction/breadth only. Never increment for evaluator changes.
-pub const SEARCH_STRATEGY_VERSION: u32 = 3;
+pub const SEARCH_STRATEGY_VERSION: u32 = 6;
 impl Library {
     pub fn database_path(&self) -> Option<String> {
         self.store

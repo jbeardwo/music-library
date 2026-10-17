@@ -21,6 +21,8 @@ pub enum Reason {
     IncompleteProgram,
     DurationConflict,
     CompetingCandidates,
+    WeakerArtistCredit,
+    UnmatchedTrack,
     IncompleteCandidatePage,
     CandidateLimit,
     AcceptedExactTitle,
@@ -53,6 +55,8 @@ impl Reason {
             Self::PositionMismatch => "No corresponding Track position",
             Self::InsufficientProgramAnchors => "Insufficient positional evidence",
             Self::CompetingCandidates => "Competing candidates",
+            Self::WeakerArtistCredit => "Comparable program with additional Artist credits",
+            Self::UnmatchedTrack => "Track absent from the preferred Spotify program",
             Self::NotEvaluated => "No reconciliation attempted yet",
             Self::ManualReviewRequired => "Manual review required",
             Self::InsufficientEvidence => "Insufficient evidence",
@@ -62,6 +66,9 @@ impl Reason {
             Self::DurationConflict => "Duration conflict",
             Self::EvidenceChanged => "Evidence changed; re-evaluate",
             Self::CompletionFailed => "Association persistence failed",
+            Self::AcceptedPlayableEdition => {
+                "Connected from corresponding provider edition; canonical Release retained"
+            }
             _ => "Album needs review",
         }
     }
@@ -85,6 +92,10 @@ impl Reason {
             Self::IncompleteProgram => "Provider program is incomplete; evidence is insufficient",
             Self::DurationConflict => "Multiple incompatible durations",
             Self::CompetingCandidates => "Competing supported provider representations remain",
+            Self::WeakerArtistCredit => {
+                "Equally strong program with additional provider Artist credits; cleaner candidate preferred"
+            }
+            Self::UnmatchedTrack => "No corresponding occurrence in the preferred Spotify program",
             Self::IncompleteCandidatePage => {
                 "Candidate page has more results; uniqueness is not established"
             }
@@ -137,6 +148,7 @@ pub enum TitleComparison {
     EstablishedArtistBoilerplate,
     MinorTypo,
     PlayableEdition,
+    SharedTitleSpan,
     Conflict,
     VersionConflict,
     TypeConflict,
@@ -153,6 +165,9 @@ impl TitleComparison {
             Self::MinorTypo => "minor typo; requires strong program evidence",
             Self::PlayableEdition => {
                 "alternate playable edition; requires unique strong program evidence"
+            }
+            Self::SharedTitleSpan => {
+                "shared Album title component; requires strong program evidence"
             }
             Self::Conflict => "title mismatch",
             Self::VersionConflict => "meaningful version qualifier differs",
@@ -178,7 +193,8 @@ fn suffix_base(title: &str) -> (&str, Option<&str>) {
     }
     (title, None)
 }
-fn playable_edition_pair(local: &str, provider: &str) -> bool {
+/// Release-title correspondence only; never sufficient without program evidence.
+pub fn playable_edition_pair(local: &str, provider: &str) -> bool {
     fn annotation(text: &str) -> bool {
         let words: Vec<_> = text
             .split(|c: char| !c.is_alphanumeric())
@@ -187,13 +203,20 @@ fn playable_edition_pair(local: &str, provider: &str) -> bool {
         words.iter().any(|w| {
             matches!(
                 *w,
-                "remaster" | "remastered" | "deluxe" | "expanded" | "extended" | "anniversary"
+                "remaster"
+                    | "remastered"
+                    | "reissue"
+                    | "deluxe"
+                    | "expanded"
+                    | "extended"
+                    | "anniversary"
             )
         }) && words.iter().all(|w| {
             matches!(
                 *w,
                 "remaster"
                     | "remastered"
+                    | "reissue"
                     | "deluxe"
                     | "expanded"
                     | "extended"
@@ -235,6 +258,7 @@ fn playable_edition_pair(local: &str, provider: &str) -> bool {
                 " anniversary edition",
                 " remastered",
                 " remaster",
+                " reissue",
                 " deluxe",
             ] {
                 if let Some(prefix) = text.strip_suffix(suffix)
@@ -320,6 +344,7 @@ pub struct CandidateEvidence {
     pub provider_tracks: Option<u32>,
     pub programs: Vec<album_program::PositionedProgram>,
     pub equivalent_to: Option<ExternalIdentity>,
+    pub playable_family: Option<ExternalIdentity>,
     pub decision: String,
     pub reasons: Vec<Reason>,
 }
@@ -355,6 +380,7 @@ impl CandidateEvidence {
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Report {
+    pub discovery_queries: Vec<String>,
     pub local_title: String,
     pub established_artist: Option<ExternalIdentity>,
     pub candidate_count: usize,
@@ -400,6 +426,7 @@ fn initial_report_with_equivalents(
     candidates.dedup_by(|a, b| a.identity == b.identity);
     let count = candidates.len();
     Report {
+        discovery_queries: provider.album_discovery_queries(),
         local_title: context.0.into(),
         established_artist: artist.cloned(),
         candidate_count: count,
@@ -530,6 +557,7 @@ fn initial_report_with_equivalents(
                     provider_tracks: provider.album_candidate_track_count(&c.identity),
                     programs: vec![],
                     equivalent_to: None,
+                    playable_family: None,
                     decision: if !reasons.is_empty() {
                         "Rejected"
                     } else {
@@ -547,14 +575,14 @@ fn program_reason(p: &album_program::PositionedProgram, required: usize) -> Opti
     if !p.complete {
         return Some(Reason::IncompleteProgram);
     }
-    if p.provider_count < required && !p.alignment.strong {
-        return Some(Reason::TrackCountMismatch);
-    }
     if p.tracks
         .iter()
         .any(|t| t.decision == P::TrustedIdentityConflict)
     {
         return Some(Reason::TrustedIdentityConflict);
+    }
+    if p.provider_count < required && !p.alignment.strong {
+        return Some(Reason::TrackCountMismatch);
     }
     if p.duplicate_positions > 0
         || p.tracks
@@ -772,6 +800,24 @@ pub(super) fn resolve_spotify(
     // An established provider observation can corroborate an incomplete display
     // title. Semantic version conflicts remain a veto, never discarded.
     for row in &mut report.candidates {
+        if row.title.comparison == TitleComparison::Conflict
+            && qualifiers(&row.title.local_raw).is_empty()
+            && qualifiers(&row.title.provider_raw).is_empty()
+            && row.title.local_type_hint.is_none()
+            && suffix_base(&album_representation_title(&row.title.provider_raw))
+                .1
+                .is_none()
+            && !playable_edition_pair(&row.title.local_raw, &row.title.provider_raw)
+            && crate::matching::shared_title_span(&row.title.local_raw, &row.title.provider_raw)
+                .is_some()
+        {
+            row.title.comparison = TitleComparison::SharedTitleSpan;
+            row.reasons.retain(|r| *r != Reason::AlbumTitleMismatch);
+            row.warnings.push(
+                "Shared Album title component; raw metadata retained; strong program required"
+                    .into(),
+            );
+        }
         if row.title.comparison == TitleComparison::Conflict {
             for observation in &known.titles {
                 if let Some(candidate) = page.items.iter().find(|c| c.identity == row.identity) {
@@ -856,6 +902,12 @@ pub(super) fn resolve_spotify(
             row.reasons.clear();
             row.decision = "Withheld".into();
             row.warnings.push("Spotify edition differs; using corresponding songs as playable sources without changing the canonical Release".into());
+            if let Some(local_date) = context.1
+                && let Some(provider_date) = crate::catalog_date::Date::parse(&row.provider_date)
+                && local_date.year != provider_date.year
+            {
+                row.warnings.push(format!("Release year differs: {} ↔ {}; playback correspondence does not establish canonical Release identity", local_date.year, provider_date.year));
+            }
         }
     }
     let viable: Vec<_> = report
@@ -865,7 +917,12 @@ pub(super) fn resolve_spotify(
         .filter(|(_, c)| c.reasons.is_empty())
         .map(|(i, _)| i)
         .collect();
-    if page.next_offset.is_some() || viable.len() > MAX_PROGRAM_CANDIDATES {
+    if viable.len() > MAX_PROGRAM_CANDIDATES
+        || page.next_offset.is_some()
+            && viable
+                .iter()
+                .all(|i| report.candidates[*i].title.comparison == TitleComparison::PlayableEdition)
+    {
         return Ok(finish(
             MatchOutcome::AlbumAmbiguous(page.items.clone()),
             report,
@@ -1021,6 +1078,93 @@ pub(super) fn resolve_spotify(
             examined.push((index, c, p));
         }
     }
+    // Playback families pool useful occurrences without accepting multiple
+    // canonical editions. They are candidate-set scoped and pairwise guarded.
+    let family_compatible = |i: usize, j: usize| {
+        let a = &report.candidates[i];
+        let b = &report.candidates[j];
+        let ap = cache.iter().find(|p| p.album == a.identity);
+        let bp = cache.iter().find(|p| p.album == b.identity);
+        a.artist_accepted && b.artist_accepted && a.artist_ids == b.artist_ids
+            && album_representation_title(&a.title.provider_raw) == album_representation_title(&b.title.provider_raw)
+            && a.title.provider_type == b.title.provider_type
+            && matches!(a.title.comparison, TitleComparison::Exact | TitleComparison::Typography)
+            && matches!(b.title.comparison, TitleComparison::Exact | TitleComparison::Typography)
+            && ap.zip(bp).is_some_and(|(a,b)| {
+                matches!((a.programs.as_slice(), b.programs.as_slice()), ([a],[b])
+                    if album_program::compatible_provider_programs(a,b) && album_program::compatible_provider_programs(b,a))
+            })
+    };
+    let mut families: Vec<Vec<usize>> = vec![];
+    let mut visited = std::collections::HashSet::new();
+    for i in 0..report.candidates.len() {
+        if !visited.insert(i) {
+            continue;
+        }
+        let mut group = vec![i];
+        let mut cursor = 0;
+        while cursor < group.len() {
+            for j in 0..report.candidates.len() {
+                if !visited.contains(&j) && family_compatible(group[cursor], j) {
+                    visited.insert(j);
+                    group.push(j);
+                }
+            }
+            cursor += 1;
+        }
+        // Compatibility must hold for every pair, not merely transitively.
+        if group.len() > 1
+            && group
+                .iter()
+                .enumerate()
+                .all(|(k, i)| group[k + 1..].iter().all(|j| family_compatible(*i, *j)))
+        {
+            families.push(group);
+        }
+    }
+    for group in families {
+        let representative = group
+            .iter()
+            .map(|i| report.candidates[*i].identity.clone())
+            .min_by(|a, b| identity_key(a).cmp(&identity_key(b)))
+            .unwrap();
+        for index in group {
+            report.candidates[index].playable_family = Some(representative.clone());
+            report.candidates[index].warnings.push("Compatible provider release family for playback; canonical editions remain distinct".into());
+        }
+    }
+    // A complete, uniquely identifying program can eliminate a similarly
+    // named release with a demonstrably different program. Missing titles or
+    // unfinished pagination inside a program remain uncertainty, not rejection.
+    let complete_winner = examined.iter().any(|(i, _, _)| {
+        let row = &report.candidates[*i];
+        row.reasons.is_empty()
+            && row.programs.iter().all(|p| {
+                p.complete && p.alignment.strong && p.anchors >= 3 && p.anchors == local.len()
+            })
+    });
+    if complete_winner
+        && local.iter().all(|t| {
+            t.evidence
+                .title
+                .as_deref()
+                .is_some_and(crate::matching::usable)
+        })
+    {
+        examined.retain(|(i, _, programs)| {
+            let row = &mut report.candidates[*i];
+            let wrong_program = !row.reasons.is_empty()
+                && row.programs.iter().all(|p| p.complete && p.anchors * 2 < local.len())
+                && programs.programs.iter().all(|p| p.complete && p.tracks.iter().all(|t|
+                    t.title.as_deref().is_some_and(crate::matching::usable)));
+            if wrong_program {
+                row.reasons = vec![Reason::TrackTitleMismatch];
+                row.decision = "Rejected".into();
+                row.warnings.push("Complete Track program does not represent the canonical program; a fully matching candidate dominates".into());
+            }
+            !wrong_program
+        });
+    }
     // Complete equivalent programs with exact established credits dominate an
     // otherwise equally supported object carrying additional provider credits.
     let exact: Vec<_> = examined
@@ -1031,6 +1175,74 @@ pub(super) fn resolve_spotify(
     examined.retain(|(_, c, p)| {
         c.artist_ids.len() == 1 || !exact.iter().any(|other| same_program(other, p))
     });
+    // Track-level additional credits also matter when the Album credit is the
+    // same. Comparable ordered programs cannot force review solely because one
+    // occurrence adds a guest to every Track.
+    let additional = |p: &Programs| {
+        p.programs
+            .iter()
+            .flat_map(|p| &p.tracks)
+            .map(|t| t.artists.len().saturating_sub(1))
+            .sum::<usize>()
+    };
+    let comparable = |a: &Programs, b: &Programs| {
+        let ([a], [b]) = (a.programs.as_slice(), b.programs.as_slice()) else {
+            return false;
+        };
+        a.complete
+            && b.complete
+            && a.tracks.len() == b.tracks.len()
+            && a.tracks.len() >= 3
+            && a.tracks.iter().zip(&b.tracks).all(|(a, b)| {
+                a.disc == b.disc
+                    && a.number == b.number
+                    && normalize(a.title.as_deref().unwrap_or(""))
+                        == normalize(b.title.as_deref().unwrap_or(""))
+                    && a.duration_ms
+                        .zip(b.duration_ms)
+                        .is_none_or(|(a, b)| a.abs_diff(b) <= 3000)
+                    && a.artists
+                        .first()
+                        .zip(b.artists.first())
+                        .is_some_and(|(a, b)| {
+                            a.identities.iter().any(|id| b.identities.contains(id))
+                        })
+                    && !a.recording.identities.iter().any(|id| {
+                        b.recording.identities.iter().any(|other| {
+                            other.provider == id.provider && other.kind == id.kind && other != id
+                        })
+                    })
+            })
+    };
+    let weaker: Vec<usize> = examined
+        .iter()
+        .filter(|(i, c, p)| {
+            report.candidates[*i].reasons.is_empty()
+                && examined.iter().any(|(j, other, op)| {
+                    i != j
+                        && c.artist_ids == other.artist_ids
+                        && report.candidates[*j].reasons.is_empty()
+                        && additional(op) < additional(p)
+                        && comparable(op, p)
+                        && report.candidates[*j]
+                            .programs
+                            .iter()
+                            .map(|p| p.anchors)
+                            .max()
+                            >= report.candidates[*i]
+                                .programs
+                                .iter()
+                                .map(|p| p.anchors)
+                                .max()
+                })
+        })
+        .map(|(i, _, _)| *i)
+        .collect();
+    for index in &weaker {
+        report.candidates[*index].decision = "Rejected".into();
+        report.candidates[*index].reasons = vec![Reason::WeakerArtistCredit];
+    }
+    examined.retain(|(i, _, _)| !weaker.contains(i));
     let mut groups: Vec<Vec<usize>> = vec![];
     for (i, (_, c, p)) in examined.iter().enumerate() {
         if let Some(g) = groups.iter_mut().find(|g| {
@@ -1098,6 +1310,27 @@ pub(super) fn resolve_spotify(
     } else {
         None
     };
+    // A truncated broad name search need not veto a uniquely complete exact
+    // program. Partial/typo/version evidence still requires complete discovery.
+    if page.next_offset.is_some()
+        && !winner.is_some_and(|g| {
+            let row = &report.candidates[examined[groups[g][0]].0];
+            matches!(
+                row.title.comparison,
+                TitleComparison::Exact
+                    | TitleComparison::Typography
+                    | TitleComparison::ReleaseTypeSuffix
+            ) && row.programs.iter().all(|p| {
+                p.complete && p.alignment.strong && p.anchors >= 3 && p.anchors == local.len()
+            })
+        })
+    {
+        return Ok(finish(
+            MatchOutcome::AlbumAmbiguous(page.items.clone()),
+            report,
+            Reason::IncompleteCandidatePage,
+        ));
+    }
     if let Some(group_index) = winner {
         let group = &groups[group_index];
         let (index, c, _) = &examined[group[0]];
@@ -1110,6 +1343,7 @@ pub(super) fn resolve_spotify(
                 TitleComparison::EstablishedArtistBoilerplate => Reason::AcceptedArtistBoilerplate,
                 TitleComparison::ReleaseTypeSuffix => Reason::AcceptedReleaseTypeSuffix,
                 TitleComparison::PlayableEdition => Reason::AcceptedPlayableEdition,
+                TitleComparison::SharedTitleSpan => Reason::AcceptedNormalizedTitle,
                 _ => Reason::AcceptedMinorTypo,
             }
         };
@@ -1216,14 +1450,19 @@ impl Report {
     /// Concise review reason from structured evidence, never title-specific logic.
     pub fn review_reason(&self, track: &str) -> Reason {
         use album_program::PositionDecision;
+        let accepted = self.candidates.iter().any(|c| c.decision == "Accepted");
         let decisions: Vec<_> = self
             .candidates
             .iter()
+            .filter(|c| !accepted || c.decision == "Accepted")
             .flat_map(|c| &c.programs)
             .flat_map(|p| &p.tracks)
             .filter(|t| t.track_id == track)
             .map(|t| t.decision)
             .collect();
+        if accepted && decisions.iter().all(|d| *d == PositionDecision::LocalOnly) {
+            return Reason::UnmatchedTrack;
+        }
         for (decision, reason) in [
             (
                 PositionDecision::VersionConflict,
@@ -1295,6 +1534,25 @@ impl Report {
                 .collect::<Vec<_>>()
                 .join("; ")
         );
+        text.insert_str(
+            0,
+            &format!(
+                "{}: {}\n",
+                if self.decision == "Accepted" {
+                    "Automatic association accepted"
+                } else {
+                    "Primary blocker"
+                },
+                self.reasons
+                    .first()
+                    .copied()
+                    .unwrap_or(Reason::NotEvaluated)
+                    .label()
+            ),
+        );
+        for query in &self.discovery_queries {
+            text.push_str(&format!("Search query: {query}\n"));
+        }
         for c in &self.candidates {
             text.push_str(&format!("\nCandidate: {} [{}]\nArtist: {} — {} [{}]\nAlbum title: {:?} → {:?}\nNormalized: {:?} → {:?} ({})\nRelease type: {}; local title hint: {}\nDate: local {}; provider {}; comparison {}\nTrack count: {} local, {} required; provider {}\nDecision: {}\nReason: {}\n",c.title.provider_raw,identity_text(&c.identity),c.artist,if c.artist_accepted{"accepted"}else{"not accepted"},c.artist_ids.iter().map(identity_text).collect::<Vec<_>>().join(", "),c.title.local_raw,c.title.provider_raw,c.title.local_normalized,c.title.provider_normalized,c.title.comparison.label(),if c.title.provider_type.is_empty(){"unknown"}else{&c.title.provider_type},c.title.local_type_hint.as_deref().unwrap_or("none"),c.local_date.as_deref().unwrap_or("unknown"),if c.provider_date.is_empty(){"unknown"}else{&c.provider_date},c.date_agreement,c.local_tracks,c.required_tracks,c.provider_tracks.map(|n|n.to_string()).unwrap_or_else(||"unknown".into()),c.decision,c.reasons.iter().map(|r|r.label()).collect::<Vec<_>>().join("; ")));
             if let Some(id) = &c.equivalent_to {
@@ -1302,6 +1560,9 @@ impl Report {
                     "Equivalent provider representation: {}\n",
                     identity_text(id)
                 ));
+            }
+            for warning in &c.warnings {
+                text.push_str(&format!("Warning: {warning}\n"));
             }
             if c.programs.is_empty() {
                 text.push_str(

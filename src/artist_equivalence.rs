@@ -28,6 +28,11 @@ pub(crate) fn identities(
     for row in db.prepare("WITH RECURSIVE peers(root,id) AS (SELECT value,value FROM json_each(?1) UNION SELECT p.root,e.artist_b FROM peers p JOIN artist_equivalence e ON e.artist_a=p.id UNION SELECT p.root,e.artist_a FROM peers p JOIN artist_equivalence e ON e.artist_b=p.id) SELECT DISTINCT p.root,i.provider,i.kind,i.external_id FROM peers p JOIN artist_external_identity i ON i.artist_id=p.id WHERE i.kind='artist' ORDER BY p.root,i.provider,i.kind,i.external_id")?.query_map([seeds],|r|Ok((r.get::<_,String>(0)?,ExternalIdentity{provider:r.get(1)?,kind:r.get(2)?,external_id:r.get(3)?})))? {
         let (root,id)=row?;result.entry(root).or_default().push(id);
     }
+    for row in db.prepare("SELECT DISTINCT i.artist_id,p.provider,p.kind,p.external_id FROM artist_external_identity i JOIN catalog_artist_provider_name p ON p.catalog_artist_id=i.external_id WHERE i.provider='musicbrainz' AND i.kind='artist' AND i.artist_id IN(SELECT value FROM json_each(?1)) ORDER BY i.artist_id,p.external_id")?.query_map([serde_json::to_string(artists).map_err(|e|Error::Invalid(e.to_string()))?],|r|Ok((r.get::<_,String>(0)?,ExternalIdentity{provider:r.get(1)?,kind:r.get(2)?,external_id:r.get(3)?})))? {
+        let (root,id)=row?;
+        let ids=result.entry(root).or_default();
+        if !ids.contains(&id) { ids.push(id); }
+    }
     Ok(result)
 }
 pub(crate) fn confirmed_compatible(

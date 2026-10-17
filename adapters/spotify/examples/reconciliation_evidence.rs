@@ -186,6 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     input: input.clone(),
                     artist: Some(artist.clone()),
                     outcome: resolution.outcome,
+                    artist_observation: None,
                     matched_album: presentation,
                     diagnostic: Some(resolution.report),
                 },

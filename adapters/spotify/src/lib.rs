@@ -109,6 +109,7 @@ pub struct Spotify {
     artist_names: HashMap<String, String>,
     programs: Vec<Programs>,
     rejected_albums: Vec<ArtistAlbumCandidate>,
+    album_queries: Vec<String>,
     configuration_error: Option<CatalogError>,
     candidate_counts: HashMap<String, u32>,
     request_counts: (u64, u64),
@@ -149,6 +150,7 @@ impl Spotify {
             artist_names: HashMap::new(),
             programs: vec![],
             rejected_albums: vec![],
+            album_queries: vec![],
             configuration_error: None,
             candidate_counts: HashMap::new(),
             request_counts: (0, 0),
@@ -251,7 +253,15 @@ impl Spotify {
             .known_artist
             .clone()
             .or_else(|| (artists.len() == 1).then(|| artists[0].clone()));
-        let page = match client.scoped_albums(&artists, &input.title) {
+        let mut response = client.scoped_albums(&artists, &input.title);
+        if response.is_err() && client.cache_miss && artists.len() > 1 {
+            // New trusted name evidence changes the composite query, but a
+            // retained primary response still contains inspectable candidates.
+            // Reevaluate that response under the complete current identity set.
+            client.cache_miss = false;
+            response = client.scoped_albums(&artists[..1], &input.title);
+        }
+        let page = match response {
             Ok(page) => page,
             Err(_) if client.cache_miss => return Ok(None),
             Err(e) => return Err(e),
@@ -304,7 +314,20 @@ impl Spotify {
         {
             report = resolution.report;
         }
+        let source_years = client
+            .discovery
+            .as_ref()
+            .unwrap()
+            .spotify_album_source_years(&input.album_id)
+            .map_err(|e| CatalogError::Other(e.to_string()))?;
         for row in &mut report.candidates {
+            if let [year] = source_years.as_slice()
+                && let Some(provider_date) =
+                    music_library::catalog_date::Date::parse(&row.provider_date)
+                && *year != provider_date.year
+            {
+                row.warnings.push(format!("Local source release year {} differs from Spotify {}; source observation retained, canonical year unchanged", year, provider_date.year));
+            }
             if row.programs.is_empty()
                 && let Some(p) = programs.iter().find(|p| p.album == row.identity)
             {
@@ -780,6 +803,99 @@ impl Spotify {
         self.artist_names.insert(a.id.clone(), a.name.clone());
         Ok(())
     }
+    fn search_artists_named(
+        &mut self,
+        name: &str,
+        allow_alias: bool,
+    ) -> Result<Page<ArtistCandidate>, CatalogError> {
+        let mut response: ArtistSearch = self.get(
+            "search",
+            &[
+                ("q", format!("artist:{}", quoted(name))),
+                ("type", "artist".into()),
+                ("limit", "10".into()),
+                ("offset", "0".into()),
+            ],
+        )?;
+        // Spotify can interpret the field-qualified query as unrelated text
+        // (observed for toe). Retry discovery once using the quoted name only
+        // when the original page contains no exact-name candidate. Acceptance
+        // still validates the returned Artist and Album through the core matcher.
+        if !response.artists.items.iter().any(|a| {
+            music_library::matching::normalize(&a.name) == music_library::matching::normalize(name)
+        }) {
+            Timing::event(format_args!(
+                "spotify artist name-only discovery fallback={name:?}"
+            ));
+            response = self.get(
+                "search",
+                &[
+                    ("q", quoted(name)),
+                    ("type", "artist".into()),
+                    ("limit", "10".into()),
+                    ("offset", "0".into()),
+                ],
+            )?;
+        }
+        let more = response.artists.more();
+        Timing::event(format_args!(
+            "spotify artist query={name:?} total={} more={more}",
+            response.artists.total
+        ));
+        let mut items = vec![];
+        for a in response.artists.items {
+            Timing::event(format_args!(
+                "spotify artist candidate id={} name={:?}",
+                a.id, a.name
+            ));
+            self.remember_artist(&a)?;
+            items.push(ArtistCandidate {
+                identity: id("artist", &a.id),
+                name: a.name,
+                aliases: vec![],
+                comment: String::new(),
+                country: String::new(),
+                artist_type: String::new(),
+                score: None,
+            });
+        }
+        if allow_alias
+            && !items.iter().any(|a| {
+                music_library::matching::normalize(&a.name)
+                    == music_library::matching::normalize(name)
+            })
+        {
+            let names = self
+                .discovery
+                .as_ref()
+                .map(|library| library.trusted_artist_search_names(name))
+                .transpose()
+                .map_err(|e| CatalogError::Other(e.to_string()))?
+                .unwrap_or_default();
+            // One trusted alternate discovery name, independent of page/chunk size.
+            if let Some(alias) = names.first() {
+                let mut alternate = self.search_artists_named(alias, false)?;
+                for candidate in &mut alternate.items {
+                    if music_library::matching::normalize(&candidate.name)
+                        == music_library::matching::normalize(alias)
+                    {
+                        candidate.aliases.push(name.into());
+                    }
+                }
+                if alternate
+                    .items
+                    .iter()
+                    .any(|candidate| candidate.aliases.iter().any(|alias| alias == name))
+                {
+                    return Ok(alternate);
+                }
+            }
+        }
+        Ok(Page {
+            items,
+            next_offset: more.then_some(10),
+        })
+    }
     fn scoped_albums(
         &mut self,
         artists: &[ExternalIdentity],
@@ -788,6 +904,7 @@ impl Spotify {
         if artists.is_empty() || artists.len() > 10 {
             return Err(config("Expected bounded Artist candidates"));
         }
+        self.album_queries.clear();
         let mut names = vec![];
         for artist in artists {
             names.push(self.artist_name(artist)?);
@@ -811,9 +928,10 @@ impl Spotify {
                 )
             });
         let mut query = format!("album:{}", quoted(&base));
-        if let [name] = names.as_slice() {
+        if let Some(name) = names.first() {
             query.push_str(&format!(" artist:{}", quoted(name)));
         }
+        self.album_queries.push(query.clone());
         Timing::event(format_args!("spotify album query={query:?}"));
         let mut response: AlbumSearch = self.get(
             "search",
@@ -829,47 +947,59 @@ impl Spotify {
                 .artists
                 .iter()
                 .any(|a| artists.iter().any(|id| id.external_id == a.id))
-                && (music_library::matching::album_representation_title(&album.name)
-                    == music_library::matching::album_representation_title(title)
-                    || names.iter().any(|name| {
-                        music_library::matching::artist_album_title(&album.name, name).is_some_and(
-                            |base| {
-                                music_library::matching::normalize_album_title(base)
-                                    == music_library::matching::normalize_album_title(title)
-                                    || music_library::matching::normalize_album_title(base)
-                                        == format!(
-                                            "{} live",
-                                            music_library::matching::normalize_album_title(title)
-                                        )
-                            },
+                && (music_library::album_candidates::playable_edition_pair(title, &album.name)
+                    || matches!(
+                        music_library::album_candidates::title_evidence(
+                            title,
+                            &catalog_album_candidate_for_search(album)
                         )
-                    }))
+                        .comparison,
+                        music_library::album_candidates::TitleComparison::Exact
+                            | music_library::album_candidates::TitleComparison::Typography
+                            | music_library::album_candidates::TitleComparison::ReleaseTypeSuffix
+                    ))
         });
-        let mut alternate_attempted = false;
-        if !useful
-            && artists.len() == 1
-            && names.len() == 1
-            && let Some(alternate) =
-                music_library::matching::artist_album_discovery_variant(&names[0], title)
-        {
-            alternate_attempted = true;
-            let alternate = self.get::<AlbumSearch>(
+        // One alternate, always retaining a trusted Artist name. Never turn a
+        // normal one-word Album into a speculative live-series search.
+        if !useful {
+            let fallback = if names.len() > 1 {
+                format!("album:{} artist:{}", quoted(&base), quoted(&names[1]))
+            } else if let Some(component) = music_library::matching::literal_search_component(&base)
+            {
+                format!("{} {}", quoted(&names[0]), component)
+            } else if base.contains('\'') {
+                format!("{} {}", base.replace('\'', ""), names[0])
+            } else if music_library::matching::normalize(&base).ends_with(" live") {
+                music_library::matching::artist_album_discovery_variant(&names[0], &base)
+                    .unwrap_or_else(|| format!("{} {}", quoted(&names[0]), base))
+            } else {
+                format!("{} {}", quoted(&names[0]), base)
+            };
+            self.album_queries.push(fallback.clone());
+            Timing::event(format_args!("spotify album alternate query={fallback:?}"));
+            match self.get::<AlbumSearch>(
                 "search",
                 &[
-                    ("q", alternate),
+                    ("q", fallback),
                     ("type", "album".into()),
                     ("limit", "10".into()),
                     ("offset", "0".into()),
                 ],
-            );
-            match alternate {
+            ) {
                 Ok(mut found) => {
+                    // An alternate must never discard a relevant primary result.
                     for album in response.albums.items.drain(..) {
                         if !found.albums.items.iter().any(|other| other.id == album.id) {
                             found.albums.items.push(album);
                         }
                     }
                     if found.albums.items.len() > 10 {
+                        // Keep established Artist objects ahead of unrelated hits.
+                        found.albums.items.sort_by_key(|a| {
+                            !a.artists
+                                .iter()
+                                .any(|a| artists.iter().any(|id| id.external_id == a.id))
+                        });
                         found.albums.items.truncate(10);
                         found.albums.total = found.albums.total.max(11);
                     }
@@ -880,33 +1010,6 @@ impl Spotify {
                 }
                 Err(error) => return Err(error),
             }
-        }
-        // Spotify can return no results for a quoted full title it actually
-        // indexes. One distinctive token is discovery only: returned Artist IDs
-        // and the complete original title still pass the unchanged core matcher.
-        if response.albums.items.is_empty()
-            && !alternate_attempted
-            && !response.albums.more()
-            && names.len() == 1
-            && base.split_whitespace().count() > 1
-            && let Some(token) = base
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|s| s.chars().count() >= 4)
-                .max_by_key(|s| s.chars().count())
-        {
-            let fallback = format!("album:{} artist:{}", quoted(token), quoted(&names[0]));
-            Timing::event(format_args!(
-                "spotify empty-title discovery fallback={fallback:?}"
-            ));
-            response = self.get(
-                "search",
-                &[
-                    ("q", fallback),
-                    ("type", "album".into()),
-                    ("limit", "10".into()),
-                    ("offset", "0".into()),
-                ],
-            )?;
         }
         let more = response.albums.more();
         self.candidate_counts.clear();
@@ -997,6 +1100,22 @@ struct Album {
     album_type: String,
     #[serde(default)]
     total_tracks: Option<u32>,
+}
+fn catalog_album_candidate_for_search(a: &Album) -> ArtistAlbumCandidate {
+    ArtistAlbumCandidate {
+        identity: id("album", &a.id),
+        title: a.name.clone(),
+        artist: display(&a.artists),
+        artist_ids: a.artists.iter().map(|a| id("artist", &a.id)).collect(),
+        date: a.release_date.clone(),
+        primary_type: match a.album_type.as_str() {
+            "single" => "Single",
+            "compilation" => "Compilation",
+            _ => "Album",
+        }
+        .into(),
+        comment: String::new(),
+    }
 }
 fn catalog_album_candidate(a: Album) -> AlbumCandidate {
     let artist = display(&a.artists);
@@ -1301,6 +1420,9 @@ impl CatalogProvider for Spotify {
                 .collect(),
         })
     }
+    fn album_discovery_queries(&self) -> Vec<String> {
+        self.album_queries.clone()
+    }
     fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
         self.rejected_albums.clone()
     }
@@ -1316,61 +1438,7 @@ impl CatalogProvider for Spotify {
         vec![("spotify".into(), "album".into())]
     }
     fn search_artists(&mut self, name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
-        let mut response: ArtistSearch = self.get(
-            "search",
-            &[
-                ("q", format!("artist:{}", quoted(name))),
-                ("type", "artist".into()),
-                ("limit", "10".into()),
-                ("offset", "0".into()),
-            ],
-        )?;
-        // Spotify can interpret the field-qualified query as unrelated text
-        // (observed for toe). Retry discovery once using the quoted name only
-        // when the original page contains no exact-name candidate. Acceptance
-        // still validates the returned Artist and Album through the core matcher.
-        if !response.artists.items.iter().any(|a| {
-            music_library::matching::normalize(&a.name) == music_library::matching::normalize(name)
-        }) {
-            Timing::event(format_args!(
-                "spotify artist name-only discovery fallback={name:?}"
-            ));
-            response = self.get(
-                "search",
-                &[
-                    ("q", quoted(name)),
-                    ("type", "artist".into()),
-                    ("limit", "10".into()),
-                    ("offset", "0".into()),
-                ],
-            )?;
-        }
-        let more = response.artists.more();
-        Timing::event(format_args!(
-            "spotify artist query={name:?} total={} more={more}",
-            response.artists.total
-        ));
-        let mut items = vec![];
-        for a in response.artists.items {
-            Timing::event(format_args!(
-                "spotify artist candidate id={} name={:?}",
-                a.id, a.name
-            ));
-            self.remember_artist(&a)?;
-            items.push(ArtistCandidate {
-                identity: id("artist", &a.id),
-                name: a.name,
-                aliases: vec![],
-                comment: String::new(),
-                country: String::new(),
-                artist_type: String::new(),
-                score: None,
-            });
-        }
-        Ok(Page {
-            items,
-            next_offset: more.then_some(10),
-        })
+        self.search_artists_named(name, true)
     }
     fn artist_albums(
         &mut self,

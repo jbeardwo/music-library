@@ -62,6 +62,7 @@ pub enum Preparation {
 }
 #[derive(Debug)]
 pub struct MatchReply {
+    pub artist_observation: Option<ArtistCandidate>,
     pub input: MatchInput,
     /// Established independently (retained on Album errors), or by a unique pair.
     pub artist: Option<ExternalIdentity>,
@@ -533,6 +534,16 @@ impl AlbumMatcher {
         assert!(!self.active);
         self.queue.retain(|work| work.album_id() != id);
     }
+    /// Transfer a deferred Album to an external run coordinator. Its provider
+    /// cooldown remains durable; the internal retry timer must not compete.
+    pub fn yield_reconciliation_album(&mut self, id: &AlbumId) {
+        self.yield_album(id);
+        if self.queue.is_empty() {
+            self.cooldown.cancel();
+            self.circuit = CircuitState::Available;
+            let _ = self.sender.as_ref().unwrap().send(WorkerCommand::Cancel);
+        }
+    }
     /// Both callbacks must enqueue onto the application owner thread. Deliver
     /// replies to `complete` and timer tokens to `cooldown_elapsed`; neither callback
     /// may block the worker waiting for the owner.
@@ -593,6 +604,7 @@ impl AlbumMatcher {
                 // Cache only independently resolved, complete primary/alias Artist searches.
                 // Bounded session cache; canonical identity reassignment happens on completion.
                 let mut artists = HashMap::<String, ExternalIdentity>::new();
+                let mut artist_observations = HashMap::<String, Option<ArtistCandidate>>::new();
                 let mut candidate_cache = Vec::<crate::album_program::Programs>::new();
                 let mut timer = WorkerTimer::default();
                 let mut refresh_album: Option<AlbumId> = None;
@@ -692,6 +704,19 @@ impl AlbumMatcher {
                                 artists.insert(input.artist.clone(), id.clone());
                             })
                     };
+                    let artist_observation = resolved.as_ref().ok().and_then(|id| {
+                        let key = format!("{}:{}:{}", id.provider, id.kind, id.external_id);
+                        if !artist_observations.contains_key(&key) {
+                            if artist_observations.len() >= 64 {
+                                artist_observations.clear();
+                            }
+                            artist_observations.insert(
+                                key.clone(),
+                                provider.artist_observation(id).ok().flatten(),
+                            );
+                        }
+                        artist_observations.get(&key).cloned().flatten()
+                    });
                     let mut selected_album = None;
                     let mut diagnostic = None;
                     let (artist, outcome) = match resolved {
@@ -788,6 +813,7 @@ impl AlbumMatcher {
                             input,
                             artist,
                             outcome,
+                            artist_observation,
                             matched_album: selected_album,
                             diagnostic,
                         });
@@ -918,6 +944,7 @@ impl AlbumMatcher {
                 input,
                 artist: Some(candidate.identity.clone()),
                 outcome: MatchOutcome::NoConfidentMatch,
+                artist_observation: None,
                 matched_album: None,
                 diagnostic: None,
             },
@@ -970,6 +997,7 @@ impl AlbumMatcher {
             };
             if let Some(reason) = reason {
                 diagnostic = Some(Report {
+                    discovery_queries: vec![],
                     local_title: retry.raw_title.clone(),
                     established_artist: retry.known_artist.clone(),
                     candidate_count: 0,

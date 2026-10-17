@@ -30,6 +30,33 @@ pub fn title_typography(value: &str) -> String {
         .collect()
 }
 
+/// Textual containment evidence only. The caller must establish Artist/program
+/// context and unique correspondence; this is never a global identity rule.
+/// Unicode letters and numbers delimit components equally in every script.
+pub fn shared_title_span(left: &str, right: &str) -> Option<String> {
+    let a = normalize_album_title(left);
+    let b = normalize_album_title(right);
+    if a == b {
+        return None;
+    }
+    let (short, long) = if a.len() < b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    if short.chars().filter(|c| c.is_alphanumeric()).count() < 2 {
+        return None;
+    }
+    long.match_indices(short).find_map(|(start, _)| {
+        let end = start + short.len();
+        let boundary =
+            |c: char| !c.is_alphanumeric() && !unicode_normalization::char::is_combining_mark(c);
+        (long[..start].chars().next_back().is_none_or(boundary)
+            && long[end..].chars().next().is_none_or(boundary))
+        .then(|| short.clone())
+    })
+}
+
 pub fn usable(value: &str) -> bool {
     !matches!(
         normalize(value).as_str(),
@@ -200,4 +227,97 @@ mod tests {
         assert!(!usable(" Unknown   Album "));
         assert!(credit(&["Unknown Artist".into()]).is_none());
     }
+}
+
+/// Literal ASCII title span in a mixed-script observation. Search evidence only;
+/// punctuation is retained and no text is translated or transliterated.
+pub fn literal_search_component(title: &str) -> Option<String> {
+    if !title.chars().any(|c| c.is_alphabetic() && !c.is_ascii()) {
+        return None;
+    }
+    title
+        .split(|c: char| !c.is_ascii())
+        .map(|s| {
+            s.trim_matches(|c: char| {
+                c.is_whitespace() || matches!(c, '(' | ')' | '[' | ']' | '/' | '-')
+            })
+        })
+        .filter(|s| s.chars().filter(|c| c.is_ascii_alphanumeric()).count() >= 3)
+        .max_by_key(|s| s.chars().filter(|c| c.is_ascii_alphanumeric()).count())
+        .map(str::to_owned)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContextualTitleClass {
+    Punctuation,
+    TokenBoundary,
+    TinyTypo,
+    AlbumVersion,
+}
+impl ContextualTitleClass {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Punctuation => "contextual punctuation equivalence",
+            Self::TokenBoundary => "contextual token-boundary equivalence",
+            Self::TinyTypo => "contextual tiny typo",
+            Self::AlbumVersion => "weak Album Version annotation",
+        }
+    }
+}
+/// Shared contextual policy. Callers must prove Artist, independent program
+/// anchors, a unique counterpart and position; this never establishes identity.
+pub fn contextual_title_class(left: &str, right: &str) -> Option<ContextualTitleClass> {
+    let annotation_base = |s: &str| {
+        let normalized = normalize_album_title(s);
+        normalized
+            .strip_suffix(" (album version)")
+            .or_else(|| normalized.strip_suffix(" - album version"))
+            .map(str::to_owned)
+            .unwrap_or(normalized)
+    };
+    let a = normalize_album_title(left);
+    let b = normalize_album_title(right);
+    if a != b && annotation_base(left) == annotation_base(right) {
+        return Some(ContextualTitleClass::AlbumVersion);
+    }
+    if crate::album_matching::qualifiers(left) != crate::album_matching::qualifiers(right) {
+        return None;
+    }
+    // Periods in abbreviations can join letters; other punctuation retains a
+    // token boundary. A hyphen must never silently concatenate musical words.
+    let periods = |s: &str| crate::album_program::comparison_title(&s.replace('.', ""));
+    if periods(&a) == periods(&b) && !periods(&a).is_empty() {
+        return Some(ContextualTitleClass::Punctuation);
+    }
+    let a = crate::album_program::comparison_title(left);
+    let b = crate::album_program::comparison_title(right);
+    let compact = |s: &str| s.split_whitespace().collect::<String>();
+    if a != b
+        && compact(&a) == compact(&b)
+        && compact(&a).chars().count() >= 6
+        && a.split_whitespace()
+            .chain(b.split_whitespace())
+            .all(|w| w.chars().count() >= 2)
+    {
+        return Some(ContextualTitleClass::TokenBoundary);
+    }
+    if left.contains(['\'', '’']) || right.contains(['\'', '’']) {
+        return None;
+    }
+    if crate::album_matching::edit_close(&a, &b, 1, 4) {
+        return Some(ContextualTitleClass::TinyTypo);
+    }
+    let ac: Vec<_> = a.chars().collect();
+    let bc: Vec<_> = b.chars().collect();
+    if ac.len() >= 8 && ac.len() == bc.len() {
+        let differing: Vec<_> = (0..ac.len()).filter(|i| ac[*i] != bc[*i]).collect();
+        if let [i, j] = differing.as_slice()
+            && *j == *i + 1
+            && ac[*i] == bc[*j]
+            && ac[*j] == bc[*i]
+        {
+            return Some(ContextualTitleClass::TinyTypo);
+        }
+    }
+    None
 }

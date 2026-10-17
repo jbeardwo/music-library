@@ -573,21 +573,13 @@ fn spotify_duration_fadeout_tolerance_keeps_other_identity_gates() {
             delta <= 10_000
         );
         let mut wrong_position = c;
-        wrong_position.number = 2;
-        assert_ne!(
+        wrong_position.number = 999;
+        // Position is release evidence, not a playback veto for a clear song.
+        assert_eq!(
             evaluate(&input, &page(wrong_position), 0, &[])
                 .unwrap()
-                .final_decision,
-            FinalDecision::Accept
-        );
-        assert_eq!(
-            l.apply_song_evaluation(&input, &p).unwrap().is_some(),
-            delta <= 10_000
-        );
-        assert_eq!(
-            !l.track_provider_occurrences(&r.track_ids[0], "spotify")
-                .unwrap()
-                .is_empty(),
+                .final_decision
+                == FinalDecision::Accept,
             delta <= 10_000
         );
     }
@@ -908,4 +900,676 @@ fn genre_source_availability_and_path_do_not_change_discovery_inputs() {
     let batch = library.reevaluate_stale_spotify(32).unwrap();
     assert_eq!(batch.needs_retry, 0);
     assert_eq!(batch.still_unresolved, 1);
+}
+
+#[test]
+fn album_exclusion_is_current_unresolved_membership_not_an_inherited_rule() {
+    let (_dir, mut library, imported) = fixture();
+    let album = library.album_id_for_track(&imported.track_ids[0]).unwrap();
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let page = page(candidate(&input));
+    library.persist_spotify_song_review(&input, &page).unwrap();
+    library.apply_song_evaluation(&input, &page).unwrap();
+    assert!(
+        !library
+            .track_provider_occurrences(&input.track_id, "spotify")
+            .unwrap()
+            .is_empty()
+    );
+    let expected = imported.track_ids.len() - 1;
+    assert_eq!(
+        library
+            .mark_album_unresolved_not_on_spotify(&album)
+            .unwrap(),
+        expected
+    );
+    assert!(!library.spotify_manually_excluded(&input.track_id).unwrap());
+    assert_eq!(
+        library
+            .mark_album_unresolved_not_on_spotify(&album)
+            .unwrap(),
+        0
+    );
+    for t in imported.track_ids.iter().skip(1) {
+        assert!(library.spotify_manually_excluded(t).unwrap());
+    }
+}
+#[test]
+fn concurrent_provider_cache_review_and_candidate_writers_do_not_upgrade_stale_snapshots() {
+    let (dir, mut library, imported) = fixture();
+    let input = library
+        .song_resolution_input(&imported.track_ids[0])
+        .unwrap();
+    let page = page(candidate(&input));
+    let path = dir.path().join("db");
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let threads = (0..2)
+        .map(|worker| {
+            let path = path.clone();
+            let barrier = barrier.clone();
+            let input = input.clone();
+            let page = page.clone();
+            std::thread::spawn(move || {
+                let mut library = Library::open(path).unwrap();
+                barrier.wait();
+                for i in 0..80 {
+                    if worker == 0 {
+                        library
+                            .persist_spotify_discovery(&format!("stress:{i}"), "{}", 2_000_000_000)
+                            .unwrap();
+                    } else {
+                        library.persist_spotify_song_review(&input, &page).unwrap();
+                    }
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    for _ in 0..80 {
+        library.persist_spotify_song_review(&input, &page).unwrap();
+        library.spotify_review_groups(None, 200).unwrap();
+        library.song_resolution_input(&input.track_id).unwrap();
+    }
+    for thread in threads {
+        thread.join().unwrap();
+    }
+}
+#[test]
+fn wal_deferred_upgrade_failure_is_not_repaired_by_a_busy_timeout() {
+    // Deterministic reproduction of the former reconciliation transaction pattern.
+    let (dir, _library, _) = fixture();
+    let reader = db(&dir);
+    let writer = db(&dir);
+    reader
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .unwrap();
+    reader
+        .execute_batch("BEGIN DEFERRED; SELECT count(*) FROM spotify_discovery;")
+        .unwrap();
+    writer
+        .execute("INSERT INTO spotify_discovery VALUES('other','{}',123)", [])
+        .unwrap();
+    let error = reader
+        .execute(
+            "INSERT INTO spotify_discovery VALUES('reader','{}',123)",
+            [],
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error,rusqlite::Error::SqliteFailure(code,_) if code.extended_code == rusqlite::ffi::SQLITE_BUSY_SNAPSHOT)
+    );
+    reader.execute_batch("ROLLBACK").unwrap();
+}
+
+#[test]
+fn contextual_program_playback_preserves_canonical_identity_and_raw_titles() {
+    use music_library::{
+        album_program::{Program, Programs},
+        catalog::ArtistAlbumCandidate,
+        edition::TrackEvidence,
+    };
+    let (dir, mut library, imported) = fixture();
+    let album = library.album_id_for_track(&imported.track_ids[0]).unwrap();
+    let artist = ArtistId(
+        db(&dir)
+            .query_row(
+                "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+                [album.as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    );
+    library
+        .attach_artist_external_identity(&artist, &id("spotify", "artist", "known"))
+        .unwrap();
+    let names = [
+        "水中漫步 Underwater",
+        "Moonset 月落",
+        "夜晚的竹北 Night Time",
+        "水中漫步",
+    ];
+    for (track, title) in imported.track_ids.iter().zip(names) {
+        library.set_track_title_override(track, title).unwrap();
+    }
+    let originals = library.local_album_tracks(&album).unwrap();
+    let identities = library.list_album_external_identities(&album).unwrap();
+    let metadata = ArtistAlbumCandidate {
+        identity: id("spotify", "album", "playback"),
+        title: "Untitled".into(),
+        artist: "Band".into(),
+        artist_ids: vec![id("spotify", "artist", "known")],
+        primary_type: "Album".into(),
+        date: "2024".into(),
+        comment: String::new(),
+    };
+    let programme = Program {
+        identity: None,
+        complete: true,
+        tracks: ["Underwater", "Moonset", "Night Time", "水中漫步"]
+            .iter()
+            .enumerate()
+            .map(|(i, title)| TrackEvidence {
+                title: Some((*title).into()),
+                number: Some(i as u32 + 1),
+                disc: Some(1),
+                duration_ms: Some(200000),
+                artists: originals[i].evidence.artists.clone(),
+                identities: vec![id("spotify", "track", &format!("playable{i}"))],
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let programme = Programs {
+        album: metadata.identity.clone(),
+        programs: vec![programme],
+        note: String::new(),
+    };
+    let connected = library
+        .reconcile_spotify_program_playables(&album, &[(metadata.clone(), programme.clone())])
+        .unwrap();
+    assert_eq!(connected.len(), 4);
+    let (_, raw) = library
+        .cached_spotify_track_attempt(&imported.track_ids[0])
+        .unwrap()
+        .unwrap();
+    assert_eq!(raw.items[0].title, "Underwater");
+    assert!(
+        library
+            .spotify_review_summary(&imported.track_ids[0])
+            .unwrap()
+            .1
+            .contains("raw titles retained")
+    );
+    assert_eq!(
+        library.list_album_external_identities(&album).unwrap(),
+        identities
+    );
+    for (track, title) in imported.track_ids.iter().zip(names) {
+        assert_eq!(library.song_resolution_input(track).unwrap().title, title);
+        assert_eq!(library.album_id_for_track(track).unwrap(), album);
+    }
+    assert!(
+        library
+            .reconcile_spotify_program_playables(&album, &[(metadata, programme)])
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn complementary_provider_programs_union_playback_without_canonical_edition_attachment() {
+    use music_library::{
+        album_program::{Program, Programs},
+        catalog::ArtistAlbumCandidate,
+        edition::TrackEvidence,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut library = Library::open(dir.path().join("db")).unwrap();
+    let credit = ArtistCreditInput {
+        name: "Band".into(),
+        role: None,
+    };
+    let release = library
+        .create_catalog_release(&CatalogReleaseInput {
+            title: "Program".into(),
+            year: None,
+            artists: vec![credit.clone()],
+            tracks: (1..=6)
+                .map(|n| CatalogTrackInput {
+                    title: format!("Song {n}"),
+                    artists: vec![credit.clone()],
+                    disc_number: Some(1),
+                    track_number: Some(n),
+                })
+                .collect(),
+        })
+        .unwrap();
+    for t in &release.track_ids {
+        library.add_to_library(t).unwrap();
+    }
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    let artist = ArtistId(
+        db(&dir)
+            .query_row(
+                "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+                [album.as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    );
+    library
+        .attach_artist_external_identity(&artist, &id("spotify", "artist", "known"))
+        .unwrap();
+    let local = library.local_album_tracks(&album).unwrap();
+    let originals = library.list_album_external_identities(&album).unwrap();
+    let candidates: Vec<_> = [("a", 2), ("b", 4)]
+        .into_iter()
+        .map(|(name, missing)| {
+            let metadata = ArtistAlbumCandidate {
+                identity: id("spotify", "album", name),
+                title: "Program".into(),
+                artist: "Band".into(),
+                artist_ids: vec![id("spotify", "artist", "known")],
+                primary_type: "Album".into(),
+                date: "2020".into(),
+                comment: String::new(),
+            };
+            let programs = Programs {
+                album: metadata.identity.clone(),
+                note: String::new(),
+                programs: vec![Program {
+                    identity: None,
+                    complete: true,
+                    tracks: local
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != missing)
+                        .map(|(i, t)| TrackEvidence {
+                            title: t.evidence.title.clone(),
+                            disc: Some(1),
+                            number: Some(i as u32 + 1),
+                            artists: vec![music_library::edition::ArtistEvidence {
+                                name: "Band".into(),
+                                identities: vec![id("spotify", "artist", "known")],
+                                join_phrase: String::new(),
+                            }],
+                            duration_ms: Some(200000),
+                            identities: vec![id("spotify", "track", &format!("{name}{i}"))],
+                            ..Default::default()
+                        })
+                        .collect(),
+                }],
+            };
+            (metadata, programs)
+        })
+        .collect();
+    let connected = library
+        .reconcile_spotify_program_playables(&album, &candidates)
+        .unwrap();
+    assert_eq!(connected.len(), 6);
+    assert_eq!(
+        library.list_album_external_identities(&album).unwrap(),
+        originals
+    );
+    assert_eq!(
+        library
+            .track_provider_occurrences(&release.track_ids[2], "spotify")
+            .unwrap(),
+        vec![id("spotify", "track", "b2")]
+    );
+    assert_eq!(
+        library
+            .track_provider_occurrences(&release.track_ids[4], "spotify")
+            .unwrap(),
+        vec![id("spotify", "track", "a4")]
+    );
+    assert!(
+        library
+            .reconcile_spotify_program_playables(&album, &candidates)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn trusted_artist_equivalence_drives_discovery_without_own_provider_identity() {
+    use music_library::{album_matching::AlbumMatcher, catalog::*};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    };
+    struct Provider(Arc<AtomicUsize>);
+    impl CatalogProvider for Provider {
+        fn search_artists(&mut self, _: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
+            panic!("trusted equivalence must avoid canonical-name Artist discovery")
+        }
+        fn artist_albums(
+            &mut self,
+            artist: &ExternalIdentity,
+            _: &str,
+        ) -> Result<Page<ArtistAlbumCandidate>, CatalogError> {
+            assert_eq!(artist.external_id, "tsosis");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Page {
+                items: vec![],
+                next_offset: None,
+            })
+        }
+        fn search_albums(&mut self, _: &str, _: u32) -> Result<Page<AlbumCandidate>, CatalogError> {
+            panic!("no broad search")
+        }
+        fn releases(
+            &mut self,
+            _: &ExternalIdentity,
+            _: u32,
+        ) -> Result<Page<ReleaseCandidate>, CatalogError> {
+            panic!("no edition search")
+        }
+        fn release(&mut self, _: &ExternalIdentity) -> Result<Release, CatalogError> {
+            panic!("no edition fetch")
+        }
+    }
+    let (_dir, mut l, r) = fixture();
+    let evidence = music_library::edition::ArtistEvidence {
+        name: "tsosis".into(),
+        identities: vec![id("spotify", "artist", "tsosis")],
+        join_phrase: String::new(),
+    };
+    let proposal = l
+        .prepare_artist_equivalence(&r.track_ids[0], &evidence)
+        .unwrap();
+    let canonical = proposal.local.clone();
+    l.confirm_artist_equivalence(&proposal).unwrap();
+    let albums = l.spotify_retry_albums(None, 20).unwrap();
+    assert_eq!(albums.len(), 1);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (send, recv) = mpsc::channel();
+    let scope = MatchingScope {
+        provider: "spotify".into(),
+        artist_kind: "artist".into(),
+        album_kind: "album".into(),
+    };
+    let mut matcher = AlbumMatcher::for_provider(
+        Provider(calls.clone()),
+        scope,
+        move |r| send.send(r).unwrap(),
+        |_| panic!("no Album program"),
+        |_| {},
+    )
+    .unwrap();
+    for _ in &r.track_ids {
+        matcher.match_album(&l, &albums[0]).unwrap();
+    }
+    let reply = recv
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    matcher.complete(&mut l, reply);
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "trusted equivalent Artist ID supplies one Album discovery context"
+    );
+    for t in &r.track_ids {
+        l.mark_not_on_spotify(t).unwrap();
+    }
+    assert!(l.spotify_retry_albums(None, 20).unwrap().is_empty());
+    matcher.match_album(&l, &albums[0]).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let connection = db(&_dir);
+    let artist: String = connection
+        .query_row(
+            "SELECT artist_id FROM track_artist_credit WHERE track_id=?1 LIMIT 1",
+            [r.track_ids[0].as_ref()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        artist,
+        canonical.as_ref(),
+        "equivalence must preserve canonical Artist"
+    );
+}
+
+#[test]
+fn missing_inspectable_review_evidence_becomes_retry_without_erasing_negative_discovery() {
+    let (dir, mut library, release) = fixture();
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    let connection = db(&dir);
+    connection.execute("UPDATE spotify_connection_review SET stale=0,evaluation_version=?1,state='unresolved',reason_code='competing_candidates',reason='Needs review'", [EVALUATION_VERSION]).unwrap();
+    assert_eq!(
+        library.spotify_album_review_lifecycle(&album).unwrap(),
+        "Needs review"
+    );
+    library
+        .spotify_album_review_evidence_unavailable(&album)
+        .unwrap();
+    assert_eq!(
+        library.spotify_album_review_lifecycle(&album).unwrap(),
+        "Needs retry"
+    );
+    connection.execute("UPDATE spotify_connection_review SET state='unresolved',reason_code='no_candidates',reason='No candidates'", []).unwrap();
+    library
+        .spotify_album_review_evidence_unavailable(&album)
+        .unwrap();
+    assert_eq!(
+        library.spotify_album_review_lifecycle(&album).unwrap(),
+        "No candidates"
+    );
+}
+
+#[test]
+fn automatic_run_ignores_stable_review_and_negative_states_but_accepts_relevant_changes() {
+    let (dir, mut library, release) = fixture();
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    assert_eq!(
+        library
+            .spotify_reconciliation_albums(None, 20, true)
+            .unwrap(),
+        vec![album.clone()]
+    );
+    let connection = db(&dir);
+    for reason in ["competing_candidates", "no_candidates"] {
+        connection.execute("UPDATE spotify_connection_review SET state='unresolved',stale=0,evaluation_version=?1,reason_code=?2", rusqlite::params![EVALUATION_VERSION,reason]).unwrap();
+        assert!(
+            library
+                .spotify_reconciliation_albums(None, 20, true)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            library
+                .spotify_reconciliation_albums(None, 20, false)
+                .unwrap(),
+            vec![album.clone()]
+        );
+    }
+    connection
+        .execute(
+            "UPDATE spotify_connection_review SET stale=1 WHERE track_id=?1",
+            [release.track_ids[0].as_ref()],
+        )
+        .unwrap();
+    assert_eq!(
+        library
+            .spotify_reconciliation_albums(None, 20, true)
+            .unwrap(),
+        vec![album.clone()]
+    );
+    library
+        .mark_album_unresolved_not_on_spotify(&album)
+        .unwrap();
+    assert!(
+        library
+            .spotify_reconciliation_albums(None, 20, true)
+            .unwrap()
+            .is_empty()
+    );
+    library.check_spotify_again(&release.track_ids[0]).unwrap();
+    assert_eq!(
+        library
+            .spotify_reconciliation_albums(None, 20, true)
+            .unwrap(),
+        vec![album]
+    );
+}
+
+#[test]
+fn exhausted_provider_budget_has_an_explicit_terminal_reason() {
+    let mut l = Library::open_in_memory().unwrap();
+    let r = l.add_catalog_release(&catalog()).unwrap();
+    let album = l.album_id_for_track(&r.track_ids[0]).unwrap();
+    l.reevaluate_stale_spotify(32).unwrap();
+    l.record_spotify_bulk_window(&album).unwrap();
+    assert!(!l.spotify_album_needs_retry(&album).unwrap());
+    assert_eq!(
+        l.spotify_album_review_lifecycle(&album).unwrap(),
+        "Provider search deferred"
+    );
+    for track in &r.track_ids {
+        let (code, reason) = l.spotify_review_summary(track).unwrap();
+        assert_eq!(code, "provider_search_deferred");
+        assert!(reason.contains("bounded standalone Track search allowance"));
+    }
+}
+
+fn playback_edition_fixture() -> (
+    tempfile::TempDir,
+    Library,
+    ImportedRelease,
+    AlbumId,
+    music_library::catalog::ArtistAlbumCandidate,
+    music_library::album_program::Programs,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut library = Library::open(dir.path().join("db")).unwrap();
+    let mut release = catalog();
+    let mut extra = release.media[0].tracks[0].clone();
+    extra.title = "Song 5".into();
+    extra.position = 5;
+    extra.identities = vec![id("musicbrainz", "track", "t5")];
+    release.media[0].tracks.push(extra);
+    let imported = library.add_catalog_release(&release).unwrap();
+    let album = library.album_id_for_track(&imported.track_ids[0]).unwrap();
+    let artist = ArtistId(
+        db(&dir)
+            .query_row(
+                "SELECT artist_id FROM album_artist_credit WHERE album_id=?1",
+                [album.as_ref()],
+                |r| r.get(0),
+            )
+            .unwrap(),
+    );
+    library
+        .attach_artist_external_identity(&artist, &id("spotify", "artist", "known"))
+        .unwrap();
+    let local = library.local_album_tracks(&album).unwrap();
+    let candidate = music_library::catalog::ArtistAlbumCandidate {
+        identity: id("spotify", "album", "remaster"),
+        title: "Untitled (Remastered)".into(),
+        artist: "Band".into(),
+        artist_ids: vec![id("spotify", "artist", "known")],
+        primary_type: "Album".into(),
+        date: "2020".into(),
+        comment: String::new(),
+    };
+    let programs = music_library::album_program::Programs {
+        album: candidate.identity.clone(),
+        note: String::new(),
+        programs: vec![music_library::album_program::Program {
+            identity: None,
+            complete: true,
+            tracks: local
+                .iter()
+                .enumerate()
+                .map(|(i, t)| music_library::edition::TrackEvidence {
+                    title: t.evidence.title.clone(),
+                    disc: t.evidence.disc,
+                    number: t.evidence.number,
+                    artists: t.evidence.artists.clone(),
+                    duration_ms: Some(200000),
+                    identities: vec![id("spotify", "track", &format!("remaster{i}"))],
+                    ..Default::default()
+                })
+                .collect(),
+        }],
+    };
+    (dir, library, imported, album, candidate, programs)
+}
+
+#[test]
+fn playback_original_wins_over_equivalent_remaster_and_year_does_not_veto() {
+    let (_dir, mut library, imported, album, remaster, rp) = playback_edition_fixture();
+    let mut original = remaster.clone();
+    original.identity = id("spotify", "album", "original");
+    original.title = "Untitled".into();
+    let mut op = rp.clone();
+    op.album = original.identity.clone();
+    for (i, t) in op.programs[0].tracks.iter_mut().enumerate() {
+        t.identities = vec![id("spotify", "track", &format!("original{i}"))];
+    }
+    assert_eq!(
+        library
+            .reconcile_spotify_program_playables(&album, &[(remaster, rp), (original, op)])
+            .unwrap()
+            .len(),
+        5
+    );
+    for t in imported.track_ids {
+        let (_, p) = library.cached_spotify_track_attempt(&t).unwrap().unwrap();
+        assert!(p.items[0].identity.external_id.starts_with("original"));
+    }
+}
+
+#[test]
+fn competing_editions_and_meaningful_versions_remain_unresolved() {
+    for title in [
+        "Untitled (2015 Remaster)",
+        "Untitled (Live)",
+        "Untitled (Acoustic)",
+        "Untitled (Demo)",
+    ] {
+        let (_dir, mut library, _, album, remaster, rp) = playback_edition_fixture();
+        let mut other = remaster.clone();
+        other.title = title.into();
+        other.identity = id("spotify", "album", "other");
+        let mut op = rp.clone();
+        op.album = other.identity.clone();
+        assert!(
+            library
+                .reconcile_spotify_program_playables(&album, &[(remaster, rp), (other, op)])
+                .unwrap()
+                .is_empty(),
+            "{title}"
+        );
+    }
+    for title in ["Untitled (Live)", "Untitled (Acoustic)", "Untitled (Demo)"] {
+        let (_dir, mut library, _, album, mut candidate, programs) = playback_edition_fixture();
+        candidate.title = title.into();
+        assert!(
+            library
+                .reconcile_spotify_program_playables(&album, &[(candidate, programs)])
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[test]
+fn remaster_program_keeps_recording_conflict_unresolved_and_connects_safe_tracks() {
+    let (_dir, mut library, imported, album, candidate, mut programs) = playback_edition_fixture();
+    let recording = library.recording_for_track(&imported.track_ids[0]).unwrap();
+    library
+        .attach_recording_external_identity(
+            &recording.recording_id,
+            &id("musicbrainz", "recording", "local"),
+        )
+        .unwrap();
+    programs.programs[0].tracks[0].recording.identities =
+        vec![id("musicbrainz", "recording", "different")];
+    // Four safe anchors out of five give independent strong evidence.
+    let connected = library
+        .reconcile_spotify_program_playables(&album, &[(candidate, programs)])
+        .unwrap();
+    assert_eq!(connected.len(), 4);
+    assert!(!connected.contains(&imported.track_ids[0]));
+    assert!(
+        library
+            .track_provider_occurrences(&imported.track_ids[0], "spotify")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn remaster_program_leaves_only_meaningfully_different_track_unresolved() {
+    let (_dir, mut library, imported, album, candidate, mut programs) = playback_edition_fixture();
+    programs.programs[0].tracks[0].title = Some("Song 1 (Live)".into());
+    let connected = library
+        .reconcile_spotify_program_playables(&album, &[(candidate, programs)])
+        .unwrap();
+    assert_eq!(connected.len(), 4);
+    assert!(!connected.contains(&imported.track_ids[0]));
 }

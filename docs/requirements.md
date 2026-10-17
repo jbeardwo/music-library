@@ -988,15 +988,28 @@ availability and incomplete Album metadata must not make a trusted Track unresol
 Metadata correction suggestions and tag rewriting remain deferred. See
 [Spotify Connections](spotify-connections-review.md) for the current implementation.
 
-Spotify connection diagnostics must make local/candidate values directly comparable, expose primary blockers separately from warnings, and explain complete-page, identity, position, duration and Album-program acceptance requirements. Users may explicitly confirm primary Artist equivalence across historical/provider names without changing display credits or provider IDs. Confirmation persists at application identity level and triggers only bounded current-Album re-evaluation. Similar names/programs never create equivalence implicitly; metadata correction and Artist-wide retries remain deferred.
+Spotify connection diagnostics must make local/candidate values directly comparable, expose primary blockers separately from warnings, and explain complete-page, identity, position, duration and Album-program acceptance requirements. Users may explicitly confirm primary Artist equivalence across historical/provider names without changing display credits or provider IDs. Confirmation persists at application identity level and triggers only bounded current-Album re-evaluation. Similar names/programs never create equivalence implicitly; metadata correction and unbounded Artist-wide provider searches remain deferred. Newly established trusted Artist evidence may enqueue bounded affected Album contexts within an active retry pass.
 
 ### Canonical evidence for provider reconciliation
 
 Provider candidates must be evaluated against accumulated trusted Track/Album evidence, with provenance preserved. Local sources are optional; catalog-only saved Tracks and ordered programs are eligible. Missing optional metadata is neutral. Known conflicts, trusted identity conflicts, Artist compatibility and semantic version distinctions remain conservative gates. A final accepted decision must persist an association or report a distinct persistence error. Explicit re-evaluation uses current evidence and updates Spotify Connections by stable Track ID. Metadata correction suggestions and file/tag rewriting remain deferred.
 
+### Best-available Spotify playback
+
+When Play needs a Spotify source, a uniquely sensible version of the intended song
+with established Artist and strong title evidence should be usable despite provider
+Release/master differences. Canonical Album/Release identity remains conservative;
+playable-source attachment must not merge Releases or rewrite canonical metadata.
+Trusted Recording conflicts and genuine multiple-version ambiguity require review.
+Strong compatible provider-program families may supply complementary Track occurrences.
+Full normalized title matching is strongest in every script. Meaningful contained
+shared-title components may provide fallback comparison under strong unique Artist/
+program context, preserving raw titles and meaningful version qualifiers. Translation
+and transliteration without shared text remain deferred.
+
 ### Reconciliation lifecycle and negative provider knowledge
 
-Unresolved Spotify decisions must become stale after matcher upgrades or relevant canonical evidence changes. Automatic reconsideration is persisted/local-only and bounded; fresh provider discovery requires explicit user retry. Current-version failures, trusted successes and user exclusions must not repeatedly run. Users can mark an unresolved canonical Track Not on Spotify and reverse that decision with Check Spotify again. Provider-specific negative knowledge is durable, does not change membership/sources/other identities/playlists, and is cleared by an explicit trusted connection. The shared management table exposes separate actionable and marked views/counts and retains interaction state during targeted updates.
+Unresolved Spotify decisions must become stale after matcher upgrades or relevant canonical evidence changes. Automatic reconsideration is persisted/local-only and bounded; fresh provider discovery requires explicit user retry. Current-version failures, trusted successes and user exclusions must not repeatedly run. Users can mark an unresolved canonical Track Not on Spotify and reverse that decision with Check Spotify again. Provider-specific negative knowledge is durable, does not change membership/sources/other identities/playlists, and is cleared by an explicit trusted connection. The shared management table exposes separate actionable and marked views/counts and retains interaction state during targeted updates. One Retry Unresolved invocation drains bounded Album batches and newly enabled local evidence until no eligible progress remains, subject to provider search bounds/cooldown/errors. Needs Review must expose candidates, and stopped work must not remain labeled queued. Album bulk exclusion snapshots only current unresolved saved Tracks, preserving connections and later additions. Connections supports full-row hover/focus and a standard draggable scrollbar.
 
 ## Manual metadata inspection and editing
 
@@ -1033,3 +1046,20 @@ See [implemented fields, precedence, safety, and limitations](metadata-editor.md
   Track preferences; later Tracks are never automatically ignored.
 - Ignored Songs under ⋯ lists and restores individual ignored Tracks. Both manager
   views are bounded and cursor-paged. Preferences survive restart.
+
+After automatic Spotify reconciliation, Connections is an exception inbox. Current
+review decisions must expose their actual primary blocker and inspectable evidence;
+successful negative discovery is No Candidates, and unavailable provider work is
+Waiting for Spotify. Unchanged bulk search exhaustion must not require repeated
+Retry presses to reset an internal allowance. Trusted catalog aliases participate
+in bounded discovery without fuzzy alias inference or canonical Release merging.
+
+
+Within an established Artist/Album program, unique positioned Track correspondence
+may tolerate abbreviation punctuation, conservative joined/split words, tiny
+spelling errors and a weak `(Album Version)` annotation when independent program
+anchors corroborate it. These comparisons never establish unrelated Album identity
+or rewrite raw metadata. Live, Acoustic, Demo and other meaningful version conflicts
+remain explicit. Discovery must retain Artist context, preserve meaningful search
+punctuation and expose actual queries and rejected Artist evidence in Review.
+Provider-budget deferral must be distinguishable from actionable Needs Retry.

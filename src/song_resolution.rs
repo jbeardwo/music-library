@@ -696,18 +696,9 @@ pub fn established_playable_artist(input: &Input) -> Option<&crate::edition::Art
     }
 }
 /// Playback-only eligibility across releases. Different release titles/types/
-/// positions do not veto it; same-release structural contradictions stay guarded.
-fn playable_eligible(input: &Input, c: &Candidate) -> bool {
-    (!album_compatible(input, c)
-        || !feasibility(input, c).reason_codes.iter().any(|reason| {
-            matches!(
-                reason,
-                crate::album_candidates::Reason::PositionMismatch
-                    | crate::album_candidates::Reason::TrackCountMismatch
-                    | crate::album_candidates::Reason::ReleaseTypeMismatch
-            )
-        }))
-        && c.identity.provider == "spotify"
+/// positions do not veto it. Trusted Recording/Artist contradictions stay guarded.
+pub(crate) fn playable_eligible(input: &Input, c: &Candidate) -> bool {
+    c.identity.provider == "spotify"
         && c.identity.kind == "track"
         && !c.identity.external_id.is_empty()
         && established_playable_artist(input).is_some_and(|artist| {
@@ -1132,7 +1123,7 @@ pub fn evaluate(
             c.number,
         ),
     ] {
-        fields.push(ComparisonField{label,local:a.filter(|n|*n>0).map(|n|n.to_string()).unwrap_or("—".into()),candidate:if b==0{"—".into()}else{b.to_string()},status:if a.is_some_and(|n|n>0 && b>0 && n!=b){"conflict"}else if a.is_none()||a==Some(0)||b==0{"unknown"}else{"equivalent"},evidence:if label=="Disc"{"Missing/zero disc is unknown in song lookup; Album program normalizes missing disc to 1"}else{"Supplied positions must not contradict the established Track position"}.into()});
+        fields.push(ComparisonField{label,local:a.filter(|n|*n>0).map(|n|n.to_string()).unwrap_or("—".into()),candidate:if b==0{"—".into()}else{b.to_string()},status:if a.is_some_and(|n|n>0 && b>0 && n!=b){"conflict"}else if a.is_none()||a==Some(0)||b==0{"unknown"}else{"equivalent"},evidence:if label=="Disc"{"Missing/zero disc is unknown in song lookup; Album program normalizes missing disc to 1"}else{"Canonical position is comparison evidence; a different provider edition may supply playback"}.into()});
     }
     fields.push(ComparisonField {
         label: "Track count",
@@ -1149,7 +1140,7 @@ pub fn evaluate(
         } else {
             "conflict"
         },
-        evidence: "Provider program must accommodate established positions (not just saved Tracks)"
+        evidence: "Provider count is edition evidence; Track playback does not identify the canonical Release"
             .into(),
     });
     fields.push(ComparisonField {

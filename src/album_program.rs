@@ -17,7 +17,7 @@ pub use alignment::{Alignment, AlignmentKind, AlignmentRow, align_program, numer
 #[allow(unused_imports)]
 pub use diagnostics::{
     PositionDecision, PositionedProgram, PositionedTrack, inspect_album_program,
-    inspect_positioned_program,
+    inspect_playable_program, inspect_positioned_program,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -123,6 +123,14 @@ pub fn comparison_title(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+/// Comparison evidence only. No letters/digits, controls or combining marks
+/// are discarded. Unicode punctuation/separator blocks and ASCII punctuation
+/// may be placeholders, but require independent Album/position corroboration.
+pub fn punctuation_placeholder(s: &str) -> bool {
+    !s.trim().is_empty() && s.chars().all(|c| c.is_whitespace()
+        || !c.is_alphanumeric() && (c.is_ascii_punctuation()
+        || matches!(c as u32, 0x2010..=0x2027 | 0x2030..=0x205e | 0x2e00..=0x2e7f | 0x3001..=0x3020 | 0x3030 | 0xfe10..=0xfe1f | 0xfe30..=0xfe4f | 0xff01..=0xff0f | 0xff1a..=0xff20 | 0xff3b..=0xff40 | 0xff5b..=0xff65)))
+}
 fn qualifiers(s: &str) -> Vec<&str> {
     s.split_whitespace()
         .filter(|s| {
@@ -145,31 +153,9 @@ fn qualifiers(s: &str) -> Vec<&str> {
         .collect()
 }
 fn close(a: &str, b: &str) -> bool {
-    let a: Vec<_> = a.chars().collect();
-    let b: Vec<_> = b.chars().collect();
-    if a.len() < 5 || b.len() < 5 || a.len().abs_diff(b.len()) > 1 {
-        return false;
-    }
-    let (mut i, mut j, mut edits) = (0, 0, 0);
-    while i < a.len() && j < b.len() {
-        if a[i] == b[j] {
-            i += 1;
-            j += 1;
-        } else {
-            edits += 1;
-            if edits > 1 {
-                return false;
-            }
-            if a.len() >= b.len() {
-                i += 1;
-            }
-            if b.len() >= a.len() {
-                j += 1;
-            }
-        }
-    }
-    edits + (a.len() - i) + (b.len() - j) <= 1
+    crate::album_matching::edit_close(a, b, 1, 5)
 }
+
 fn conflict(a: &[ExternalIdentity], b: &[ExternalIdentity]) -> bool {
     a.iter().any(|x| {
         b.iter()
@@ -384,6 +370,77 @@ fn title_pair(left: &TrackEvidence, right: &TrackEvidence) -> TitleRelation {
     }
 }
 
+/// Playback family evidence, not canonical edition identity. Candidate metadata
+/// (Artist, title, type) must also agree. Strong ordered overlap is mandatory;
+/// supplied Recording identity, duration and version contradictions veto union.
+pub fn compatible_provider_programs(a: &Program, b: &Program) -> bool {
+    if !a.complete || !b.complete || a.tracks.len() < 3 || b.tracks.len() < 3 {
+        return false;
+    }
+    let titles = |p: &Program| {
+        p.tracks
+            .iter()
+            .map(|t| comparison_title(t.title.as_deref().unwrap_or("")))
+            .collect::<Vec<_>>()
+    };
+    let at = titles(a);
+    let bt = titles(b);
+    if at.iter().any(|t| t.is_empty())
+        || bt.iter().any(|t| t.is_empty())
+        || at.iter().collect::<std::collections::HashSet<_>>().len() != at.len()
+        || bt.iter().collect::<std::collections::HashSet<_>>().len() != bt.len()
+    {
+        return false;
+    }
+    let recording_conflict = |a: &TrackEvidence, b: &TrackEvidence| {
+        conflict(&a.recording.identities, &b.recording.identities)
+            || !a.recording.isrcs.is_empty()
+                && !b.recording.isrcs.is_empty()
+                && !a
+                    .recording
+                    .isrcs
+                    .iter()
+                    .any(|id| b.recording.isrcs.contains(id))
+    };
+    let mut overlap = vec![];
+    for (i, t) in a.tracks.iter().enumerate() {
+        if let Some(j) = bt.iter().position(|title| title == &at[i]) {
+            let p = &b.tracks[j];
+            if recording_conflict(t, p)
+                || t.duration_ms
+                    .zip(p.duration_ms)
+                    .is_none_or(|(x, y)| x.abs_diff(y) > 100)
+                || crate::artist_credit::compare(&t.artists, &p.artists)
+                    != crate::artist_credit::Compatibility::Equivalent
+            {
+                return false;
+            }
+            overlap.push(j);
+        } else if let Some(p) = b
+            .tracks
+            .iter()
+            .find(|p| position(t).is_some() && position(t) == position(p))
+        {
+            let other = comparison_title(p.title.as_deref().unwrap_or(""));
+            // A small spelling observation difference can coexist in a family;
+            // it never grants Track-title acceptance on its own.
+            if qualifiers(&at[i]) != qualifiers(&other)
+                || !crate::album_matching::edit_close(&at[i], &other, 2, 8)
+                || t.duration_ms
+                    .zip(p.duration_ms)
+                    .is_none_or(|(x, y)| x.abs_diff(y) > 100)
+                || recording_conflict(t, p)
+            {
+                return false;
+            }
+        }
+    }
+    overlap.len() >= 3
+        && overlap.len() * 5 >= at.len() * 4
+        && overlap.len() * 5 >= bt.len() * 4
+        && overlap.windows(2).all(|w| w[0] < w[1])
+}
+
 fn position_conflict(t: &TrackEvidence) -> bool {
     t.position_observations.iter().any(|o| {
         o.value
@@ -418,7 +475,20 @@ fn occurrence_identity_conflict(a: &TrackEvidence, b: &TrackEvidence) -> bool {
         || a.artists
             .first()
             .zip(b.artists.first())
-            .is_some_and(|(a, b)| conflict(&a.identities, &b.identities))
+            .is_some_and(|(a, b)| {
+                a.identities.iter().any(|id| {
+                    b.identities
+                        .iter()
+                        .any(|other| other.provider == id.provider && other.kind == id.kind)
+                        && !a.identities.iter().any(|left| {
+                            b.identities.iter().any(|right| {
+                                left.provider == id.provider
+                                    && left.kind == id.kind
+                                    && left == right
+                            })
+                        })
+                })
+            })
 }
 
 /// Only used after revalidating the accepted Spotify representation and snapshot.
@@ -804,6 +874,7 @@ pub(crate) fn local_tracks(
             .into_iter()
             .map(|a| a.evidence)
             .collect();
+    let trusted_names: Vec<String> = db.prepare("SELECT DISTINCT n.name_key FROM album_artist_credit ac JOIN artist_external_identity i ON i.artist_id=ac.artist_id JOIN trusted_artist_name n ON n.provider=i.provider AND n.kind=i.kind AND n.external_id=i.external_id WHERE ac.album_id=?1 ORDER BY n.name_key LIMIT 32")?.query_map([album.as_ref()],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     for (track, name) in tracks.iter_mut().zip(names) {
         if track.evidence.artists.is_empty() {
             if name.is_empty()
@@ -851,6 +922,15 @@ pub(crate) fn local_tracks(
                     })
                     .collect();
             }
+        }
+        if let [album_artist] = album_artists.as_slice()
+            && let Some(primary) = track.evidence.artists.first_mut()
+            && primary.identities.is_empty()
+            && trusted_names.contains(&crate::matching::normalize(&primary.name))
+        {
+            // Comparison-only Album context, corroborated by catalog names.
+            // No Track/Artist entity, credit or raw metadata is rewritten.
+            primary.identities = album_artist.identities.clone();
         }
     }
     Ok((tracks, artist_conflicts))

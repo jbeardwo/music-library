@@ -1,8 +1,12 @@
 # Spotify Album reconciliation review
 
-The [propagation/retry follow-up](spotify-propagation-retry-audit.md) documents
-current Album-to-Track inheritance, contextual annotations and target generations.
-Evaluator version is 10; Album search strategy is 3; other request keys remain 1.
+Current behavior and fresh-import validation are recorded in the
+[focused robustness audit](spotify-focused-robustness-audit.md). Evaluation version
+is 15; Album search strategy is 6. Retry drains keyset-paged Album contexts and
+newly enabled local evidence; its standalone Track-search budget remains two per
+click. Canonical Release identity stays separate from compatible provider-family
+and contextual shared-title evidence used only for playable sources.
+
 
 A sole strongly corroborated Spotify remaster or expanded/deluxe edition may
 supply corresponding songs as playable sources, with an edition warning and

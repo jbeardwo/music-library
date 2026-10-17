@@ -199,9 +199,13 @@ fn diagnostics_explain_real_acceptance_gates_in_identical_field_order() {
         Some("trusted_identity_conflict")
     );
     p.items[0].album_total_tracks = Some(2);
-    assert_eq!(
-        evaluate(&input, &p, 0, &[]).unwrap().primary_code,
-        Some("track_count_mismatch")
+    let playback = evaluate(&input, &p, 0, &[]).unwrap();
+    assert!(playback.primary_code.is_none());
+    assert!(
+        playback
+            .fields
+            .iter()
+            .any(|f| f.label == "Track count" && f.status == "warning")
     );
 }
 #[test]

@@ -2248,6 +2248,12 @@ Migration 0029 separates portable provider-specific negative user knowledge from
 
 Spotify reconciliation caches successful bounded provider discovery independently of matcher decisions, with selective request fingerprints, a 30-day TTL and a durable shared Retry-After deadline. Batch retry groups canonical Albums and does not fan out automatically into individual Track searches after Album absence. See [provider discovery lifecycle](spotify-provider-discovery.md).
 
+Configured startup and completed canonical import schedule one self-draining Spotify
+coordinator. Its 20-Album keyset chunks yield and commit independently; asynchronous
+Track fallback cannot end the run at a chunk boundary. Cached work continues when
+provider work is blocked, while stable exceptions await a relevant event or explicit
+retry. See the [coordinator audit](spotify-reconciliation-coordinator-audit.md).
+
 ### Library presentation and generated playback preferences
 
 Migration 0032 stores `hidden_artist_preference(profile_id, artist_id)` and
@@ -2286,3 +2292,47 @@ Spotify Track playback can also use a best-available occurrence from another pro
 release without establishing canonical Release equivalence. The separate playback
 assessment, bounded retry budget, evidence warnings and manual correction semantics
 are described in [Best-available Spotify Track playback](spotify-best-available-playback.md).
+
+### Spotify reconciliation writer and playback evidence
+
+Reconciliation uses short immediate SQLite write transactions for snapshot validation,
+candidate/status persistence and source association. Provider HTTP and program comparison
+run outside those transactions. The UI-owned Retry coordinator drains bounded keyset
+Album batches, accepts explicit additions, and revisits Artist-scoped contexts when new
+trusted Artist evidence enables them. Local cached evidence runs to a fixed point;
+provider search caps, cooldown and error abort remain independent limits.
+
+Canonical Release identity remains conservative. A unique Spotify playable Track may
+come from a compatible provider-release family or a strongly contextual shared-title
+span without declaring canonical Album/Release equivalence. Full normalized title
+correspondence outranks partial spans in every script; comparison never rewrites raw
+metadata or performs translation. See the [focused audit](spotify-focused-robustness-audit.md).
+
+Spotify exception reconciliation retains catalog Artist preferred/alias names
+separately from user equivalence and provider observations. Exact catalog-attested
+provider-name bindings contribute derived matching identities without changing
+canonical names or Release identity. Cached/local convergence persists the current
+Album report as the terminal exception decision; bulk Track search exhaustion is
+retained separately from negative discovery. Details and validation are recorded in
+[the exception inbox audit](spotify-exception-inbox-audit.md).
+
+
+The focused Spotify discovery follow-up uses Album search strategy 5 and evaluator
+14. Exact canonical Artist discovery precedes bounded catalog-name alternatives;
+ambiguous alternate provider identities require a complete corroborated program.
+Album queries retain Artist names throughout the single alternate allowance.
+Literal mixed-script title components are search evidence, without translation.
+The shared contextual Track-title policy runs only after independent program
+anchors, Artist IDs, unique correspondence and position are established. Raw titles,
+Recording conflicts and existing Spotify occurrences remain intact. Playback
+program corroboration can use already-connected Tracks from another edition
+without replacing their exact provider objects. Retry reasons distinguish missing
+cache, local reevaluation failure, provider unavailability and exhausted standalone
+search allowance. [Evidence and real lifecycle validation](spotify-discovery-regressions-audit.md).
+
+The remaster/reissue follow-up uses evaluator 15 and search strategy 6. An accepted
+sole provider edition supplies Track playback through the same program mapping at
+both cached reconciliation and general Album completion boundaries. It does not
+attach a canonical Spotify Album identity or observe provider year/title as canonical
+Album evidence. Source-year observations remain diagnostic warnings. See
+`docs/spotify-remaster-playback-audit.md` for zero-request real-case evidence.

@@ -2,7 +2,7 @@
 //! Reuses the application Album matcher; never called by transport or polling.
 use crate::Bridge;
 use music_library::{
-    album_matching::{AlbumMatcher, AutoMatchPolicy, MatchReply},
+    album_matching::{AlbumMatcher, MatchReply},
     album_program,
     domain::ImportedRelease,
 };
@@ -53,32 +53,48 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
         let album = match event {
             Event::Album(reply) => {
                 let album = reply.input.album_id.clone();
-                if let music_library::album_matching::MatchOutcome::Deferred(error) = &reply.outcome
-                {
-                    bridge.stop_spotify_retry_batch(format!(
-                        "Spotify batch stopped: {error}. Remaining Tracks were not queried."
-                    ));
+                let blocked = matches!(
+                    reply.outcome,
+                    music_library::album_matching::MatchOutcome::Deferred(_)
+                        | music_library::album_matching::MatchOutcome::ConfigurationError(_)
+                );
+                if blocked && bridge.browser.review_run_active {
+                    bridge.defer_spotify_provider_work();
                 }
-                if let music_library::album_matching::MatchOutcome::ConfigurationError(error) =
-                    &reply.outcome
-                {
-                    bridge.stop_spotify_retry_batch(format!(
-                        "Spotify authorization/access must be restored before retrying: {error}"
-                    ));
+                let artist = reply.input.artist_id.clone();
+                let prior_artist = reply.input.known_artist.clone();
+                let outcome = matcher.complete(&mut bridge.session.library, *reply);
+                if blocked && bridge.browser.review_run_active {
+                    matcher.yield_reconciliation_album(&album);
                 }
-                matcher.complete(&mut bridge.session.library, *reply);
+                if let music_library::album_matching::MatchOutcome::Error(error) = outcome {
+                    bridge.stop_spotify_retry_batch(error);
+                } else if let Ok(music_library::album_matching::Preparation::Ready(current)) =
+                    bridge.session.library.spotify_album_review_input(&album)
+                    && current.known_artist.is_some()
+                    && current.known_artist != prior_artist
+                {
+                    bridge.enqueue_spotify_artist_revision(artist);
+                }
                 Some(album)
             }
             Event::Programs(reply) => {
-                if let Err(error) = &reply.result
-                    && error.is_provider_unavailable()
-                {
-                    bridge.stop_spotify_retry_batch(format!(
-                        "Spotify batch stopped: {error}. Remaining Tracks were not queried."
-                    ));
+                let blocked = reply
+                    .result
+                    .as_ref()
+                    .is_err_and(|error| error.is_provider_unavailable());
+                if blocked && bridge.browser.review_run_active {
+                    bridge.defer_spotify_provider_work();
                 }
                 let album = reply.input.album_id.clone();
-                matcher.complete_programs(&mut bridge.session.library, *reply);
+                if let album_program::Outcome::Error(error) =
+                    matcher.complete_programs(&mut bridge.session.library, *reply)
+                {
+                    bridge.stop_spotify_retry_batch(error);
+                }
+                if blocked && bridge.browser.review_run_active {
+                    matcher.yield_reconciliation_album(&album);
+                }
                 Some(album)
             }
             Event::Incoming(..) => unreachable!(),
@@ -143,6 +159,7 @@ fn callback(weak: qmetaobject::QPointer<Bridge>) -> impl Fn(Event) + Send + 'sta
             }
         }
         bridge.spotify_album_matcher = Some(matcher);
+        bridge.record_spotify_progress(1);
         bridge.start_review_track_retry();
         bridge.refresh_spotify_review();
         if selected_changed {
@@ -386,16 +403,16 @@ impl Bridge {
                 .library
                 .album_id_for_track(&track)
                 .map_err(|e| e.to_string())?;
-            // Trust is retained. match_album skips accepted Album discovery and
-            // may enrich missing occurrences through its existing program path.
-            self.ensure_spotify_album_matcher()?;
-            let matcher = self.spotify_album_matcher.as_mut().unwrap();
-            if refresh {
-                matcher.refresh_album(&self.session.library, &album)
-            } else {
-                matcher.match_album(&self.session.library, &album)
+            let response: serde_json::Value =
+                serde_json::from_str(&self.spotify_review_action_impl(
+                    if refresh { "refresh" } else { "retry" },
+                    album.as_ref(),
+                    0,
+                ))
+                .map_err(|e| e.to_string())?;
+            if let Some(error) = response.get("error").and_then(|value| value.as_str()) {
+                return Err(error.to_owned());
             }
-            .map_err(|e| e.to_string())?;
             Ok(())
         })();
         self.refresh_spotify_album_diagnostic();
@@ -404,21 +421,8 @@ impl Bridge {
         }
         self.spotify_playback_changed();
     }
-    pub(crate) fn enrich_catalog_spotify(&mut self, imported: &ImportedRelease) {
-        if !self.auto_match {
-            return;
-        }
-        if let Err(error) = self.ensure_spotify_album_matcher() {
-            self.session.error = error;
-            return;
-        }
-        if let Err(error) = self.spotify_album_matcher.as_mut().unwrap().after_import(
-            &self.session.library,
-            std::slice::from_ref(imported),
-            AutoMatchPolicy::default(),
-        ) {
-            self.session.error = error.to_string();
-        }
+    pub(crate) fn enrich_catalog_spotify(&mut self, _imported: &ImportedRelease) {
+        self.request_automatic_spotify_reconciliation();
     }
 }
 

@@ -109,6 +109,7 @@ struct Bridge {
                             refreshed.show_all();
                             self.spotify_resolution_selection = Some(refreshed);
                         }
+                        self.request_automatic_spotify_reconciliation();
                         self.retry_selected_spotify_album();
                         self.refresh_spotify_review();
                     }
@@ -303,6 +304,7 @@ struct Bridge {
                 self.spotify_resolution_selection = None;
                 self.spotify_artist_proposal = None;
                 self.spotify_resolution_pending = false;
+                self.spotify_resolution_counts = (0, 0);
                 self.spotify_resolution_message.clear();
                 self.spotify_resolution_more = false;
                 self.spotify_album_id = None;
@@ -5020,6 +5022,7 @@ mod library_ui_tests {
                     &p.programs[0],
                 )],
                 equivalent_to: None,
+                playable_family: None,
                 decision: "Withheld".into(),
                 reasons: vec![Reason::CompetingCandidates],
             });
@@ -5104,6 +5107,7 @@ mod library_ui_tests {
             let pinned = bridge.pinned();
             let mut b = pinned.borrow_mut();
             b.spotify_review_report = Some(Report {
+                discovery_queries: vec![],
                 local_title: "Example".into(),
                 established_artist: Some(id("artist", "a")),
                 candidate_count: 2,
@@ -5453,8 +5457,37 @@ mod library_ui_tests {
                     .to_string(),
                 "ok"
             );
-            let mut b = pinned.borrow_mut();
+            let b = pinned.borrow_mut();
             assert_eq!(b.session.library.marked_spotify_count().unwrap(), 4);
+            let newly_marked = imported
+                .track_ids
+                .iter()
+                .filter(|t| {
+                    !b.session.library.spotify_manually_excluded(t).unwrap()
+                        && b.session
+                            .library
+                            .track_provider_occurrences(t, "spotify")
+                            .unwrap()
+                            .is_empty()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            drop(b);
+            assert_eq!(
+                engine
+                    .invoke_method("reviewAlbumExclusion".into(), &[])
+                    .to_qstring()
+                    .to_string(),
+                "ok"
+            );
+            let mut b = pinned.borrow_mut();
+            assert_eq!(b.session.library.marked_spotify_count().unwrap(), 446);
+            assert_eq!(b.session.library.unresolved_spotify_count().unwrap(), 0);
+            b.session
+                .library
+                .check_tracks_spotify_again(&newly_marked)
+                .unwrap();
+            b.browse_action_impl("review-mode", 2, "unresolved".into());
             for (n, t) in imported.track_ids[4..].iter().enumerate() {
                 b.session
                     .library

@@ -45,6 +45,10 @@
         try {
             spotifyAlbumDialog.inspect(0);albumReviewTest.wait(30);
             albumReviewCheck(spotifyAlbumDialog.inspection.count===2,"all Album candidates");
+            const decision=albumReviewTest.findChild(spotifyAlbumDialog,"spotifyAutomaticDecision");
+            albumReviewCheck(decision && decision.visible,"automatic decision is visible");
+            albumReviewCheck(!!spotifyAlbumDialog.inspection.primary_reason,"blocked evaluator has primary reason");
+            albumReviewCheck(decision.text.indexOf(spotifyAlbumDialog.inspection.primary_reason)>=0,"decision displays authoritative evaluator blocker");
             albumReviewCheck(spotifyAlbumDialog.inspection.programs[0].rows.length===3,"positioned comparison");
             spotifyAlbumDialog.inspect(1);albumReviewTest.wait(10);
             albumReviewCheck(spotifyAlbumDialog.inspection.index===1,"second candidate inspected");

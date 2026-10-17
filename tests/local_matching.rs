@@ -1760,6 +1760,7 @@ mod artist_first {
             .attach_artist_external_identity(&canonical, &identity)
             .unwrap();
         let reply = |input| MatchReply {
+            artist_observation: None,
             matched_album: None,
             diagnostic: None,
             input,

@@ -207,6 +207,10 @@ pub trait CatalogProvider: Send {
     }
     /// Diagnostic observations rejected by the adapter's Artist boundary.
     /// Bounded to the same search page; no network work or acceptance authority.
+    /// Actual bounded search texts, retained for review; never credentials.
+    fn album_discovery_queries(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
         vec![]
     }
@@ -230,6 +234,13 @@ pub trait CatalogProvider: Send {
         Err(CatalogError::Other(
             "Recording discovery is not supported by this provider".into(),
         ))
+    }
+    /// Optional identity-scoped trusted catalog names; never inferred from similarity.
+    fn artist_observation(
+        &mut self,
+        _artist: &ExternalIdentity,
+    ) -> Result<Option<ArtistCandidate>, CatalogError> {
+        Ok(None)
     }
     fn search_artists(&mut self, _name: &str) -> Result<Page<ArtistCandidate>, CatalogError> {
         Err(CatalogError::Other(

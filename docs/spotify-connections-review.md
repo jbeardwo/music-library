@@ -1,5 +1,12 @@
 # Spotify Connections review
 
+Current behavior and fresh-import validation are recorded in the
+[focused robustness audit](spotify-focused-robustness-audit.md). Evaluation version
+is 15; Album search strategy is 6. Retry drains keyset-paged Album contexts and
+newly enabled local evidence; its standalone Track-search budget remains two per
+click. Canonical Release identity stays separate from compatible provider-family
+and contextual shared-title evidence used only for playable sources.
+
 The current workflow is [Album-grouped review and explicit positioned confirmation](spotify-album-review-workflow.md). That document supersedes the Track-only entry workflow below and describes candidate navigation and corrected retry semantics. The original Track table remains available through Show Track list.
 
 ## Previous Track-only workflow and validation
