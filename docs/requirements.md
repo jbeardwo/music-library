@@ -1063,3 +1063,44 @@ or rewrite raw metadata. Live, Acoustic, Demo and other meaningful version confl
 remain explicit. Discovery must retain Artist context, preserve meaningful search
 punctuation and expose actual queries and rejected Artist evidence in Review.
 Provider-budget deferral must be distinguishable from actionable Needs Retry.
+
+### Music / Connections navigation
+
+Music contains Artists, Genres, Albums, Songs, and Playlists, with Artists the
+default. Connections is a separate top-level section for Local, MusicBrainz,
+Spotify, and future providers. Each provider has authoritative source/account
+controls and Missed Connections / Marked Unavailable tabs. These lists contain
+saved canonical Library Tracks grouped by Artist then Album, with matched/total
+counts, relevant-only expansion, provider-specific Match actions, and reversible
+per-provider Track unavailability. Bulk Album actions snapshot only current saved
+unresolved Tracks. Successful connections clear the corresponding unavailable
+choice. Browsing must remain offline and bounded; connection updates preserve
+context and immediately remove resolved Tracks/groups. Matching and playback
+policies remain provider-specific. See [architecture](architecture.md#music-and-connections).
+
+Album/Track Match opens directly on the best-ranked available candidate in a
+shared, source-neutral Library-versus-provider comparison. Cached candidate
+navigation is offline and read-only; no candidate triggers an implicit search.
+Zero-candidate reviews expose manual matching and unavailable actions. Successful
+Connect, manual confirmation, or unavailable marking closes review and preserves
+the user's surrounding list position/expansion. Partial Albums remain actionable
+without forcing immediate follow-up. Failures retain the inspected candidate.
+The user chooses each next item; no automatic review queue is permitted.
+
+The same review window must own manual candidate search/selection and final
+confirmation. Connections must not hand users to a legacy provider diagnostic.
+Album rows in the comparison show the actual proposed Track correspondence from
+the authoritative confirmation plan, including partial/unmapped outcomes. Manual
+results become inspected candidates before any association is persisted.
+
+
+Connections review must automatically display the selected candidate's persisted
+Track program and authoritative safe alignment. A genuinely missing Spotify
+program may load through bounded candidate-scoped provider work, with an explicit
+loading/cooldown/error state; list browsing must never fan out program fetches.
+Candidate arrows do not search or persist associations. Partial safe mappings are
+connectable, while conflicting/ambiguous Tracks remain unresolved. A successful
+final action closes review and preserves the surrounding Connections context.
+One reconciliation Retry owns all eligible internal batches. Transient service
+errors receive bounded recovery or a truthful temporary-provider state, never an
+implicit requirement to press Retry for the next internal batch.

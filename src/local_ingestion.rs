@@ -589,3 +589,95 @@ impl Worker {
         )
     }
 }
+
+impl Library {
+    /// Explicit file attachment shares scanner observation/provenance ingestion, but
+    /// never invokes entity creation or changes membership. Existing owners are protected.
+    pub fn attach_local_file(
+        &mut self,
+        track: &TrackId,
+        path: &Path,
+        extractor: &mut dyn MetadataExtractor,
+    ) -> Result<()> {
+        let path = path
+            .canonicalize()
+            .map_err(|source| crate::Error::Filesystem {
+                path: path.to_owned(),
+                source,
+            })?;
+        if !extractor.supports(&path) {
+            return Err(crate::Error::Invalid(
+                "Choose a supported audio file".into(),
+            ));
+        }
+        let known = self.known_ingestion_sources(std::slice::from_ref(&path))?;
+        let known = known.get(&path).cloned().unwrap_or_default();
+        if known.len() > 1 {
+            return Err(crate::Error::Invalid(
+                "Ambiguous existing local sources".into(),
+            ));
+        }
+        let mut item = observe(&path, known.first().map(|k| &k.observation), extractor)?;
+        let source = item.source_id.get_or_insert_with(SourceId::new).clone();
+        let owner: Option<String> = self
+            .store
+            .connection
+            .query_row(
+                "SELECT track_id FROM track_source WHERE source_id=?1",
+                [source.as_ref()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owner.as_deref().is_some_and(|id| id != track.as_ref()) {
+            return Err(crate::Error::Invalid(
+                "This file is already attached to another Track".into(),
+            ));
+        }
+        let exists: bool = self.store.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM track WHERE id=?1)",
+            [track.as_ref()],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Err(crate::Error::Invalid("Unknown Track".into()));
+        }
+        let root = self
+            .local_locations()?
+            .into_iter()
+            .filter(|r| path.starts_with(&r.path))
+            .max_by_key(|r| r.path.components().count())
+            .map(|r| r.id);
+        self.store.apply_local_batch(root.as_ref(), None, &[item])?;
+        let tx = self
+            .store
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT track_id FROM track_source WHERE source_id=?1",
+                [source.as_ref()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owner.as_deref().is_some_and(|id| id != track.as_ref()) {
+            return Err(crate::Error::Invalid(
+                "This file was attached to another Track; select another file".into(),
+            ));
+        }
+        tx.execute(
+            "DELETE FROM local_source_suppression WHERE source_id=?1",
+            [source.as_ref()],
+        )?;
+        tx.execute(
+            "INSERT INTO track_source(track_id,source_id) VALUES(?1,?2) ON CONFLICT DO NOTHING",
+            params![track.as_ref(), source.as_ref()],
+        )?;
+        crate::storage::refresh_effective_track_tx(&tx, track)?;
+        tx.execute(
+            "DELETE FROM track_provider_exclusion WHERE track_id=?1 AND provider='local'",
+            [track.as_ref()],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+}

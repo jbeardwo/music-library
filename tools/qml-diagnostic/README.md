@@ -1,7 +1,18 @@
 # Music Library desktop prototype
 
-The main window is now a three-pane Artists / Albums / Songs library with a persistent
-player and temporary Now Playing drawer. See the [interaction and validation guide](../../docs/library-player-ui.md).
+The main window has top-level **Music / Connections** navigation. Music retains
+Artists / Genres / Albums / Songs / Playlists, the persistent player, and Now Playing.
+Connections manages Local / MusicBrainz / Spotify through shared missed/unavailable
+Album lists and provider-specific matching. See the
+[implementation and validation report](../../docs/music-connections-report.md).
+Album/Track Match opens the shared offline candidate comparison directly, with
+provider-specific manual tools and no automatic next item. See the
+[review refinement report](../../docs/connection-review-report.md) and
+[interaction and validation guide](../../docs/library-player-ui.md).
+
+The [inline workflow correction](../../docs/connections-inline-review-report.md)
+keeps provider search, exact-object selection, advanced mapping, and final Connect
+inside that review. The old Spotify diagnostic is not part of Connections Match.
 
 Open an existing library without scanning or requiring a local folder:
 
@@ -33,11 +44,12 @@ terminal evidence; clients that repeat/restart without that evidence need Next.
 
 Use **Spotify…** once to connect/refresh and select your desktop device. The normal
 row Play then chooses the backend. Source/status text reports the decision.
-**⋯ → Spotify Connections** reviews saved Tracks without trusted Spotify Track
-associations. Its shared details table supports persisted reasons, sortable/resizable
-columns and right-click **Review this Album**. Double-click opens the existing
-connection diagnostic. Resolutions remove rows immediately; browsing never searches
-Spotify. See [review workflow and validation](../../docs/spotify-connections-review.md).
+**Connections → Spotify → Missed Connections** reviews saved Tracks without
+trusted Spotify Track associations. Album/Track Match opens the best cached
+comparison; manual tools include exact attachment and advanced mapping. Successful
+actions close review and update the list in place. The compatibility
+**⋯ → Spotify Connections** entry navigates here. Browsing never searches Spotify.
+See [review workflow and validation](../../docs/connection-review-report.md).
 
 Catalog and playback counters remain separate. Subsequent Play and restart reuse
 accepted song IDs without catalog requests; polling never searches.

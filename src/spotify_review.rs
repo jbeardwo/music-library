@@ -29,6 +29,12 @@ pub struct PositionedMatch {
     #[serde(skip)]
     candidate: crate::song_resolution::Candidate,
 }
+impl PositionedMatch {
+    /// Exact provider occurrence in the explicit confirmation plan.
+    pub fn candidate(&self) -> &crate::song_resolution::Candidate {
+        &self.candidate
+    }
+}
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct AlbumSelection {
     album: AlbumId,
@@ -314,6 +320,124 @@ impl Library {
         }
         Ok(selection)
     }
+    /// Connections proposes only correspondences supported by the existing
+    /// program evaluator. Legacy explicit positioned review remains available;
+    /// deliberately adjusted mappings use prepare_spotify_track_mapping.
+    pub fn prepare_spotify_connections_confirmation(
+        &self,
+        album: &AlbumId,
+        programs: &Programs,
+    ) -> Result<AlbumSelection> {
+        let base = self.prepare_spotify_album_confirmation(album, programs)?;
+        let local = self.local_album_tracks(album)?;
+        let title: String = self.store.connection.query_row(
+            "SELECT title FROM effective_album_metadata WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get(0),
+        )?;
+        let comparison = self.spotify_connections_program_alignment(album, programs)?;
+        let mut mappings = Vec::new();
+        for row in &comparison.tracks {
+            if !matches!(
+                row.decision,
+                crate::album_program::PositionDecision::ExactAnchor
+                    | crate::album_program::PositionDecision::CorroboratedPosition
+                    | crate::album_program::PositionDecision::AlignedAfterInsertion
+                    | crate::album_program::PositionDecision::ReorderedTrack
+            ) {
+                continue;
+            }
+            let Some(p) = &row.provider else { continue };
+            let ids = p
+                .identities
+                .iter()
+                .filter(|id| id.provider == "spotify" && id.kind == "track")
+                .collect::<Vec<_>>();
+            if ids.len() != 1 {
+                continue;
+            }
+            mappings.push((
+                TrackId(row.track_id.clone()),
+                crate::song_resolution::Candidate {
+                    identity: ids[0].clone(),
+                    recording: p.recording.clone(),
+                    album_identity: Some(programs.album.clone()),
+                    title: p.title.clone().unwrap_or_default(),
+                    artist: p
+                        .artists
+                        .iter()
+                        .map(|a| a.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    artists: p.artists.clone(),
+                    album: title.clone(),
+                    date: String::new(),
+                    album_artists: vec![],
+                    album_type: String::new(),
+                    album_total_tracks: Some(programs.programs[0].tracks.len() as u32),
+                    duration_ms: p.duration_ms.unwrap_or(0),
+                    disc: p.disc.unwrap_or(1),
+                    number: p.number.unwrap_or(0),
+                },
+            ));
+        }
+        // One indexed eligibility read; display and confirmation share this exact plan.
+        let ineligible:std::collections::HashSet<String>=self.store.connection.prepare("SELECT s.track_id FROM trusted_spotify_track s JOIN track t ON t.id=s.track_id JOIN release r ON r.id=t.release_id WHERE r.album_id=?1 UNION SELECT x.track_id FROM track_provider_exclusion x JOIN track t ON t.id=x.track_id JOIN release r ON r.id=t.release_id WHERE x.provider='spotify' AND r.album_id=?1")?.query_map([album.as_ref()],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        mappings.retain(|(track, _)| !ineligible.contains(track.as_ref()));
+        let mut selection = self.prepare_spotify_track_mapping(album, &mappings)?;
+        selection.warnings = base.warnings;
+        let standard =
+            crate::album_program::inspect_album_program(&local, &programs.programs[0], &title);
+        selection.provider = if standard.alignment.strong || !comparison.alignment.strong {
+            Some(programs.album.clone())
+        } else {
+            selection
+                .warnings
+                .push("Partial playable program; canonical Release identity retained".into());
+            None
+        };
+        selection.unmatched_provider = programs.programs[0]
+            .tracks
+            .iter()
+            .filter(|p| {
+                !comparison.tracks.iter().any(|r| {
+                    r.provider
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.identities == p.identities)
+                        && matches!(
+                            r.decision,
+                            crate::album_program::PositionDecision::ExactAnchor
+                                | crate::album_program::PositionDecision::CorroboratedPosition
+                                | crate::album_program::PositionDecision::AlignedAfterInsertion
+                                | crate::album_program::PositionDecision::ReorderedTrack
+                        )
+                })
+            })
+            .count();
+        Ok(selection)
+    }
+    /// The same best-available program evaluator used by automatic source reconciliation.
+    pub fn spotify_connections_program_alignment(
+        &self,
+        album: &AlbumId,
+        programs: &Programs,
+    ) -> Result<crate::album_program::PositionedProgram> {
+        let [program] = programs.programs.as_slice() else {
+            return Err(Error::Invalid(
+                "One unambiguous Spotify program is required".into(),
+            ));
+        };
+        let local = self.local_album_tracks(album)?;
+        let title: String = self.store.connection.query_row(
+            "SELECT title FROM effective_album_metadata WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get(0),
+        )?;
+        Ok(crate::album_program::inspect_playable_program(
+            &local, program, &title,
+        ))
+    }
+
     /// Explicit user mapping can span provider Albums. No Album-wide identity is
     /// inferred for this operation; unused canonical/provider Tracks are allowed.
     pub fn prepare_spotify_track_mapping(

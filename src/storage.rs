@@ -16,6 +16,8 @@ const MAX_PAGE_SIZE: u32 = 200;
 
 #[derive(Debug, Error)]
 pub enum Error {
+    #[error("{0}")]
+    Provider(#[from] crate::catalog::CatalogError),
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
     #[error("filesystem error at {path}: {source}")]
@@ -282,7 +284,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 35 {
+        } else if version > 36 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -481,6 +483,9 @@ impl Store {
             connection.execute_batch(include_str!(
                 "../migrations/0035_catalog_artist_provider_names.sql"
             ))?;
+        }
+        if version < 36 {
+            connection.execute_batch(include_str!("../migrations/0036_connections.sql"))?;
         }
         Ok(Self {
             connection,

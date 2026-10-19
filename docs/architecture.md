@@ -2336,3 +2336,125 @@ both cached reconciliation and general Album completion boundaries. It does not
 attach a canonical Spotify Album identity or observe provider year/title as canonical
 Album evidence. Source-year observations remain diagnostic warnings. See
 `docs/spotify-remaster-playback-audit.md` for zero-request real-case evidence.
+
+## Music and Connections
+
+The diagnostic QML application has two navigation levels: Music / Connections,
+then the unchanged five Music views or Local / MusicBrainz / Spotify. Music
+remains the default, starting in Artists. The old Spotify Connections menu action
+navigates to Connections → Spotify; its compatibility browser API remains for
+existing diagnostics, rather than providing a second primary review center.
+
+`connections::PROVIDERS` supplies the supported keys and labels. The UI shares
+provider navigation, unavailable/missed tabs, canonical Album grouping, counts,
+expansion, actions, and bounded scrolling. Provider-specific actions dispatch to
+local file attachment, explicit MusicBrainz Recording confirmation, or the existing
+Spotify Track/Album/advanced-mapping dialogs. Adding a provider requires its
+connection predicate/header/action implementation, not another management screen.
+No generic candidate matcher or plugin framework is introduced.
+
+`Library::connection_groups` uses an Artist/Album/ID index and keyset pages of at
+most 200 Albums (the UI requests 100). Counts aggregate current saved canonical
+Tracks in the same query, independent of provider releases. The marked query
+starts from the provider exclusion index. Track queries run only for expanded or
+explicitly inspected Albums, with disc/Track/ID cursors and at most 200 rows.
+The QML Album model slides within 300 rows; expanded Track lists are virtualized
+and paged. Stable Album IDs, incremental role changes, viewport anchors, and
+provider navigation snapshots preserve context during targeted refreshes.
+
+Connection predicates read persisted state only:
+
+* Local: an available, unsuppressed local source association.
+* MusicBrainz: a trusted MusicBrainz Recording identity on the Track's canonical
+  Recording. An occurrence identity or Album association alone is insufficient.
+* Spotify: the existing `trusted_spotify_track` view; Track reasons come directly
+  from `spotify_connection_review`. Reconciliation, retry coordination, candidate
+  ranking, and best-available playback semantics are unchanged.
+
+Migration 0036 retains `track_provider_exclusion(track_id, provider, declared_at)`
+verbatim. It already provides the provider-keyed, database-local user scope of
+Spotify negative knowledge. No account ownership or new profile system is added.
+Library membership and provider associations are untouched. New connection
+triggers clear the relevant Local/MusicBrainz exclusion when a connection is
+established; existing Spotify lifecycle triggers remain authoritative. Album
+marking inserts only current saved unresolved Track preferences, never a rule
+inherited by later Tracks or later membership additions.
+
+Local headers read `local_locations`; add/remove use the established root APIs
+and Rescan uses `ConfiguredLocations`. Adding a folder rescans only its root through
+`Request::Rescan`. Explicit `attach_local_file` reuses scanner
+observation, provenance ingestion, and effective metadata refresh. It rejects
+ambiguous/already-owned sources and never creates canonical entities or changes
+membership. Parsing runs in a worker outside the UI thread.
+
+MusicBrainz's narrow manual workflow searches Album candidates with the existing
+catalog adapter, inspects a representative Release's ordered Track/Recording
+list, and explicitly confirms one Recording identity for the selected canonical
+Track. It does not infer exact Release equivalence or replace conflicting trusted
+Recording identities. Network work runs only after Search/Inspect, on a worker.
+Explicit Spotify manual discovery may inspect marked Tracks without clearing the
+preference first. The request changes only the discovery copy of the input; its
+reply retains the persisted snapshot and existing automatic exclusion semantics.
+Only explicit confirmation clears the preference. Playback/coordinator discovery
+keeps its original exclusion guard.
+Spotify headers bind existing authorization/device state and persisted cooldown;
+explicit controls use existing auth/device/retry infrastructure. Account display
+names are not currently persisted and are not fabricated.
+
+Coverage totals are requested explicitly and calculated on a worker. Browsing,
+expansion, tab changes, sorting order, and scrolling issue only SQLite reads. The
+existing reconciliation coordinator may independently perform its authorized work.
+See [implementation and validation report](music-connections-report.md).
+
+Connections Match opens one shared Album/Track comparison directly. The Library
+column projects effective canonical evidence without requiring a local source.
+Rust presentation state holds the target, candidate index, and generation; QML
+renders fields, aligned programs, evaluator evidence, and common actions.
+Spotify supplies its ranked cached report/Selection and existing confirmation
+plans, including Album-derived Track candidates. Human review may reuse retained
+reconciliation programs without changing automatic discovery policy. MusicBrainz
+uses existing Recording comparison/program correspondence or explicit inspected
+Release choices. Local preview starts only after explicit file selection and
+confirmation uses canonical source ingestion.
+
+Opening/navigating retained candidates never searches for replacements. A selected
+Spotify candidate automatically reuses its retained Track program; if genuinely
+missing, a candidate-scoped worker may fetch that program under existing cooldown
+and cache policy. Manual tools remain
+provider-specific; discovery results do not auto-accept while this review is
+active. Successful final actions close review. The Connections list is the user's
+selection surface: there is no review queue or next-item feeding. Bounded-window
+refresh preserves provider/tab, expanded IDs, and nearby row/pixel anchors.
+Generation checks reject obsolete asynchronous results. See the
+[review refinement and validation report](connection-review-report.md).
+
+The review is the complete connection workflow: inline provider-specific search,
+exact-object lookup, candidate selection, proposed mapping, and final confirmation.
+It never routes Connections users through the old Spotify diagnostic. Spotify
+mapping rows expose the exact `AlbumSelection` occurrences that confirmation will
+persist; advanced mapping prepares that same plan inside the review. Selecting a
+manual result cannot create an association. Details and validation are in the
+[inline review correction report](connections-inline-review-report.md).
+
+
+Connections candidate inspection and confirmation use `inspect_playable_program`
+and the same safe correspondence decisions as automatic best-available source
+reconciliation. Partial playable programs do not establish canonical Release
+identity. Existing provider occurrence IDs are excluded only from the comparison
+view, including its non-systematic fallback; Recording/Artist conflicts remain
+blocking. Missing Track-level Artist IDs may be neutral inside a uniquely aligned
+program with at least three trusted primary-Artist anchors and 75% coverage of
+one program. This never establishes Artist identity from textual containment.
+
+Manual Spotify Album observations are retained by canonical Album/market in the
+existing discovery store (ten objects maximum), separately from association and
+Library membership. Review merges those observations with scoped discovery and
+exact retained objects through the existing evaluator. Cache refresh preserves
+the inspected candidate, and target lifetime/candidate guards protect async replies.
+
+Normal Spotify clients retry transient HTTP service failures twice with bounded
+backoff outside transactions. Long Retry-After and exhausted budgets defer
+provider work; the active coordinator completes cached/local work across remaining
+batches. Typed provider failures survive the catalog-credit preparation boundary.
+Opening review cannot overwrite a temporary-provider state with cache-refresh
+required. See [reconciliation correction validation](connections-reconciliation-report.md).

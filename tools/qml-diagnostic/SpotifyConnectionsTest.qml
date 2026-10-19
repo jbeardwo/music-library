@@ -5,7 +5,9 @@
         try {
             const entry=reviewTest.findChild(settingsMenu,"spotifyConnectionsReview");
             reviewCheck(entry && entry.text==="Spotify Connections","management entry point");entry.triggered();reviewWait();
-            reviewCheck(library.view==="Spotify Connections","review active");
+            reviewCheck(window.applicationSection==="Connections" && connectionsPage.provider==="spotify","legacy entry navigates to shared Connections");
+            // Keep testing the retained bounded browser/reconciliation compatibility API.
+            window.applicationSection="Music";bridge.browse_action("view",2,"Spotify Connections");reviewWait();
             reviewCheck(!artistsPane.visible && !albumsPane.visible && songsPane.detailsTable,"shared management table");
             reviewCheck(library.panes[2].rows.length===200,"bounded page");
             const groups=reviewTest.findChild(songsPane,"spotifyAlbumGroups");
@@ -166,7 +168,7 @@
             reviewCheck(library.markedCount==="1","marked count");
             window.openSpotifyConnection(track);reviewWait();
             reviewCheck(spotifyPlayback.manuallyExcluded,"manual decision visible");
-            reviewCheck(!reviewTest.findChild(spotifyPlaybackDialog,"spotifyConnectionSearch").enabled,"marked search disabled");
+            reviewCheck(reviewTest.findChild(spotifyPlaybackDialog,"spotifyConnectionSearch").enabled,"marked Track permits explicit manual discovery without clearing the preference");
             reviewTest.findChild(spotifyPlaybackDialog,"diagnosticSpotifyCheck").clicked();reviewWait();
             reviewCheck(!spotifyPlayback.manuallyExcluded,"diagnostic clears mark");
             reviewCheck(library.panes[2].rows.length===0,"marked row immediately removed");

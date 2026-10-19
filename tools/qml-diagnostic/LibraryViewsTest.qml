@@ -94,6 +94,7 @@
             const albums = viewsTest.findChild(window.contentItem,"libraryPane1"); albums.forceLayout();
             check(albums.count === 3, "year sections");
             for(let i=0;i<3;++i) {
+                albums.positionViewAtIndex(i,ListView.Contain);wait();albums.forceLayout();
                 const section = albums.itemAtIndex(i);
                 check(section.rowData.groupTitle === ["2024","2019","Unknown"][i], "year section heading");
                 const tile = section.tileAt(i);

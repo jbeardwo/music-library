@@ -176,7 +176,8 @@ pub(crate) fn test_handoffs() {
     b.spotify_playback_action("track".into(), unknown.as_ref().into());
     assert!(searches.try_recv().is_err()); // opening/selection never searches
     b.resolve_play(unknown.as_ref());
-    let (_, input, _) = searches.try_recv().unwrap();
+    let (_, input, _, manual) = searches.try_recv().unwrap();
+    assert!(!manual, "Playback searches preserve provider exclusions");
     assert!(searches.try_recv().is_err()); // exactly one explicit-Play search
     assert!(commands.try_recv().is_err());
     let song = Candidate {
@@ -223,7 +224,8 @@ pub(crate) fn test_handoffs() {
 
     let ambiguous = b.session.rows[4].track_id.clone();
     b.resolve_play(ambiguous.as_ref());
-    let (_, input, _) = searches.try_recv().unwrap();
+    let (_, input, _, manual) = searches.try_recv().unwrap();
+    assert!(!manual, "Playback searches preserve provider exclusions");
     let song = Candidate {
         recording: Default::default(),
         album_identity: None,

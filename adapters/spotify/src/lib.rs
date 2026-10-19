@@ -119,6 +119,7 @@ pub struct Spotify {
     cache_only: bool,
     inspect_retained: bool,
     cache_miss: bool,
+    transient_retries: u8,
     categories: HashMap<String, u64>,
     request_audit: std::collections::VecDeque<CatalogRequestAudit>,
 }
@@ -132,11 +133,13 @@ impl std::fmt::Debug for Spotify {
 }
 impl Spotify {
     pub fn new(config: Config) -> Self {
-        Self::at(
+        let mut client = Self::at(
             config,
             Url::parse("https://api.spotify.com/v1/").unwrap(),
             Url::parse("https://accounts.spotify.com/api/token").unwrap(),
-        )
+        );
+        client.transient_retries = 2;
+        client
     }
     pub fn from_env() -> Result<Self, CatalogError> {
         Ok(Self::new(Config::from_env()?))
@@ -160,6 +163,7 @@ impl Spotify {
             cache_only: false,
             inspect_retained: false,
             cache_miss: false,
+            transient_retries: 0,
             categories: HashMap::new(),
             request_audit: Default::default(),
             agent: ureq::Agent::config_builder()
@@ -223,6 +227,149 @@ impl Spotify {
         .with_library(Some(path))?;
         Self::cached_album_review_with_client(client, input)
     }
+    /// Retained program inspection without authentication, even after discovery TTL.
+    pub fn cached_candidate_program(
+        path: &str,
+        market: &str,
+        identity: &ExternalIdentity,
+    ) -> Result<Option<Programs>, CatalogError> {
+        let client = Self::new(Config::new(
+            "offline".into(),
+            "offline".into(),
+            market.into(),
+        )?)
+        .with_library(Some(path))?;
+        Self::cached_candidate_program_with_client(client, identity)
+    }
+    fn cached_candidate_program_with_client(
+        mut client: Self,
+        identity: &ExternalIdentity,
+    ) -> Result<Option<Programs>, CatalogError> {
+        client.cache_only = true;
+        client.inspect_retained = true;
+        let result = client.album_programs(identity);
+        if client.cache_miss {
+            Ok(None)
+        } else {
+            result.map(Some)
+        }
+    }
+    /// Human connection review can also inspect the established program retained
+    /// by reconciliation. Reuse the same evaluator; this path is cache-only and
+    /// does not change automatic discovery or acceptance policy.
+    pub fn cached_album_connection_review(
+        path: &str,
+        market: &str,
+        input: &music_library::album_matching::MatchInput,
+    ) -> Result<Option<(music_library::album_candidates::Report, Vec<Programs>)>, CatalogError>
+    {
+        let mut client = Self::new(Config::new(
+            "offline".into(),
+            "offline".into(),
+            market.into(),
+        )?)
+        .with_library(Some(path))?;
+        client.cache_only = true;
+        client.inspect_retained = true;
+        let mut retained = client
+            .discovery
+            .as_ref()
+            .unwrap()
+            .retained_connection_candidates(&input.album_id, market)
+            .unwrap_or_default();
+        if let Some(program) = client
+            .discovery
+            .as_ref()
+            .unwrap()
+            .retained_spotify_album_program(&input.album_id)
+            .map_err(|e| CatalogError::Other(e.to_string()))?
+        {
+            if !retained.iter().any(|(c, _)| c.identity == program.album) {
+                // An exact retained object is useful even if a discovery-query
+                // fingerprint changed. This is still strictly cache-only.
+                if let Ok((candidate, _)) = client.explicit_album(&program.album.external_id) {
+                    retained.push((candidate, program));
+                }
+                client.cache_miss = false;
+            }
+        }
+        let mut current = Self::cached_album_connection_review_with_client(client, input)?;
+        if !retained.is_empty() {
+            let library = music_library::Library::open(path)
+                .map_err(|e| CatalogError::Other(e.to_string()))?;
+            let local = library
+                .local_album_tracks(&input.album_id)
+                .map_err(|e| CatalogError::Other(e.to_string()))?;
+            let provider = Self::new(Config::new(
+                "offline".into(),
+                "offline".into(),
+                market.into(),
+            )?);
+            let page = Page {
+                items: retained.iter().map(|(c, _)| c.clone()).collect(),
+                next_offset: None,
+            };
+            let mut supplemental = music_library::album_candidates::initial_report_with_equivalents(
+                &provider,
+                (&input.raw_title, input.date),
+                input.known_artist.as_ref(),
+                &page,
+                &local,
+                &input.equivalent_artists,
+            );
+            for row in &mut supplemental.candidates {
+                if let Some((_, p)) = retained.iter().find(|(c, _)| c.identity == row.identity) {
+                    row.programs = p
+                        .programs
+                        .iter()
+                        .map(|p| {
+                            music_library::album_program::inspect_album_program(
+                                &local,
+                                p,
+                                &input.raw_title,
+                            )
+                        })
+                        .collect();
+                }
+            }
+            if let Some((report, programs)) = &mut current {
+                for row in supplemental.candidates {
+                    if !report.candidates.iter().any(|c| c.identity == row.identity) {
+                        report.candidates.push(row);
+                    }
+                }
+                for (_, p) in retained {
+                    if !programs.iter().any(|old| old.album == p.album) {
+                        programs.push(p);
+                    }
+                }
+                report.candidate_count = report.candidates.len();
+                report.rank_candidates();
+            } else {
+                supplemental.rank_candidates();
+                current = Some((supplemental, retained.into_iter().map(|(_, p)| p).collect()));
+            }
+        }
+        Ok(current)
+    }
+    fn cached_album_connection_review_with_client(
+        mut client: Self,
+        input: &music_library::album_matching::MatchInput,
+    ) -> Result<Option<(music_library::album_candidates::Report, Vec<Programs>)>, CatalogError>
+    {
+        if let Some(program) = client
+            .discovery
+            .as_ref()
+            .unwrap()
+            .retained_spotify_album_program(&input.album_id)
+            .map_err(|e| CatalogError::Other(e.to_string()))?
+        {
+            if program.album.provider == "spotify" && program.album.kind == "album" {
+                client.programs.push(program);
+            }
+        }
+        Self::cached_album_review_with_client(client, input)
+    }
     fn cached_album_review_with_client(
         mut client: Self,
         input: &music_library::album_matching::MatchInput,
@@ -272,12 +419,13 @@ impl Spotify {
             .unwrap()
             .local_album_tracks(&input.album_id)
             .map_err(|e| CatalogError::Other(e.to_string()))?;
-        let mut report = music_library::album_candidates::initial_report(
+        let mut report = music_library::album_candidates::initial_report_with_equivalents(
             &client,
             (&input.raw_title, input.date),
             established.as_ref(),
             &page,
             &local,
+            &input.equivalent_artists,
         );
         let mut programs = vec![];
         for candidate in &mut report.candidates {
@@ -685,8 +833,23 @@ impl Spotify {
         } else {
             DiscoveryRequestReason::NoCompletedResult
         };
-        for retry in 0..=1 {
-            let token = self.token()?.to_owned();
+        let mut refreshed = false;
+        let mut transient = 0;
+        loop {
+            let token = match self.token() {
+                Ok(token) => token.to_owned(),
+                Err(error) => {
+                    if transient < self.transient_retries
+                        && let Some(delay) =
+                            music_library::catalog::transient_retry_delay(&error, transient)
+                    {
+                        transient += 1;
+                        std::thread::sleep(delay);
+                        continue;
+                    }
+                    return Err(error);
+                }
+            };
             let _timing = Timing::new(format!("spotify.{path}.http"));
             self.request_counts.1 += 1;
             let category = if path == "search" {
@@ -722,13 +885,22 @@ impl Spotify {
                 .header("Authorization", &format!("Bearer {token}"))
                 .call()
                 .map_err(transport)?;
-            if response.status().as_u16() == 401 && retry == 0 {
+            if response.status().as_u16() == 401 && !refreshed {
+                refreshed = true;
                 self.token = None;
                 continue;
             }
             let result: Result<serde_json::Value, CatalogError> = self.response(response, false);
             if let Err(error @ CatalogError::Configuration { .. }) = &result {
                 self.configuration_error = Some(error.clone());
+            }
+            if let Err(error) = &result
+                && transient < self.transient_retries
+                && let Some(delay) = music_library::catalog::transient_retry_delay(error, transient)
+            {
+                transient += 1;
+                std::thread::sleep(delay);
+                continue;
             }
             let value = result?;
             let parsed = serde_json::from_value(value.clone())
@@ -739,7 +911,6 @@ impl Spotify {
             }
             return Ok(parsed);
         }
-        unreachable!()
     }
     fn require(identity: &ExternalIdentity, kind: &str) -> Result<(), CatalogError> {
         if identity.provider != "spotify"

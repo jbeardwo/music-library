@@ -1,5 +1,11 @@
 # Spotify Connections review
 
+The primary entry is now **Connections → Spotify → Missed Connections**. The old
+menu action navigates there. Shared Local/MusicBrainz/Spotify navigation and
+validation are documented in the [Music / Connections report](music-connections-report.md).
+The review/advanced-mapping dialogs below remain the provider-specific workflow;
+the old Track-table API is retained for diagnostic compatibility.
+
 Current behavior and fresh-import validation are recorded in the
 [focused robustness audit](spotify-focused-robustness-audit.md). Evaluation version
 is 15; Album search strategy is 6. Retry drains keyset-paged Album contexts and

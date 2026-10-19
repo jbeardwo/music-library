@@ -412,7 +412,7 @@ pub fn initial_report(
 ) -> Report {
     initial_report_with_equivalents(provider, context, artist, page, local, &[])
 }
-fn initial_report_with_equivalents(
+pub fn initial_report_with_equivalents(
     provider: &impl CatalogProvider,
     context: (&str, Option<crate::catalog_date::Date>),
     artist: Option<&ExternalIdentity>,

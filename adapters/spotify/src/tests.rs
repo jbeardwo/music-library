@@ -1935,6 +1935,11 @@ fn album_inspection_exposes_every_cached_candidate_without_requests_or_ttl_refre
         .unwrap();
     let mut all = page.items;
     all.extend(mock.client.rejected_album_candidates());
+    assert!(
+        Spotify::cached_candidate_program(path.to_str().unwrap(), &market, &all[0].identity)
+            .unwrap()
+            .is_none()
+    );
     for c in all {
         mock.client.album_programs(&c.identity).unwrap();
     }
@@ -1959,6 +1964,18 @@ fn album_inspection_exposes_every_cached_candidate_without_requests_or_ttl_refre
             .unwrap();
         assert_eq!(report.candidates.len(), 3);
         assert_eq!(programs.len(), 3);
+        for p in &programs {
+            assert!(
+                Spotify::cached_candidate_program_with_client(
+                    Spotify::at(config(), base.clone(), token_url.clone())
+                        .with_library(path.to_str())
+                        .unwrap(),
+                    &p.album
+                )
+                .unwrap()
+                .is_some()
+            );
+        }
         assert!(report.candidates.iter().all(|c| !c.programs.is_empty()));
         assert_eq!(mock.requests.lock().unwrap().len(), before);
     }
@@ -1986,6 +2003,55 @@ fn album_inspection_exposes_every_cached_candidate_without_requests_or_ttl_refre
         "retained evidence remains inspectable after TTL expires"
     );
     assert_eq!(mock.requests.lock().unwrap().len(), before);
+    // Human review can reuse the established reconciliation program even when
+    // the discovery response containing its Track page has been evicted.
+    let retained = mock
+        .client
+        .programs
+        .iter()
+        .find(|p| p.album.external_id == "album1")
+        .unwrap()
+        .clone();
+    db.execute(
+        "INSERT INTO spotify_program_cache(album_id,programs_json) VALUES(?1,?2)",
+        rusqlite::params![album.as_ref(), serde_json::to_string(&retained).unwrap()],
+    )
+    .unwrap();
+    db.execute(
+        "DELETE FROM spotify_discovery WHERE fingerprint LIKE '%/albums/album1/tracks%'",
+        [],
+    )
+    .unwrap();
+    let rows_before: i64 = db
+        .query_row("SELECT COUNT(*) FROM spotify_discovery", [], |r| r.get(0))
+        .unwrap();
+    let offline = Spotify::at(
+        config(),
+        mock.client.base.clone(),
+        mock.client.token_url.clone(),
+    )
+    .with_library(path.to_str())
+    .unwrap();
+    let (report, programs) = Spotify::cached_album_connection_review_with_client(offline, &input)
+        .unwrap()
+        .unwrap();
+    assert!(programs.iter().any(|p| p.album.external_id == "album1"));
+    assert!(
+        !report
+            .candidates
+            .iter()
+            .find(|c| c.identity.external_id == "album1")
+            .unwrap()
+            .programs
+            .is_empty()
+    );
+    assert_eq!(mock.requests.lock().unwrap().len(), before);
+    assert_eq!(
+        db.query_row("SELECT COUNT(*) FROM spotify_discovery", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        rows_before
+    );
     mock.thread.join().unwrap();
 }
 
@@ -2798,4 +2864,115 @@ fn cached_remaster_program_attaches_playback_preserving_identity_and_warnings() 
             0
         );
     }
+}
+
+#[test]
+fn human_track_review_inherits_retained_album_program_without_discovery_track_page() {
+    use music_library::album_matching::Preparation;
+    let (dir, library, release, album) = retained_album_context(&["A", "B", "C"], &["A", "B", "C"]);
+    let Preparation::Ready(input) = library.spotify_album_review_input(&album).unwrap() else {
+        panic!("input")
+    };
+    let (_, programs) =
+        Spotify::cached_album_review(library.database_path().as_deref().unwrap(), "US", &input)
+            .unwrap()
+            .unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("context.db")).unwrap();
+    db.execute(
+        "INSERT INTO spotify_program_cache(album_id,programs_json) VALUES(?1,?2)",
+        rusqlite::params![album.as_ref(), serde_json::to_string(&programs[0]).unwrap()],
+    )
+    .unwrap();
+    db.execute(
+        "DELETE FROM spotify_discovery WHERE fingerprint LIKE '%/albums/album1/tracks%'",
+        [],
+    )
+    .unwrap();
+    let old = crate::album_context::cached_candidates(&library, &album, "US").unwrap();
+    assert!(
+        old.is_empty(),
+        "automatic projection retains its original discovery scope"
+    );
+    let reviewed = crate::album_context::cached_review_candidates(&library, &album, "US").unwrap();
+    assert_eq!(reviewed.len(), 3);
+    for (row, track) in reviewed.iter().zip(&release.track_ids) {
+        assert_eq!(&row.track, track);
+        assert_eq!(row.candidates.len(), 1);
+        assert_eq!(
+            row.candidates[0]
+                .album_identity
+                .as_ref()
+                .unwrap()
+                .external_id,
+            "album1"
+        );
+        assert!(
+            library
+                .cached_spotify_track_attempt(track)
+                .unwrap()
+                .is_none(),
+            "no independent Track search needed"
+        );
+    }
+}
+
+#[test]
+fn transient_service_failure_recovers_inside_one_request_and_exhausts_bounded_budget() {
+    let unavailable = || {
+        (
+            503,
+            json!({"error":{"message":"temporarily unavailable"}}),
+            None,
+        )
+    };
+    let mut recovered = Mock::new(vec![token(), unavailable(), artists()]);
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("transient.sqlite");
+    let _library = music_library::Library::open(&path).unwrap();
+    recovered.client = recovered.client.with_library(path.to_str()).unwrap();
+    recovered.client.transient_retries = 2;
+    assert!(
+        !recovered
+            .client
+            .search_artists("Artist")
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert!(
+        !recovered
+            .client
+            .search_artists("Artist")
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    assert_eq!(
+        recovered.finish().len(),
+        3,
+        "one operation recovers without a second user action"
+    );
+    let mut exhausted = Mock::new(vec![token(), unavailable(), unavailable(), unavailable()]);
+    exhausted.client.transient_retries = 2;
+    assert!(matches!(
+        exhausted.client.search_artists("Artist"),
+        Err(CatalogError::ServiceUnavailable { .. })
+    ));
+    assert_eq!(
+        exhausted.finish().len(),
+        4,
+        "initial request plus two bounded retries"
+    );
+}
+
+#[test]
+fn long_transient_retry_after_is_deferred_without_hammering() {
+    let mut mock = Mock::new(vec![
+        token(),
+        (503, json!({"error":{"message":"maintenance"}}), Some("30")),
+    ]);
+    mock.client.transient_retries = 2;
+    let error = mock.client.search_artists("Artist").unwrap_err();
+    assert!(matches!(error, CatalogError::ServiceUnavailable { .. }));
+    assert_eq!(mock.finish().len(), 2);
 }

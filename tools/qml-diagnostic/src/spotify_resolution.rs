@@ -12,13 +12,13 @@ pub struct Reply {
     pub counts: (u64, u64),
 }
 pub struct Worker {
-    send: Option<mpsc::SyncSender<(u64, Input, Option<String>)>>,
+    send: Option<mpsc::SyncSender<(u64, Input, Option<String>, bool)>>,
     join: Option<thread::JoinHandle<()>>,
     refresh: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl Worker {
     #[cfg(test)]
-    pub fn fake() -> (Self, mpsc::Receiver<(u64, Input, Option<String>)>) {
+    pub fn fake() -> (Self, mpsc::Receiver<(u64, Input, Option<String>, bool)>) {
         let (send, receive) = mpsc::sync_channel(1);
         (
             Self {
@@ -30,18 +30,23 @@ impl Worker {
         )
     }
     pub fn with_library(emit: impl Fn(Reply) + Send + 'static, path: Option<String>) -> Self {
-        let (send, recv) = mpsc::sync_channel::<(u64, Input, Option<String>)>(1);
+        let (send, recv) = mpsc::sync_channel::<(u64, Input, Option<String>, bool)>(1);
         let refresh = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_refresh = refresh.clone();
         let join = thread::spawn(move || {
             let mut client = Spotify::from_env().and_then(|p| p.with_library(path.as_deref()));
-            while let Ok((generation, input, artist_query)) = recv.recv() {
+            while let Ok((generation, input, artist_query, manual)) = recv.recv() {
                 let result = match &mut client {
                     Ok(client) => {
                         client.refresh_discovery(
                             worker_refresh.swap(false, std::sync::atomic::Ordering::AcqRel),
                         );
                         let mut lookup = input.clone();
+                        // Discovery-only override. Reply keeps the persisted snapshot,
+                        // so automatic acceptance stays blocked until explicit confirmation.
+                        if manual {
+                            lookup.spotify_excluded = false;
+                        }
                         if let Some(name) = artist_query {
                             if let Some(primary) = &mut lookup.primary_artist {
                                 primary.name = name.clone();
@@ -81,10 +86,11 @@ impl Worker {
         generation: u64,
         input: Input,
         artist: Option<String>,
+        manual: bool,
     ) -> bool {
         self.send
             .as_ref()
-            .is_some_and(|s| s.try_send((generation, input, artist)).is_ok())
+            .is_some_and(|s| s.try_send((generation, input, artist, manual)).is_ok())
     }
 }
 impl Drop for Worker {

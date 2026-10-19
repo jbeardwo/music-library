@@ -87,14 +87,36 @@ pub fn cached_candidates(
     album: &AlbumId,
     market: &str,
 ) -> Result<Vec<TrackCandidates>> {
+    cached_candidates_impl(library, album, market, false)
+}
+/// Human review also includes programs retained by reconciliation. Candidate
+/// projection/ranking is unchanged; automatic discovery keeps its existing scope.
+pub fn cached_review_candidates(
+    library: &Library,
+    album: &AlbumId,
+    market: &str,
+) -> Result<Vec<TrackCandidates>> {
+    cached_candidates_impl(library, album, market, true)
+}
+fn cached_candidates_impl(
+    library: &Library,
+    album: &AlbumId,
+    market: &str,
+    human_review: bool,
+) -> Result<Vec<TrackCandidates>> {
     let Some(path) = library.database_path() else {
         return Ok(vec![]);
     };
     let Preparation::Ready(input) = library.spotify_album_review_input(album)? else {
         return Ok(vec![]);
     };
-    let Some((report, programs)) = Spotify::cached_album_review(&path, market, &input)
-        .map_err(|e| music_library::Error::Invalid(e.to_string()))?
+    let cached = if human_review {
+        Spotify::cached_album_connection_review(&path, market, &input)
+    } else {
+        Spotify::cached_album_review(&path, market, &input)
+    };
+    let Some((report, programs)) =
+        cached.map_err(|e| music_library::Error::Invalid(e.to_string()))?
     else {
         return Ok(vec![]);
     };
@@ -523,6 +545,7 @@ pub fn reconcile_best_available_with_budget(
                         batch.updated.push(track);
                     }
                     Err(error) => {
+                        batch.provider_unavailable = error.is_provider_unavailable();
                         batch.errors.push(error.to_string());
                         // Includes Retry-After/quota exhaustion: stop the whole bounded
                         // provider phase, never try the next Track after an error.
@@ -563,7 +586,7 @@ pub fn discover_catalog_credit_names(
     for name in names {
         let page = provider
             .search_artists(&name)
-            .map_err(|e| music_library::Error::Invalid(e.to_string()))?;
+            .map_err(music_library::Error::from)?;
         if name == input.artist
             && let Ok(identity) = music_library::album_matching::resolve_artist(&name, &page)
             && let Some(candidate) = page.items.iter().find(|c| {
@@ -593,7 +616,7 @@ pub fn discover_catalog_credit_names(
             .collect::<Vec<_>>();
         let albums = provider
             .albums_for_artists(&ids, &input.title)
-            .map_err(|e| music_library::Error::Invalid(e.to_string()))?;
+            .map_err(music_library::Error::from)?;
         let local = library.local_album_tracks(album)?;
         let mut supported = vec![];
         for candidate in albums
@@ -611,7 +634,7 @@ pub fn discover_catalog_credit_names(
         {
             let programs = provider
                 .album_programs(&candidate.identity)
-                .map_err(|e| music_library::Error::Invalid(e.to_string()))?;
+                .map_err(music_library::Error::from)?;
             for artist in plausible
                 .iter()
                 .filter(|a| candidate.artist_ids.contains(&a.identity))

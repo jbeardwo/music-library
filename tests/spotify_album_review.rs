@@ -477,3 +477,147 @@ fn established_program_completion_persists_explicit_sequence_mapping_and_retains
         assert_eq!(l.unresolved_spotify_count().unwrap(), 1);
     }
 }
+
+#[test]
+fn connections_plan_excludes_version_conflicts_and_preserves_explicit_mapping_escape_hatch() {
+    let (_tmp, mut library, release, mut programs) = fixture();
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    programs.programs[0].tracks[2].title = Some("Song 3 (Live)".into());
+    let legacy = library
+        .prepare_spotify_album_confirmation(&album, &programs)
+        .unwrap();
+    assert_eq!(
+        legacy.matches().len(),
+        3,
+        "legacy explicit review remains unchanged"
+    );
+    let selection = library
+        .prepare_spotify_connections_confirmation(&album, &programs)
+        .unwrap();
+    assert_eq!(selection.matches().len(), 2);
+    assert_eq!(selection.unmatched_provider, 1);
+    assert!(selection.unmatched_local.contains(&release.track_ids[2]));
+    assert_eq!(library.confirm_spotify_album(&selection, true).unwrap(), 2);
+    assert_eq!(library.connection_coverage("spotify").unwrap().connected, 2);
+    assert_eq!(
+        library
+            .connection_tracks("spotify", false, &album, None, 200)
+            .unwrap()[0]
+            .id,
+        release.track_ids[2]
+    );
+    let explicit = library
+        .prepare_spotify_track_mapping(
+            &album,
+            &[(
+                release.track_ids[2].clone(),
+                legacy.matches()[2].candidate().clone(),
+            )],
+        )
+        .unwrap();
+    assert!(explicit.requires_confirmation());
+    assert_eq!(
+        explicit.matches()[0].candidate().identity,
+        legacy.matches()[2].candidate().identity
+    );
+}
+
+#[test]
+fn playable_subset_review_keeps_authoritative_reordered_mapping_across_existing_editions() {
+    use music_library::album_program::{
+        PositionDecision, inspect_album_program, inspect_playable_program,
+    };
+    let (_tmp, library, release, _) = fixture();
+    let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
+    let template = library.local_album_tracks(&album).unwrap()[0].clone();
+    let mut local: Vec<_> = (0..12)
+        .map(|n| {
+            let mut t = template.clone();
+            t.track_id = TrackId(format!("canonical-{n}"));
+            t.evidence.title = Some(format!("Song {n}"));
+            t.evidence.number = Some(n + 1);
+            t.evidence.duration_ms = Some(200_000);
+            t.evidence.identities = vec![id("track", &format!("other-edition-{n}"))];
+            t.evidence.artists[0].identities = vec![id("artist", "trusted")];
+            t
+        })
+        .collect();
+    let mut program = Program {
+        identity: None,
+        complete: true,
+        tracks: (0..6)
+            .rev()
+            .enumerate()
+            .map(|(j, n)| {
+                let mut t = local[n].evidence.clone();
+                t.identities = vec![id("track", &format!("candidate-{n}"))];
+                t.number = Some(j as u32 + 1);
+                t
+            })
+            .collect(),
+    };
+    for n in [6, 7] {
+        let mut t = local[n].evidence.clone();
+        t.title = Some(format!("Song {n} (Live)"));
+        t.number = Some(n as u32 + 1);
+        t.identities = vec![id("track", &format!("live-{n}"))];
+        program.tracks.push(t);
+    }
+    // Two unparsed featured credits lack trusted Track-level Artist identity.
+    for n in [2, 4] {
+        local[n].evidence.artists[0].identities.clear();
+        local[n].evidence.artists[0].name = "A ft. Guest".into();
+    }
+    assert!(
+        !inspect_album_program(&local, &program, "Album")
+            .alignment
+            .strong
+    );
+    let review = inspect_playable_program(&local, &program, "Album");
+    assert!(review.alignment.strong);
+    assert_eq!(
+        review
+            .tracks
+            .iter()
+            .filter(|r| r.decision == PositionDecision::ReorderedTrack)
+            .count(),
+        6
+    );
+    for n in 0..6 {
+        assert_eq!(
+            review.tracks[n].provider.as_ref().unwrap().identities[0],
+            id("track", &format!("candidate-{n}"))
+        );
+    }
+    assert!(review.tracks[6..].iter().all(|r| r.provider.is_none()));
+    // Explicit conflicting identity must never become neutral missing evidence.
+    local[2].evidence.artists[0].identities = vec![id("artist", "different")];
+    assert!(
+        !inspect_playable_program(&local, &program, "Album")
+            .alignment
+            .strong
+    );
+}
+
+#[test]
+fn artist_identity_uses_full_case_neutral_names_or_trusted_identity_never_substrings() {
+    use music_library::{artist_credit::same_artist, edition::ArtistEvidence};
+    let full = ArtistEvidence {
+        name: "hop along, queen ansleis".into(),
+        ..Default::default()
+    };
+    let case = ArtistEvidence {
+        name: "Hop Along, Queen Ansleis".into(),
+        ..Default::default()
+    };
+    let mut short = ArtistEvidence {
+        name: "Hop Along".into(),
+        ..Default::default()
+    };
+    assert!(same_artist(&full, &case));
+    assert!(!same_artist(&full, &short));
+    let mut trusted = full;
+    trusted.identities = vec![id("artist", "explicit-equivalence")];
+    short.identities = trusted.identities.clone();
+    assert!(same_artist(&trusted, &short));
+}

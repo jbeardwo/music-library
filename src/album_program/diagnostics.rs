@@ -87,21 +87,49 @@ fn playable_alignment(
         .iter()
         .filter_map(|r| r.local_index.zip(r.provider_index))
         .collect::<Vec<_>>();
+    let trusted = |a: &TrackEvidence, b: &TrackEvidence| {
+        a.artists.first().is_some_and(|artist| {
+            artist.identities.iter().any(|id| {
+                id.provider == "spotify"
+                    && id.kind == "artist"
+                    && b.artists
+                        .first()
+                        .is_some_and(|artist| artist.identities.contains(id))
+            })
+        })
+    };
+    let corroborated: Vec<_> = matched
+        .iter()
+        .filter(|(i, j)| trusted(&local[*i].evidence, &program.tracks[*j]))
+        .collect();
     program.complete
-        && matched.len() >= 3
-        && (matched.len() * 5 >= local.len() * 4 || matched.len() * 5 >= program.tracks.len() * 4)
+        && corroborated.len() >= 3
+        && (matched.len() * 4 >= local.len() * 3 || matched.len() * 4 >= program.tracks.len() * 3)
         && matched.iter().all(|(i, j)| {
             let a = &local[*i].evidence;
             let b = &program.tracks[*j];
-            a.artists.first().is_some_and(|artist| {
-                artist.identities.iter().any(|id| {
-                    id.provider == "spotify"
-                        && id.kind == "artist"
-                        && b.artists
-                            .iter()
-                            .any(|artist| artist.identities.contains(id))
-                })
-            }) && !occurrence_identity_conflict(a, b)
+            // Missing Track-level identity is neutral only inside a program
+            // independently corroborated by at least three trusted Artist anchors.
+            // It does not establish identity from a featured-credit substring.
+            let artist = trusted(a, b)
+                || a.artists.first().is_none_or(|artist| {
+                    !artist
+                        .identities
+                        .iter()
+                        .any(|id| id.provider == "spotify" && id.kind == "artist")
+                }) && b.artists.first().is_some_and(|artist| {
+                    corroborated.iter().any(|(li, _)| {
+                        local[*li].evidence.artists.first().is_some_and(|known| {
+                            known.identities.iter().any(|id| {
+                                id.provider == "spotify"
+                                    && id.kind == "artist"
+                                    && artist.identities.contains(id)
+                            })
+                        })
+                    })
+                });
+            artist
+                && !occurrence_identity_conflict(a, b)
                 && a.duration_ms
                     .zip(b.duration_ms)
                     .is_none_or(|(a, b)| a.abs_diff(b) <= 10_000)
@@ -182,6 +210,18 @@ fn inspect_positioned_program_context(
                     .copied()
             };
             let decision = match c {
+                None if program.tracks.iter().any(|p| {
+                    occurrence_identity_conflict(&t.evidence, p)
+                        && (title_relation(&t.evidence, p) == TitleRelation::Agrees
+                            || crate::matching::contextual_title_class(
+                                t.evidence.title.as_deref().unwrap_or(""),
+                                p.title.as_deref().unwrap_or(""),
+                            )
+                            .is_some())
+                }) =>
+                {
+                    PositionDecision::TrustedIdentityConflict
+                }
                 None if alignment.strong
                     && program
                         .tracks
@@ -284,6 +324,9 @@ fn inspect_program_context(
                 .retain(|id| !(id.provider == "spotify" && id.kind == "track"));
         }
     }
+    // Keep the same occurrence-neutral evidence in the non-systematic path.
+    // Otherwise existing occurrences from another edition veto valid playback mappings.
+    let fallback_known = known.clone();
     let mut changed = 0;
     for p in &mut derived.tracks {
         if let Some(title) = &p.title
@@ -483,7 +526,12 @@ fn inspect_program_context(
     if !systematic
         || !(alignment.strong || playable && playable_alignment(&known, &derived, &alignment))
     {
-        let mut result = inspect_positioned_program_context(local, program, playable);
+        let mut result = inspect_positioned_program_context(&fallback_known, program, playable);
+        for row in &mut result.tracks {
+            if let Some(original) = local.iter().find(|t| t.track_id.as_ref() == row.track_id) {
+                row.local = original.evidence.clone();
+            }
+        }
         if movements >= 3 || edition_annotations > 0 || shared_systematic {
             for row in &mut result.tracks {
                 if row

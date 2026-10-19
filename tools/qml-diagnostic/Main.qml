@@ -103,6 +103,338 @@ ApplicationWindow {
         contentItem: Label { text: "Mark " + spotifyAlbumExclusion.count + " unresolved tracks on this album as not on Spotify?"; wrapMode: Text.Wrap }
         onAccepted: window.bridge.spotify_review_action("mark-unresolved", albumId, 0)
     }
+    property string applicationSection: "Music"
+    property string musicView: "Artists"
+    function showConnections(provider) {
+        if (applicationSection === "Music" && library.view !== "Spotify Connections") musicView=library.view;
+        applicationSection="Connections";
+        connectionsPage.provider=provider || connectionsPage.provider;
+        connectionsPage.reload(false);
+    }
+    Dialog {
+        id: connectionMarkDialog
+        property string albumId: ""
+        property int count: 0
+        width:480
+        title: "Mark unavailable"
+        modal: true
+        anchors.centerIn: parent
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        contentItem: Label { text: "Mark " + connectionMarkDialog.count + " unresolved Tracks unavailable from " + connectionsPage.providerName + "?"; wrapMode: Text.Wrap }
+        onAccepted: connectionsPage.act("mark-album",albumId)
+    }
+    PlatformDialogs.FolderDialog {
+        id: connectionRootPicker
+        title: "Add a music folder"
+        onAccepted: { const result=connectionsPage.act("add-root",folder.toString());if(result&&result.id)connectionsPage.act("rescan-root",result.id); }
+    }
+    PlatformDialogs.FileDialog {
+        id: connectionFilePicker
+        property string trackId: ""
+        title: "Attach audio to this Library Track"
+        fileMode: PlatformDialogs.FileDialog.OpenFile
+        onAccepted: {
+            if(connectionReviewDialog.visible)connectionReviewDialog.chooseLocalFile(trackId,file.toString());
+            else connectionsPage.act("attach-file",trackId+"\n"+file.toString());
+        }
+    }
+    Dialog {
+        id: connectionAlbumDialog
+        property string albumId: ""
+        property var tracks: []
+        property string trackCursor:""
+        property var trackHistory:[]
+        function refreshTracks(){if(visible){tracks=connectionsPage.readConnection("tracks",albumId+(trackCursor?"\n"+trackCursor:""))||[];}}
+        Connections {target:connectionsPage;function onRevisionChanged(){connectionAlbumDialog.refreshTracks();}}
+        title: connectionsPage.providerName + " Album connections"
+        standardButtons: Dialog.Close
+        modal: true
+        width: Math.min(750,window.width-60)
+        height: Math.min(550,window.height-60)
+        anchors.centerIn: parent
+        contentItem: ColumnLayout {
+            Label { text: "Choose a Track to inspect and explicitly confirm its connection."; wrapMode: Text.Wrap; Layout.fillWidth:true }
+            Button { visible:connectionsPage.provider === "musicbrainz"; text:"Inspect catalog Album matching…"; onClicked: matchingDialog.open() }
+            ListView {
+                Layout.fillHeight:true; Layout.fillWidth:true; clip:true
+                model: connectionAlbumDialog.tracks
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AlwaysOn }
+                delegate: RowLayout {
+                    required property var modelData
+                    width: ListView.view.width-20
+                    Label { text:modelData.title; Layout.fillWidth:true; elide:Text.ElideRight }
+                    Button { text:"Match…"; onClicked:{if(connectionReviewDialog.visible)connectionReviewDialog.chooseManualTrack(modelData.id,modelData.title);else connectionsPage.matchTrack(connectionAlbumDialog.albumId,modelData.id,modelData.title);} }
+                }
+            }
+            RowLayout {
+                visible:connectionAlbumDialog.tracks.length===200||connectionAlbumDialog.trackHistory.length>0
+                Button {text:"Previous Tracks";enabled:connectionAlbumDialog.trackHistory.length>0;onClicked:{const pages=connectionAlbumDialog.trackHistory.slice();connectionAlbumDialog.trackCursor=pages.pop();connectionAlbumDialog.trackHistory=pages;connectionAlbumDialog.refreshTracks();}}
+                Button {text:"More Tracks";enabled:connectionAlbumDialog.tracks.length===200;onClicked:{connectionAlbumDialog.trackHistory=connectionAlbumDialog.trackHistory.concat([connectionAlbumDialog.trackCursor]);connectionAlbumDialog.trackCursor=connectionAlbumDialog.tracks[connectionAlbumDialog.tracks.length-1].id;connectionAlbumDialog.refreshTracks();}}
+            }
+        }
+    }
+    Dialog {
+        id: musicbrainzConnection
+        objectName:"musicbrainzConnection"
+        property string canonicalTitle:""
+        property string trackId:""
+        property string albumId:""
+        property bool pending:false
+        property var candidates:[]
+        property var recordings:[]
+        property var inspectedRelease:null
+        property string error:""
+        function action(kind,value,index) {
+            const result=JSON.parse(window.bridge.connection_catalog(kind,value,index));
+            error=result.error||"";pending=result.pending||false;
+            if(result.candidates!==undefined)candidates=result.candidates;
+            if(result.tracks!==undefined)recordings=result.tracks;
+            if(result.release!==undefined)inspectedRelease=result.release;
+            if(connectionReviewDialog.visible)connectionReviewDialog.update();
+            if(result.confirmed){connectionsPage.reload(false);close();}
+        }
+        title:"MusicBrainz Recording connection"
+        standardButtons:Dialog.Close
+        modal:true;width:Math.min(800,window.width-60);height:Math.min(620,window.height-60)
+        anchors.centerIn:parent
+        Timer { interval:200;repeat:true;running:musicbrainzConnection.visible&&musicbrainzConnection.pending;onTriggered:musicbrainzConnection.action("poll","",0) }
+        contentItem:ColumnLayout {
+            Label {text:"Library Track: "+musicbrainzConnection.canonicalTitle;textFormat:Text.PlainText;font.bold:true;Layout.fillWidth:true;wrapMode:Text.Wrap}
+            Label {text:"Search an Album, inspect its Track list, then explicitly confirm the Recording for the selected Library Track.";wrapMode:Text.Wrap;Layout.fillWidth:true}
+            RowLayout {
+                TextField {id:musicbrainzQuery;placeholderText:"Artist and Album";Layout.fillWidth:true}
+                Button {text:"Search";enabled:!musicbrainzConnection.pending;onClicked:musicbrainzConnection.action("search",musicbrainzQuery.text,0)}
+            }
+            ComboBox {
+                id:musicbrainzAlbumChoice;Layout.fillWidth:true;model:musicbrainzConnection.candidates;textRole:"title";currentIndex:-1
+                onActivated:musicbrainzConnection.action("inspect","",currentIndex)
+            }
+            Label {text:musicbrainzAlbumChoice.currentIndex>=0?JSON.stringify(musicbrainzConnection.candidates[musicbrainzAlbumChoice.currentIndex]):"Choose a candidate Album to inspect";textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true}
+            Label {visible:musicbrainzConnection.inspectedRelease!==null;text:JSON.stringify(musicbrainzConnection.inspectedRelease);wrapMode:Text.Wrap;Layout.fillWidth:true;textFormat:Text.PlainText}
+            BusyIndicator {visible:musicbrainzConnection.pending;running:visible}
+            Label {text:musicbrainzConnection.error;color:"#9d263d";visible:text.length>0;wrapMode:Text.Wrap;Layout.fillWidth:true}
+            ListView {
+                Layout.fillWidth:true;Layout.fillHeight:true;clip:true
+                model:musicbrainzConnection.recordings
+                ScrollBar.vertical:ScrollBar{policy:ScrollBar.AlwaysOn}
+                delegate:RowLayout {
+                    required property var modelData
+                    required property int index
+                    width:ListView.view.width-24
+                    Label {text:modelData.disc+"."+modelData.number+" · "+modelData.title+" — "+modelData.artist;Layout.fillWidth:true;elide:Text.ElideRight;textFormat:Text.PlainText}
+                    Button {text:"Confirm Recording";enabled:!musicbrainzConnection.pending;onClicked:musicbrainzConnection.action("confirm",musicbrainzConnection.trackId,index)}
+                }
+            }
+        }
+    }
+    // One review presentation for either canonical object; providers own candidates and writes.
+    Dialog {
+        id: connectionReviewDialog
+        objectName: "connectionReviewDialog"
+        property string provider: ""
+        property string albumId: ""
+        property string trackId: ""
+        property var review: ({count:0,fields:[],program:[],evidence:[]})
+        property var savedAnchor:null
+        property bool busy:false
+        property string error:""
+        property bool synchronizing:false
+        title: (trackId ? "Track" : "Album") + " connection · " + connectionsPage.providerName
+        width:Math.min(960,window.width-48)
+        height:Math.min(690,window.height-48)
+        modal:true;anchors.centerIn:parent
+        function begin(providerKey,album,track) {
+            provider=providerKey;albumId=album;trackId=track||"";busy=false;error="";manualMode=false;selecting=false;adjusting=false;manualExact.text="";
+            savedAnchor=connectionsPage.anchor();synchronizing=true;
+            review=({count:0,fields:[],program:[],evidence:[]});
+            const result=JSON.parse(window.bridge.connection_review("open",JSON.stringify({provider:provider,album:albumId,track:trackId}),0));
+            if(result.error)error=result.error;else review=result;
+            synchronizing=false;open();
+        }
+        function update() {
+            if(!visible||synchronizing)return;
+            synchronizing=true;
+            const result=JSON.parse(window.bridge.connection_review("read","",0));
+            if(result.error){error=result.error;review=Object.assign({},review,{pending:!!result.pending});selecting=false;}else review=result;
+            if(!connectionsPage.attachmentBusy)busy=false;
+            if(selecting&&!result.pending&&!result.error){selecting=false;manualMode=false;}
+            synchronizing=false;
+        }
+        function action(kind,index) {
+            if(busy)return;
+            error="";synchronizing=true;
+            const result=JSON.parse(window.bridge.connection_review(kind,"",index||0));
+            synchronizing=false;
+            if(result.error){error=result.error;return;}
+            if(result.pending){busy=true;if(kind.indexOf("connect")===0)connectionsPage.attachmentBusy=true;}
+            else review=result;
+            if(result.completed)close();
+        }
+        property bool manualMode:false
+        property bool selecting:false
+        property bool adjusting:false
+        property var mappingChoices:({})
+        property var localTracks:[]
+        function manualMatch() {
+            error="";manualMode=true;adjusting=false;
+            manualQuery.text=review.fields.find(f=>f.label===(trackId?"Title":"Album")||f.label==="Song")?.library||"";
+            manualArtist.text=review.fields.find(f=>f.label==="Artist"||f.label==="Artist credit")?.library||"";
+            if(provider==="local"&&!trackId)localTracks=connectionsPage.readConnection("tracks",albumId)||[];
+        }
+        function manualAction(kind,index) {
+            error="";synchronizing=true;
+            let payload=JSON.stringify({query:manualQuery.text,artist:manualArtist.text,exact:kind==="manual-exact"?manualExact.text:""});
+            if(provider==="musicbrainz")payload=manualQuery.text;
+            const result=JSON.parse(window.bridge.connection_review(kind,payload,index||0));
+            synchronizing=false;
+            if(result.error){error=result.error;return;}
+            review=result;
+            if((kind==="manual-exact"&&provider==="spotify")||kind==="manual-recording"||(kind==="manual-select"&&(provider!=="musicbrainz"||!trackId))){selecting=!!result.pending;if(!selecting)manualMode=false;}
+        }
+        function chooseManualTrack(track,title) {
+            if(provider==="local"){connectionFilePicker.trackId=track;connectionFilePicker.open();}
+        }
+        function applyMapping() {
+            const pairs=[];for(const track in mappingChoices)if(mappingChoices[track])pairs.push([track,mappingChoices[track]]);
+            const result=JSON.parse(window.bridge.connection_review("manual-mapping",JSON.stringify(pairs),0));
+            if(result.error){error=result.error;return;}
+            review=result;adjusting=false;manualMode=false;
+        }
+        function chooseLocalFile(track,url) {
+            const result=JSON.parse(window.bridge.connection_review("local-file",JSON.stringify({track:track,url:url}),0));
+            if(result.error)error=result.error;else {review=result;manualMode=false;}
+        }
+        Timer {interval:100;repeat:true;running:connectionReviewDialog.visible&&(connectionReviewDialog.review.pending||connectionReviewDialog.review.awaiting_discovery||connectionReviewDialog.busy);onTriggered:connectionReviewDialog.update()}
+        Connections {target:window.bridge;function onConnection_review_finished(){if(connectionReviewDialog.visible)connectionReviewDialog.close();} function onSpotify_playback_changed(){if(connectionReviewDialog.visible&&connectionReviewDialog.provider==="spotify")connectionReviewDialog.update();}}
+        onClosed: {
+            window.bridge.connection_review("cancel","",0);
+            spotifyPlaybackDialog.close();spotifyAlbumDialog.close();spotifyAdvancedMapping.close();
+            musicbrainzConnection.close();connectionAlbumDialog.close();connectionFilePicker.close();
+            connectionsPage.reload(false);connectionsPage.restoreAnchor(savedAnchor);
+        }
+        contentItem:ColumnLayout {
+            RowLayout {
+                Layout.fillWidth:true
+                Label {objectName:"reviewLibraryHeading";text:connectionReviewDialog.trackId?"Known Library Track":"Known Library Album";font.bold:true;Layout.fillWidth:true;Layout.preferredWidth:1}
+                Label {text:connectionsPage.providerName+" candidate";font.bold:true;Layout.fillWidth:true;Layout.preferredWidth:1}
+            }
+            RowLayout {
+                Layout.alignment:Qt.AlignHCenter
+                visible:connectionReviewDialog.review.count>0&&!connectionReviewDialog.manualMode
+                Button {objectName:"reviewPreviousCandidate";text:"‹";visible:connectionReviewDialog.review.count>1;enabled:connectionReviewDialog.review.index>0&&!connectionReviewDialog.busy&&!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.action("navigate",connectionReviewDialog.review.index-1)}
+                Label {objectName:"reviewCandidatePosition";text:"Candidate "+((connectionReviewDialog.review.index||0)+1)+" of "+connectionReviewDialog.review.count}
+                Button {objectName:"reviewNextCandidate";text:"›";visible:connectionReviewDialog.review.count>1;enabled:connectionReviewDialog.review.index+1<connectionReviewDialog.review.count&&!connectionReviewDialog.busy&&!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.action("navigate",connectionReviewDialog.review.index+1)}
+            }
+            Label {objectName:"reviewProgramLoading";text:connectionReviewDialog.review.program_status||"";visible:text.length>0;Layout.fillWidth:true;wrapMode:Text.Wrap}
+
+            Label {objectName:"reviewNoCandidates";visible:!connectionReviewDialog.manualMode&&!connectionReviewDialog.review.count&&!connectionReviewDialog.review.pending;text:connectionReviewDialog.review.discovery_status||"No candidate search has completed yet";font.bold:true}
+            ColumnLayout {
+                visible:connectionReviewDialog.manualMode;Layout.fillWidth:true
+                Label {text:connectionReviewDialog.adjusting?"Adjust proposed Track mapping":"Find another candidate";font.bold:true}
+                RowLayout {
+                    visible:connectionReviewDialog.provider!=="local"&&!connectionReviewDialog.adjusting;Layout.fillWidth:true
+                    TextField {id:manualQuery;objectName:"reviewManualQuery";placeholderText:connectionReviewDialog.trackId?"Track title / MusicBrainz query":"Album title / MusicBrainz query";Layout.fillWidth:true}
+                    TextField {id:manualArtist;objectName:"reviewManualArtist";visible:connectionReviewDialog.provider==="spotify";placeholderText:"Artist";Layout.fillWidth:true}
+                    Button {objectName:"reviewManualSearch";text:"Search";enabled:!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.manualAction("manual-search",0)}
+                }
+                RowLayout {
+                    visible:connectionReviewDialog.provider==="spotify"&&!connectionReviewDialog.adjusting;Layout.fillWidth:true
+                    TextField {id:manualExact;objectName:"reviewManualExact";placeholderText:connectionReviewDialog.trackId?"Spotify Track URL, URI or ID":"Spotify Album URL, URI or ID";Layout.fillWidth:true}
+                    Button {objectName:"reviewManualLookup";text:"Look up";enabled:!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.manualAction("manual-exact",0)}
+                }
+                RowLayout {
+                    visible:connectionReviewDialog.provider==="local";Layout.fillWidth:true
+                    ComboBox {id:manualLocalTrack;model:connectionReviewDialog.localTracks;textRole:"title";visible:!connectionReviewDialog.trackId;Layout.fillWidth:true}
+                    Button {objectName:"reviewChooseLocalFile";text:"Choose audio file…";onClicked:connectionReviewDialog.chooseManualTrack(connectionReviewDialog.trackId||connectionReviewDialog.localTracks[manualLocalTrack.currentIndex]?.id,"")}
+                }
+                Button {text:"Back to comparison";onClicked:{connectionReviewDialog.manualMode=false;connectionReviewDialog.adjusting=false;}}
+            }
+            ScrollView {
+                visible:connectionReviewDialog.manualMode&&connectionReviewDialog.provider!=="local"
+                Layout.fillWidth:true;Layout.fillHeight:true;clip:true;contentWidth:availableWidth
+                ColumnLayout {
+                    width:parent.width
+                    Repeater {
+                        model:connectionReviewDialog.adjusting?[]:(connectionReviewDialog.review.manual?.results||[])
+                        delegate:Button {required property var modelData;required property int index;Layout.fillWidth:true;enabled:!connectionReviewDialog.review.pending;text:modelData.title+" — "+(modelData.artist||"");onClicked:connectionReviewDialog.manualAction("manual-select",index)}
+                    }
+                    Repeater {
+                        model:connectionReviewDialog.adjusting?[]:(connectionReviewDialog.review.manual?.recordings||[])
+                        delegate:Button {required property var modelData;required property int index;visible:!!connectionReviewDialog.trackId;Layout.fillWidth:true;enabled:!connectionReviewDialog.review.pending;text:modelData.number+". "+modelData.title;onClicked:connectionReviewDialog.manualAction("manual-recording",index)}
+                    }
+                    Repeater {
+                        model:connectionReviewDialog.adjusting?(connectionReviewDialog.review.manual?.mapping?.rows||[]):[]
+                        delegate:RowLayout {
+                            required property var modelData
+                            Layout.fillWidth:true
+                            Label {text:modelData.title;Layout.fillWidth:true;textFormat:Text.PlainText}
+                            ComboBox {
+                                Layout.preferredWidth:420
+                                model:["Leave unresolved"].concat((connectionReviewDialog.review.manual?.mapping?.options||[]).map(c=>c.title+" — "+c.album))
+                                onActivated:{const options=connectionReviewDialog.review.manual.mapping.options;connectionReviewDialog.mappingChoices[modelData.id]=currentIndex?options[currentIndex-1].identity.external_id:"";}
+                            }
+                        }
+                    }
+                    Button {visible:connectionReviewDialog.adjusting;text:"Use this proposed mapping";onClicked:connectionReviewDialog.applyMapping()}
+                }
+            }
+            ScrollView {
+                visible:!connectionReviewDialog.manualMode
+                Layout.fillWidth:true;Layout.fillHeight:true;clip:true;contentWidth:availableWidth
+                ColumnLayout {
+                    width:parent.width
+                    Repeater {
+                        model:connectionReviewDialog.review.fields||[]
+                        delegate:ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth:true
+                            RowLayout {
+                                Layout.fillWidth:true
+                                Label {text:modelData.label+": "+(modelData.library||"—");textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true;Layout.preferredWidth:1}
+                                Label {text:modelData.label+": "+(modelData.candidate||"—");textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true;Layout.preferredWidth:1}
+                            }
+                            Label {visible:modelData.status&&modelData.status!=="unknown";text:modelData.status==="equivalent"?"✓ Compatible evidence":(modelData.status==="conflict"||modelData.status==="warning")?"! Difference to review":"";color:"#68636a";font.pixelSize:11}
+                        }
+                    }
+                    Label {visible:!!connectionReviewDialog.review.count;text:connectionReviewDialog.review.decision||"Needs review";font.bold:true;Layout.fillWidth:true;wrapMode:Text.Wrap}
+                    Label {text:(connectionReviewDialog.review.evidence||[]).join("\n");textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true}
+                    Label {objectName:"reviewMappingHeading";text:"Proposed Track mapping";font.bold:true;visible:!connectionReviewDialog.trackId}
+                    Repeater {
+                        model:connectionReviewDialog.review.program?.length?connectionReviewDialog.review.program:(connectionReviewDialog.review.library_program||[]).map(t=>({library:t,candidate:"",status:""}))
+                        delegate:ColumnLayout {
+                            required property var modelData
+                            Layout.fillWidth:true
+                            RowLayout {
+                                Layout.fillWidth:true
+                                Label {text:modelData.library||"—";textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true;Layout.preferredWidth:1}
+                                Label {text:"↔"}
+                                Label {text:modelData.candidate||"—";textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true;Layout.preferredWidth:1}
+                            }
+                            Label {text:modelData.status||"";visible:text.length>0;textFormat:Text.PlainText;color:"#68636a";wrapMode:Text.Wrap;Layout.fillWidth:true;font.pixelSize:11}
+                        }
+                    }
+                }
+            }
+            Label {objectName:"connectionReviewError";text:connectionReviewDialog.error||connectionReviewDialog.review.error||"";visible:text.length>0;color:"#9d263d";textFormat:Text.PlainText;wrapMode:Text.Wrap;Layout.fillWidth:true}
+            BusyIndicator {visible:connectionReviewDialog.busy||!!connectionReviewDialog.review.pending;running:visible;Layout.alignment:Qt.AlignHCenter}
+            RowLayout {
+                Button {objectName:"reviewConnect";text:"Connect this candidate";visible:!connectionReviewDialog.manualMode;enabled:!!connectionReviewDialog.review.can_connect&&!connectionReviewDialog.busy&&!connectionReviewDialog.review.pending;onClicked:{if(connectionReviewDialog.review.requires_confirmation)connectionReviewDifferences.open();else connectionReviewDialog.action("connect",connectionReviewDialog.review.index);}}
+                Button {objectName:"reviewManualMatch";text:"Find another manually…";visible:!connectionReviewDialog.manualMode;enabled:!connectionReviewDialog.busy;onClicked:connectionReviewDialog.manualMatch()}
+                Button {objectName:"reviewAdjustMapping";text:"Adjust track mapping…";visible:connectionReviewDialog.provider==="spotify"&&!connectionReviewDialog.trackId&&!connectionReviewDialog.manualMode&&!!connectionReviewDialog.review.count;onClicked:{connectionReviewDialog.action("manual-options",0);connectionReviewDialog.manualMode=true;connectionReviewDialog.adjusting=true;connectionReviewDialog.mappingChoices={};}}
+                Button {objectName:"reviewMarkUnavailable";text:"Mark unavailable";enabled:!connectionReviewDialog.busy;onClicked:connectionReviewDialog.action("mark",0)}
+                Item {Layout.fillWidth:true}
+                Button {text:"Cancel";onClicked:connectionReviewDialog.close()}
+            }
+        }
+    }
+    Dialog {
+        id:connectionReviewDifferences
+        title:"Confirm reviewed differences"
+        modal:true;anchors.centerIn:parent;width:Math.min(500,window.width-60)
+        standardButtons:Dialog.Ok|Dialog.Cancel
+        contentItem:Label {text:"Connect this candidate with the displayed differences? Library identity and metadata are retained.";wrapMode:Text.Wrap}
+        onAccepted:connectionReviewDialog.action("connect-differences",connectionReviewDialog.review.index)
+    }
     function openSpotifyConnection(trackId) {
         spotifySongChoice.currentIndex=-1;
         spotifyTrackPaste.text="";
@@ -199,7 +531,7 @@ ApplicationWindow {
                 Repeater { model: spotifyAlbumDialog.inspection.programs || []; delegate: SpotifyProgramComparison { required property var modelData; program:modelData } }
                 Label {
                     property var plan: spotifyAlbumDialog.inspection.plan
-                    text: plan ? plan.matches.length + " positioned Tracks can be connected. " + plan.unmatched_local + " local and " + plan.unmatched_provider + " provider Tracks unmatched.\n" + plan.warnings.join("\n") : "Candidate program is not cached. Retry Album to retrieve bounded evidence."
+                    text: plan ? plan.matches.length + " positioned Tracks can be connected. " + plan.unmatched_local + " Library and " + plan.unmatched_provider + " provider Tracks unmatched.\n" + plan.warnings.join("\n") : "Candidate program is not cached. Retry Album to retrieve bounded evidence."
                     wrapMode: Text.Wrap; Layout.fillWidth: true
                 }
                 Label { id: albumResult; textFormat: Text.PlainText; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -407,13 +739,13 @@ ApplicationWindow {
                 Button {
                     objectName: "spotifyConnectionSearch"
                     text: window.spotifyPlayback.resolutionPending ? "Searching Spotify catalog…" : "Search Spotify for this Track"
-                    enabled: !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
-                    onClicked: window.bridge.spotify_resolve(spotifySearchArtist.text.trim().length > 0 ? "search-artist:" + spotifySearchArtist.text.trim() : "search", -1)
+                    enabled: !window.spotifyPlayback.resolutionPending && window.spotifyPlayback.title.length > 0
+                    onClicked: window.bridge.spotify_resolve(spotifySearchArtist.text.trim().length > 0 ? "manual-search-artist:" + spotifySearchArtist.text.trim() : "manual-search", -1)
                 }
                 Button {
                     text: "Search Spotify again (refresh provider results)"
-                    enabled: !window.spotifyPlayback.manuallyExcluded && !window.spotifyPlayback.resolutionPending
-                    onClicked: window.bridge.spotify_resolve("refresh", -1)
+                    enabled: !window.spotifyPlayback.resolutionPending
+                    onClicked: window.bridge.spotify_resolve("manual-refresh", -1)
                 }
                 Label {
                     text: window.spotifyPlayback.resolutionMessage
@@ -749,7 +1081,7 @@ ApplicationWindow {
         ColumnLayout {
             anchors.fill: parent
             Label {
-                text: "Local: " + window.bridge.manual_snapshot.localTitle
+                text: "Library: " + window.bridge.manual_snapshot.localTitle
                 textFormat: Text.PlainText
             }
             Label {
@@ -2620,6 +2952,24 @@ ApplicationWindow {
         spacing: 0
         RowLayout {
             Layout.fillWidth: true
+            Layout.leftMargin: 16; Layout.topMargin: 8
+            Repeater {
+                model: ["Music", "Connections"]
+                delegate: ToolButton {
+                    required property string modelData
+                    objectName: "section" + modelData
+                    text: modelData
+                    checkable:true; checked:window.applicationSection === modelData
+                    onClicked: {
+                        if (modelData === "Connections") window.showConnections("");
+                        else { window.applicationSection="Music"; window.bridge.browse_action("view",0,window.musicView); }
+                    }
+                }
+            }
+        }
+        RowLayout {
+            visible: window.applicationSection === "Music"
+            Layout.fillWidth: true
             Layout.margins: 16
             RowLayout {
                 spacing: 16
@@ -2657,8 +3007,270 @@ ApplicationWindow {
             }
             ToolButton { text: "⋯"; Accessible.name: "Settings and diagnostics"; onClicked: settingsMenu.popup() }
         }
+        ColumnLayout {
+            id: connectionsPage
+            objectName: "connectionsPage"
+            visible: window.applicationSection === "Connections"
+            Layout.fillWidth:true; Layout.fillHeight:true
+            Layout.margins:16
+            property var providers: JSON.parse(window.bridge.connections_action("providers","","",false))
+            property string provider: "local"
+            property string providerName: providers.find(p=>p.key===provider).name
+            property bool marked: false
+            property var roots: []
+            property var expanded: ({})
+            property string cursor: ""
+            property var history: []
+            property bool more: false
+            property int windowPages:1
+            property bool updating:false
+            property int revision:0
+            property bool coverageBusy:false
+            Timer {interval:100;repeat:true;running:connectionsPage.coverageBusy;onTriggered:{const result=connectionsPage.readConnection("poll-coverage","");connectionsPage.coverageBusy=!!(result&&result.pending);if(result&&result.provider===connectionsPage.provider)connectionsPage.coverage=result.coverage||{};}}
+            property bool attachmentBusy:false
+            Timer {interval:100;repeat:true;running:connectionsPage.attachmentBusy;onTriggered:{const result=connectionsPage.readConnection("poll-attachment","");connectionsPage.attachmentBusy=!!(result&&result.pending);if(!connectionsPage.attachmentBusy)connectionsPage.reload(false);}}
+            property string error: ""
+            property var headerInfo: ({})
+            property var coverage: ({})
+            function readConnection(action,id) {
+                const result=JSON.parse(window.bridge.connections_action(action,provider,id||"",marked));
+                if (result.error) {error=result.error;return null;}
+                return result;
+            }
+            function reload(reset) {
+                if (!visible) return;
+                if (updating) return;
+                if (reset) {cursor="";history=[];windowPages=1;coverage={};connectionList.contentY=0;}
+                let rows=[];
+                let after=cursor;
+                for(let page=0;page<windowPages;page++) {
+                    const batch=readConnection("groups",after);
+                    if(!batch)return;
+                    rows=rows.concat(batch);more=batch.length===100;
+                    if(!more)break;
+                    after=batch[batch.length-1].id;
+                }
+                const saved=reset?null:anchor();
+                updating=true;
+                // Update roles in place so delegates, expansion, and viewport survive writes.
+                for (let i=0;i<rows.length;i++) {
+                    const row=rows[i];
+                    const data={albumId:row.id,title:row.title,artist:row.artist,matched:row.matched,total:row.total,relevant:row.relevant};
+                    if (i<connectionGroups.count && connectionGroups.get(i).albumId!==row.id) {
+                        let found=-1;
+                        for(let j=i+1;j<connectionGroups.count;j++)if(connectionGroups.get(j).albumId===row.id){found=j;break;}
+                        if(found>=0) connectionGroups.remove(i,found-i);
+                        else connectionGroups.insert(i,data);
+                    }
+                    if(i<connectionGroups.count)connectionGroups.set(i,data);
+                    else connectionGroups.append(data);
+                }
+                if(connectionGroups.count>rows.length) connectionGroups.remove(rows.length,connectionGroups.count-rows.length);
+                if(provider==="local") roots=readConnection("roots","")||[];
+                headerInfo=readConnection("header","")||{};
+                restoreAnchor(saved);updating=false;revision++;
+            }
+            function anchor() {
+                const index=connectionList.indexAt(1,connectionList.contentY+5);
+                const nearby=[];
+                for(let i=Math.max(0,index);i<Math.min(connectionGroups.count,index+5);i++){
+                    const item=connectionList.itemAtIndex(i);
+                    if(item)nearby.push({id:item.albumId,pixel:item.y-connectionList.contentY});
+                }
+                return {nearby:nearby,y:connectionList.contentY};
+            }
+            function restoreAnchor(saved) {
+                if(!saved)return;
+                connectionList.forceLayout();
+                const nearby=saved.nearby||[saved];
+                for(const candidate of nearby)for(let i=0;i<connectionGroups.count;i++)if(connectionGroups.get(i).albumId===candidate.id){
+                    connectionList.positionViewAtIndex(i,ListView.Beginning);connectionList.forceLayout();
+                    const item=connectionList.itemAtIndex(i);if(item)connectionList.contentY=Math.max(connectionList.originY,Math.min(item.y-candidate.pixel,connectionList.originY+Math.max(0,connectionList.contentHeight-connectionList.height)));
+                    return;
+                }
+                if(saved.y!==undefined)connectionList.contentY=Math.max(connectionList.originY,Math.min(saved.y,connectionList.originY+Math.max(0,connectionList.contentHeight-connectionList.height)));
+            }
+            function nextWindow() {
+                if(updating||!more||!connectionGroups.count)return;
+                updating=true;const saved=anchor();
+                const rows=readConnection("groups",connectionGroups.get(connectionGroups.count-1).albumId)||[];
+                more=rows.length===100;
+                for(const row of rows)connectionGroups.append({albumId:row.id,title:row.title,artist:row.artist,matched:row.matched,total:row.total,relevant:row.relevant});
+                if(connectionGroups.count>300){history=history.concat([cursor]);cursor=connectionGroups.get(99).albumId;connectionGroups.remove(0,100);}
+                windowPages=Math.max(1,Math.ceil(connectionGroups.count/100));restoreAnchor(saved);updating=false;
+            }
+            function previousWindow() {
+                if(updating||!history.length)return;
+                updating=true;const saved=anchor();const pages=history.slice();cursor=pages.pop();history=pages;
+                const rows=readConnection("groups",cursor)||[];
+                for(let i=rows.length-1;i>=0;i--){const row=rows[i];connectionGroups.insert(0,{albumId:row.id,title:row.title,artist:row.artist,matched:row.matched,total:row.total,relevant:row.relevant});}
+                if(connectionGroups.count>300)connectionGroups.remove(300,connectionGroups.count-300);
+                more=true;windowPages=Math.max(1,Math.ceil(connectionGroups.count/100));restoreAnchor(saved);updating=false;
+            }
+            property var navigationStates: ({})
+            function switchProvider(key) {
+                navigationStates[provider]={marked:marked,cursor:cursor,history:history.slice(),pages:windowPages,y:connectionList.contentY};
+                provider=key;
+                const state=navigationStates[key]||{marked:false,cursor:"",history:[],pages:1,y:0};
+                marked=state.marked;cursor=state.cursor;history=state.history;windowPages=state.pages;coverage={};reload(false);
+                Qt.callLater(function(){connectionList.contentY=state.y;});
+            }
+            function act(action,id) { error="";const result=readConnection(action,id);if(result&&result.pending)attachmentBusy=true;reload(false);return result; }
+            function matchTrack(album,track,title) {connectionReviewDialog.begin(provider,album,track);}
+            function matchAlbum(album) {connectionReviewDialog.begin(provider,album,"");}
+            Connections { target:window; function onLibraryChanged(){if(connectionsPage)connectionsPage.reload(false);}  }
+            Connections { target:window.bridge; function onConnections_changed(){if(connectionsPage)connectionsPage.reload(false);} function onManual_changed(){if(connectionsPage)connectionsPage.reload(false);} function onLocal_import_changed(){if(connectionsPage)connectionsPage.reload(false);} }
+            RowLayout {
+                Repeater {
+                    model:connectionsPage.providers
+                    delegate:ToolButton {
+                        required property var modelData
+                        objectName:"connectionProvider"+modelData.key
+                        text:modelData.name;checkable:true;checked:connectionsPage.provider===modelData.key
+                        onClicked:connectionsPage.switchProvider(modelData.key)
+                    }
+                }
+            }
+            Frame {
+                Layout.fillWidth:true
+                ColumnLayout {
+                    anchors.fill:parent
+                    Label { text:connectionsPage.providerName === "Local" ? "Local Music" : connectionsPage.providerName; font.pixelSize:22;font.bold:true }
+                    ColumnLayout {
+                        visible:connectionsPage.provider==="local"
+                        Label { text:"Music folders" }
+                        Repeater { model:connectionsPage.roots; delegate:RowLayout {
+                            required property var modelData
+                            Label { text:modelData.path;textFormat:Text.PlainText;Layout.fillWidth:true }
+                            Button { text:"Remove folder";onClicked:connectionsPage.act("remove-root",modelData.id) }
+                        } }
+                        RowLayout {
+                            Button {text:"Add Folder…";onClicked:connectionRootPicker.open()}
+                            Button {text:"Rescan";onClicked:window.bridge.local_import("rescan",[])}
+                        }
+                    }
+                    Label { visible:connectionsPage.provider==="musicbrainz";text:"Catalog identity provider · Library remains usable without a MusicBrainz identity";wrapMode:Text.Wrap;Layout.fillWidth:true }
+                    ColumnLayout {
+                        visible:connectionsPage.provider==="spotify"
+                        Layout.fillWidth:true
+                        RowLayout {
+                            Label { objectName:"connectionAuthorization";text:"Authorization: "+window.spotifyPlayback.status }
+                            Label {visible:connectionsPage.headerInfo.cooldown>0;text:"Cooldown: "+connectionsPage.headerInfo.cooldown+"s"}
+                        }
+                        Flow {
+                            Layout.fillWidth:true;Layout.preferredHeight:childrenRect.height;spacing:8
+                        ComboBox {
+                            objectName:"connectionDevice";width:260
+                            model:window.spotifyPlayback.devices;textRole:"label";currentIndex:-1
+                            displayText: { const device=window.spotifyPlayback.devices.find(d=>d.id===window.spotifyPlayback.selected);return device?device.label:"Select playback device…"; }
+                            onActivated:window.bridge.spotify_playback_action("device",window.spotifyPlayback.devices[currentIndex].id)
+                        }
+                        Button {text:"Change / Reconnect Account";onClicked:window.bridge.spotify_playback_action("connect","")}
+                        Button {text:"Refresh devices";onClicked:window.bridge.spotify_playback_action("refresh","")}
+                        Button {text:"Retry missed connections";onClicked:connectionsPage.act("retry","")}
+                        Button {text:"Authorization details…";onClicked:spotifyPlaybackDialog.open()}
+                        }
+                    }
+                }
+            }
+            RowLayout {
+                Button {objectName:"missedConnections";text:"Missed Connections";checkable:true;checked:!connectionsPage.marked;onClicked:{connectionsPage.marked=false;connectionsPage.reload(true);}}
+                Button {objectName:"markedUnavailable";text:"Marked Unavailable";checkable:true;checked:connectionsPage.marked;onClicked:{connectionsPage.marked=true;connectionsPage.reload(true);}}
+                Label {text:"Artist A–Z → Album A–Z"}
+                Item {Layout.fillWidth:true}
+                Button {text:connectionsPage.coverageBusy?"Counting…":"Coverage";enabled:!connectionsPage.coverageBusy;onClicked:{const result=connectionsPage.readConnection("coverage","");connectionsPage.coverageBusy=!!(result&&result.pending);}}
+                Button {text:"Refresh";onClicked:connectionsPage.reload(false)}
+            }
+            Label {visible:connectionsPage.coverage.saved!==undefined;text: "Saved: "+connectionsPage.coverage.saved+" · Connected: "+connectionsPage.coverage.connected+" · Missing: "+connectionsPage.coverage.missing+" · Marked: "+connectionsPage.coverage.marked+" · Albums missing: "+connectionsPage.coverage.albums_missing;Layout.fillWidth:true}
+            Label {visible:connectionsPage.attachmentBusy;text:"Attaching local file…"}
+            Label {visible:text.length>0;text:connectionsPage.error;color:"#9d263d";Layout.fillWidth:true;wrapMode:Text.Wrap}
+            ListModel {id:connectionGroups}
+            ListView {
+                id:connectionList;objectName:"connectionList"
+                Layout.fillHeight:true;Layout.fillWidth:true;clip:true
+                model:connectionGroups;spacing:4
+                onMovementEnded: {
+                    if(atYEnd)connectionsPage.nextWindow();
+                    else if(atYBeginning)connectionsPage.previousWindow();
+                }
+                ScrollBar.vertical:ScrollBar {objectName:"connectionsScrollbar";policy:ScrollBar.AlwaysOn;interactive:true}
+                delegate:ColumnLayout {
+                    id:connectionGroup
+                    required property string albumId
+                    required property string title
+                    required property string artist
+                    required property int matched
+                    required property int total
+                    required property int relevant
+                    width:connectionList.width-24;spacing:0
+                    property bool expanded:connectionsPage.expanded[connectionsPage.provider+connectionsPage.marked+albumId]||false
+                    property bool highlighted:groupHover.hovered||expandButton.activeFocus||matchButton.activeFocus||markButton.activeFocus
+                    property var tracks:[]
+                    property string trackCursor:""
+                    property var trackHistory:[]
+                    function refreshTracks(){
+                        if(!expanded||!connectionsPage)return;
+                        const y=trackList.contentY;
+                        tracks=connectionsPage.readConnection("tracks",albumId+(trackCursor?"\n"+trackCursor:""))||[];
+                        Qt.callLater(function(){if(trackList){trackList.forceLayout();trackList.contentY=Math.min(y,Math.max(trackList.originY,trackList.contentHeight-trackList.height+trackList.originY));}});
+                    }
+                    Connections {target:connectionsPage;function onRevisionChanged(){connectionGroup.refreshTracks();} function onProviderChanged(){connectionGroup.expanded=connectionsPage.expanded[connectionsPage.provider+connectionsPage.marked+connectionGroup.albumId]||false;connectionGroup.trackCursor="";connectionGroup.trackHistory=[];connectionGroup.refreshTracks();} function onMarkedChanged(){connectionGroup.expanded=connectionsPage.expanded[connectionsPage.provider+connectionsPage.marked+connectionGroup.albumId]||false;connectionGroup.trackCursor="";connectionGroup.trackHistory=[];connectionGroup.refreshTracks();}}
+                    Rectangle {
+                        Layout.fillWidth:true;implicitHeight:56
+                        color:connectionGroup.highlighted?"#e4d9df":"#f0edeb"
+                        HoverHandler {id:groupHover}
+                        RowLayout {
+                            anchors.fill:parent;anchors.margins:6
+                            ToolButton {id:expandButton;objectName:"connectionAlbumExpand";text:connectionGroup.expanded?"▼":"▶";onClicked:{connectionGroup.expanded=!connectionGroup.expanded;connectionsPage.expanded[connectionsPage.provider+connectionsPage.marked+connectionGroup.albumId]=connectionGroup.expanded;connectionGroup.refreshTracks();}}
+                            Label {text:connectionGroup.artist+" — "+connectionGroup.title;Layout.fillWidth:true;elide:Text.ElideRight;textFormat:Text.PlainText}
+                            Label {text:connectionGroup.matched+" / "+connectionGroup.total+" matched"}
+                            Button {id:matchButton;objectName:"connectionAlbumMatch";visible:!connectionsPage.marked;text:"Match…";onClicked:connectionsPage.matchAlbum(connectionGroup.albumId)}
+                            Button {id:markButton;objectName:"connectionAlbumMark";visible:!connectionsPage.marked;text:"Mark unavailable";onClicked:{connectionMarkDialog.albumId=connectionGroup.albumId;connectionMarkDialog.count=connectionGroup.relevant;connectionMarkDialog.open();}}
+                        }
+                    }
+                    ListView {
+                        id:trackList
+                        visible:connectionGroup.expanded
+                        Layout.fillWidth:true
+                        Layout.preferredHeight:Math.min(324,connectionGroup.tracks.length*54)
+                        clip:true
+                        ScrollBar.vertical:ScrollBar{policy:ScrollBar.AsNeeded;interactive:true}
+                        model:connectionGroup.expanded?connectionGroup.tracks:[]
+                        delegate:Rectangle {
+                            required property var modelData
+                            width:ListView.view.width-16;height:54
+                            color:trackHover.hovered||trackMatch.activeFocus||trackMark.activeFocus?"#e4d9df":"transparent"
+                            HoverHandler {id:trackHover}
+                            RowLayout {
+                                anchors.fill:parent;anchors.leftMargin:44
+                                ColumnLayout {
+                                    Layout.fillWidth:true
+                                    Label {text:modelData.title;textFormat:Text.PlainText;elide:Text.ElideRight;Layout.fillWidth:true}
+                                    Label {visible:!connectionsPage.marked;text:modelData.reason;textFormat:Text.PlainText;font.pixelSize:11;color:"#68636a";elide:Text.ElideRight;Layout.fillWidth:true}
+                                }
+                                Button {id:trackMatch;text:"Match…";onClicked:connectionsPage.matchTrack(connectionGroup.albumId,modelData.id,modelData.title)}
+                                Button {id:trackMark;text:connectionsPage.marked?"Check again":"Mark unavailable";onClicked:{connectionsPage.act(connectionsPage.marked?"clear":"mark-track",modelData.id);}}
+                            }
+                        }
+                    }
+                    RowLayout {
+                        visible:connectionGroup.expanded && (connectionGroup.tracks.length===200||connectionGroup.trackHistory.length>0)
+                        Button {text:"Previous Tracks";enabled:connectionGroup.trackHistory.length>0;onClicked:{const pages=connectionGroup.trackHistory.slice();connectionGroup.trackCursor=pages.pop();connectionGroup.trackHistory=pages;connectionGroup.refreshTracks();}}
+                        Button {text:"More Tracks";enabled:connectionGroup.tracks.length===200;onClicked:{connectionGroup.trackHistory=connectionGroup.trackHistory.concat([connectionGroup.trackCursor]);connectionGroup.trackCursor=connectionGroup.tracks[connectionGroup.tracks.length-1].id;connectionGroup.refreshTracks();}}
+                    }
+                    Component.onCompleted:refreshTracks()
+                }
+            }
+            RowLayout {
+                Button {text:"Previous Albums";enabled:connectionsPage.history.length>0;onClicked:connectionsPage.previousWindow()}
+                Label {visible:connectionGroups.count===0;text:connectionsPage.marked?"No Tracks marked unavailable":"No missed connections"}
+                Item {Layout.fillWidth:true}
+                Button {text:"More Albums";enabled:connectionsPage.more;onClicked:connectionsPage.nextWindow()}
+            }
+        }
         SplitView {
             id: librarySplit
+            visible: window.applicationSection === "Music"
             objectName: "librarySplit"
             Layout.fillWidth: true
             Layout.fillHeight: true
@@ -3003,7 +3615,7 @@ ApplicationWindow {
         id: settingsMenu
         MenuItem { text: "Hidden Artists"; objectName: "hiddenArtistsAction"; onTriggered: { preferenceManager.hiddenArtists=true; window.bridge.browse_action("preference-hidden",0,""); preferenceManager.open(); } }
         MenuItem { text: "Ignored Songs"; objectName: "ignoredSongsAction"; onTriggered: { preferenceManager.hiddenArtists=false; window.bridge.browse_action("preference-ignored",2,""); preferenceManager.open(); } }
-        MenuItem { objectName: "spotifyConnectionsReview"; text: "Spotify Connections"; onTriggered: { artistsPane.rememberViewport(); albumsPane.rememberViewport(); songsPane.rememberViewport(); window.bridge.browse_action("view", 2, "Spotify Connections"); } }
+        MenuItem { objectName: "spotifyConnectionsReview"; text: "Spotify Connections"; onTriggered: { artistsPane.rememberViewport(); albumsPane.rememberViewport(); songsPane.rememberViewport(); window.showConnections("spotify"); } }
         MenuItem { text: "Output calibration…"; onTriggered: outputCalibration.open() }
         MenuItem { text: "Playback connection…"; onTriggered: window.openSpotifyConnection(window.view.currentId) }
         MenuItem { text: "Local Album matches…"; onTriggered: matchingDialog.open() }

@@ -9,7 +9,7 @@ use crate::{
 use rusqlite::params;
 
 /// Increment when acceptance/evidence semantics change. Successful identities are never invalidated.
-pub const EVALUATION_VERSION: u32 = 15;
+pub const EVALUATION_VERSION: u32 = 16;
 pub const LOCAL_BATCH: u32 = 32;
 /// Memory/query chunk size, never the maximum lifetime of a reconciliation run.
 pub const RECONCILIATION_ALBUM_BATCH_SIZE: u32 = 20;
@@ -17,6 +17,7 @@ pub const RECONCILIATION_ALBUM_BATCH_SIZE: u32 = 20;
 pub const RETRY_ALBUMS: u32 = RECONCILIATION_ALBUM_BATCH_SIZE;
 #[derive(Clone, Debug, Default, serde::Serialize)]
 pub struct LocalBatch {
+    pub provider_unavailable: bool,
     pub artist_revisions: Vec<crate::domain::ArtistId>,
     pub examined: usize,
     pub updated: Vec<TrackId>,
@@ -41,7 +42,13 @@ pub(crate) fn album_unexcluded(db: &rusqlite::Connection, album: &AlbumId) -> Re
 }
 impl Library {
     pub fn defer_spotify_album_provider(&mut self, album: &AlbumId) -> Result<()> {
-        self.store.connection.execute("UPDATE spotify_connection_review SET reason_code='provider_unavailable',reason='Provider work is unavailable; cached/local work completed',stale=0,evaluation_version=?2 WHERE state='needs_retry' AND track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id WHERE r.album_id=?1) AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)",params![album.as_ref(),EVALUATION_VERSION])?;
+        self.store.connection.execute(
+            "UPDATE spotify_connection_review SET state='needs_retry',reason_code='provider_unavailable',reason='Provider work is temporarily unavailable; cached/local work completed',stale=0,evaluation_version=?2
+             WHERE (state='needs_retry' OR reason_code='not_evaluated' OR stale=1 OR evaluation_version<?2)
+             AND track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1)
+             AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id)
+             AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",
+             params![album.as_ref(),EVALUATION_VERSION])?;
         Ok(())
     }
     pub fn clear_spotify_bulk_window(&mut self, album: &AlbumId) -> Result<()> {
@@ -372,7 +379,7 @@ impl Library {
     /// not a review decision. Preserve current successful negative discovery.
     pub fn spotify_album_review_evidence_unavailable(&mut self, album: &AlbumId) -> Result<()> {
         self.store.connection.execute(
-            "UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0,reason_code='cache_refresh_required',reason='Album discovery/program cache is absent or no longer reusable; provider refresh required' WHERE track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1) AND reason_code NOT IN ('no_candidates','not_evaluated','artist_unresolved') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",
+            "UPDATE spotify_connection_review SET state='needs_retry',evaluation_version=?2,stale=0,reason_code='cache_refresh_required',reason='Album discovery/program cache is absent or no longer reusable; provider refresh required' WHERE track_id IN(SELECT t.id FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1) AND reason_code NOT IN ('no_candidates','not_evaluated','artist_unresolved','provider_unavailable','provider_search_deferred') AND NOT EXISTS(SELECT 1 FROM trusted_spotify_track s WHERE s.track_id=spotify_connection_review.track_id) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",
             params![album.as_ref(), EVALUATION_VERSION],
         )?;
         Ok(())

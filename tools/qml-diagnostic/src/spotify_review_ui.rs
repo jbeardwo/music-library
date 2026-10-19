@@ -96,8 +96,10 @@ impl Bridge {
                         .retained_spotify_market()
                         .map_err(|e| e.to_string())?)
                     && let Some((report, programs)) =
-                        music_library_spotify::Spotify::cached_album_review(&path, &market, &input)
-                            .map_err(|e| e.to_string())?
+                        music_library_spotify::Spotify::cached_album_connection_review(
+                            &path, &market, &input,
+                        )
+                        .map_err(|e| e.to_string())?
                 {
                     self.session
                         .library
@@ -394,16 +396,27 @@ impl Bridge {
                     .iter()
                     .find(|p| p.album == c.identity)
                 {
-                    let mut selection = self
-                        .session
-                        .library
-                        .prepare_spotify_album_confirmation(
-                            self.spotify_review_album
-                                .as_ref()
-                                .ok_or("Open an Album first")?,
-                            p,
-                        )
-                        .map_err(|e| e.to_string())?;
+                    let album = self
+                        .spotify_review_album
+                        .as_ref()
+                        .ok_or("Open an Album first")?;
+                    let shared = self
+                        .connection_review_state
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| {
+                            t.provider == "spotify" && t.track.is_none() && &t.album == album
+                        });
+                    let mut selection = if shared {
+                        self.session
+                            .library
+                            .prepare_spotify_connections_confirmation(album, p)
+                    } else {
+                        self.session
+                            .library
+                            .prepare_spotify_album_confirmation(album, p)
+                    }
+                    .map_err(|e| e.to_string())?;
                     for reason in &c.reasons {
                         if matches!(
                             reason,
@@ -568,6 +581,10 @@ impl Bridge {
                     .map_err(|e| e.to_string())?;
                 self.refresh_spotify_review();
                 self.browse_changed();
+                if count > 0 {
+                    let album = self.spotify_review_album.clone();
+                    self.finish_connection_review("spotify", None, album.as_ref(), None);
+                }
                 Ok(serde_json::json!({"connected":count}))
             }
             "retry" | "refresh" => {

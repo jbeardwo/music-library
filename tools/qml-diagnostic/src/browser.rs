@@ -2258,6 +2258,7 @@ impl Bridge {
     }
 
     pub(crate) fn refresh_spotify_review(&mut self) {
+        self.connections_changed();
         if self.browser.view != 5 {
             let page = &mut self.browser.views[5].pages[2];
             page.seek = if page.scroll_id.is_empty() {
@@ -2924,7 +2925,7 @@ impl Bridge {
     pub(crate) fn defer_spotify_provider_work(&mut self) {
         self.browser.review_provider_blocked = true;
         self.browser.review_retry_message =
-            "Spotify provider work paused; continuing cached/local reconciliation…".into();
+            "Spotify temporarily unavailable; bounded retries exhausted. Continuing cached/local reconciliation…".into();
     }
     pub(crate) fn record_spotify_progress(&mut self, transitions: usize) {
         if transitions > 0 && self.browser.review_first_transition_ms.is_none() {
@@ -2933,7 +2934,7 @@ impl Bridge {
                 .review_run_started
                 .map(|s| s.elapsed().as_millis());
         }
-        if self.browser.review_run_active {
+        if self.browser.review_run_active && !self.browser.review_provider_blocked {
             self.browser.review_retry_message = format!(
                 "Matching Spotify… {} cached Tracks checked; {} cached connections; {} internal batches processed",
                 self.browser.review_local_totals[0],
@@ -3068,7 +3069,7 @@ impl Bridge {
             deliver(Ok(None));
         });
     }
-    fn retry_unresolved_spotify(&mut self) {
+    pub(crate) fn retry_unresolved_spotify(&mut self) {
         if self.browser.review_run_active
             || !self.browser.review_retry_albums.is_empty()
             || self.browser.review_retry_local_active
@@ -3208,7 +3209,7 @@ impl Bridge {
                 )
             } else {
                 if self.browser.review_provider_blocked {
-                    "Cached reconciliation complete; provider discovery is unavailable. Retry after restoring Spotify access.".into()
+                    "Reconciliation complete locally; Spotify temporarily unavailable. Affected work remains deferred.".into()
                 } else {
                     format!(
                         "Spotify reconciliation finished: {} internal batches; {} Tracks connected. Stable exceptions remain available for review.",
@@ -3249,11 +3250,14 @@ impl Bridge {
                             b.browser.review_retry_local_active = false;
                             match result {
                                 Ok((batch, last)) => {
+                                    if batch.provider_unavailable {
+                                        b.defer_spotify_provider_work();
+                                    }
                                     for artist in &batch.artist_revisions {
                                         b.enqueue_spotify_artist_revision(artist.clone());
                                     }
                                     b.browser.review_local_totals[1] += batch.accepted.len();
-                                    if !batch.errors.is_empty() {
+                                    if !batch.errors.is_empty() && !batch.provider_unavailable {
                                         b.browser.error = batch.errors.join("\n");
                                         let error = b.browser.error.clone();
                                         b.stop_spotify_retry_batch(error);
@@ -3280,6 +3284,7 @@ impl Bridge {
                 self.browser.review_retry_message =
                     "Completing cached Album/Track evidence before scheduling provider work".into();
                 let catalog_probes = self.browser.review_catalog_names_attempted.clone();
+                let provider_blocked = self.browser.review_provider_blocked;
                 std::thread::spawn(move || {
                     let mut worker = match music_library::Library::open(path) {
                         Ok(worker) => worker,
@@ -3289,6 +3294,7 @@ impl Bridge {
                         }
                     };
                     let count = albums.len();
+                    let mut provider_unavailable = provider_blocked;
                     for (index, album) in albums.into_iter().enumerate() {
                         let prior_artist =
                             worker
@@ -3308,7 +3314,8 @@ impl Bridge {
                         // cached Spotify discovery has no useful candidate.
                         // HTTP is outside transactions; success invalidates only
                         // this catalog Artist's unresolved contexts.
-                        if music_library_spotify::Spotify::from_env().is_ok()
+                        if !provider_unavailable
+                            && music_library_spotify::Spotify::from_env().is_ok()
                             && worker
                                 .spotify_cooldown_remaining(spotify_now())
                                 .unwrap_or(0)
@@ -3336,8 +3343,8 @@ impl Bridge {
                                 && let Ok(mut client) = client.with_library(worker.database_path().as_deref())
                                 && let Err(error) = music_library_spotify::album_context::discover_catalog_credit_names(&mut worker, &album, &mut client)
                             {
-                                deliver(Err(error.to_string()));
-                                return;
+                                if matches!(&error,music_library::Error::Provider(e) if e.is_provider_unavailable()){provider_unavailable=true;let _=worker.defer_spotify_album_provider(&album);}
+                                else {deliver(Err(error.to_string()));return;}
                             }
                         }
                         let catalog_changed =
@@ -3365,6 +3372,7 @@ impl Bridge {
                                 &market,
                             )
                             .map(|mut batch| {
+                                batch.provider_unavailable |= provider_unavailable;
                                 if (catalog_changed || identity_changed)
                                     && let Ok(music_library::album_matching::Preparation::Ready(
                                         input,
@@ -3375,9 +3383,9 @@ impl Bridge {
                                 batch
                             })
                             .map_err(|e| e.to_string());
-                        let failed = result
-                            .as_ref()
-                            .map_or(true, |batch| !batch.errors.is_empty());
+                        let failed = result.as_ref().map_or(true, |batch| {
+                            !batch.errors.is_empty() && !batch.provider_unavailable
+                        });
                         deliver(result.map(|batch| (batch, index + 1 == count)));
                         if failed {
                             break;
@@ -3644,6 +3652,14 @@ impl Bridge {
                     return;
                 }
             }
+            if self.browser.review_provider_blocked
+                && let Some(album) = self.browser.review_retry_albums.first()
+                && let Err(error) = self.session.library.defer_spotify_album_provider(album)
+            {
+                self.browser.error = error.to_string();
+                self.stop_spotify_retry_batch(error.to_string());
+                return;
+            }
             // Album discovery is the batch unit. Absence/rejection must not fan out
             // into one provider search per Track; individual review remains explicit.
             if !self.browser.review_retry_albums.is_empty() {
@@ -3712,11 +3728,12 @@ impl Bridge {
                                             batch.provider_searches;
                                         b.browser.review_local_totals[1] += batch.accepted.len();
                                         if !batch.errors.is_empty() {
-                                            if b.session
-                                                .library
-                                                .spotify_cooldown_remaining(spotify_now())
-                                                .unwrap_or(0)
-                                                > 0
+                                            if batch.provider_unavailable
+                                                || b.session
+                                                    .library
+                                                    .spotify_cooldown_remaining(spotify_now())
+                                                    .unwrap_or(0)
+                                                    > 0
                                             {
                                                 b.defer_spotify_provider_work();
                                             } else {
@@ -4512,6 +4529,10 @@ mod spotify_retry_tests {
     fn import_completion_automatically_drains_65_albums_only_when_ready() {
         run_overlapping_retry_queue(false, 65, 2);
     }
+    #[test]
+    fn exhausted_transient_provider_budget_still_drains_remaining_batches_locally() {
+        run_overlapping_retry_queue(false, 65, 4);
+    }
     fn run_overlapping_retry_queue(artist_revision: bool, count: usize, kickoff: usize) {
         use music_library::{
             Library,
@@ -4637,7 +4658,7 @@ mod spotify_retry_tests {
                 b.request_automatic_spotify_reconciliation();
                 assert!(!b.browser.review_auto_scheduled && !b.browser.review_run_active);
                 b.local_import_schedule_next();
-            } else if kickoff == 3 {
+            } else if kickoff >= 3 {
                 b.retry_unresolved_spotify();
             } else {
                 b.begin_retry_unresolved_spotify();
@@ -4659,6 +4680,9 @@ mod spotify_retry_tests {
                 matcher.complete(&mut b.session.library, reply);
                 b.spotify_album_matcher = Some(matcher);
                 processed += 1;
+                if kickoff == 4 {
+                    b.defer_spotify_provider_work();
+                }
                 if artist_revision && processed == 22 {
                     let music_library::album_matching::Preparation::Ready(input) = b
                         .session
@@ -4698,13 +4722,23 @@ mod spotify_retry_tests {
         let pinned = bridge.pinned();
         let b = pinned.borrow();
         assert_eq!(
-            processed, count,
+            processed,
+            if kickoff == 4 { 1 } else { count },
             "one click visits every context, including the Album enqueued during work"
         );
-        assert_eq!(requests.load(Ordering::SeqCst), count);
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            if kickoff == 4 { 1 } else { count }
+        );
         assert_eq!(
             b.browser.review_retry_totals[0],
-            if artist_revision { 45 } else { count as u64 },
+            if artist_revision {
+                45
+            } else if kickoff == 4 {
+                20
+            } else {
+                count as u64
+            },
             "new Artist evidence revisits contexts locally without more discovery requests"
         );
         assert!(b.browser.review_retry_artists.is_empty());
@@ -4719,11 +4753,20 @@ mod spotify_retry_tests {
                 .spotify_review_groups(None, 200)
                 .unwrap()
                 .iter()
-                .all(|g| g.status == "No candidates")
+                .all(|g| g.status == "No candidates"
+                    || kickoff == 4 && g.status == "Waiting for Spotify")
         );
         assert!(!b.browser.review_retry_message.contains("click Retry"));
         if kickoff > 0 {
             assert_eq!(b.browser.review_run_batches, count.div_ceil(20));
+        }
+        if kickoff == 4 {
+            assert!(
+                b.browser
+                    .review_retry_message
+                    .contains("temporarily unavailable")
+            );
+            return;
         }
         {
             let pinned = bridge.pinned();
@@ -4735,7 +4778,7 @@ mod spotify_retry_tests {
         }
         assert_eq!(
             requests.load(Ordering::SeqCst),
-            count,
+            if kickoff == 4 { 1 } else { count },
             "stable negative discovery is not automatically searched again"
         );
     }

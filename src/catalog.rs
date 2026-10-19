@@ -133,7 +133,7 @@ pub struct ArtistCandidate {
     pub artist_type: String,
     pub score: Option<u32>,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArtistAlbumCandidate {
     /// Provider Artist display names, preserving join phrases; diagnostic only.
     pub artist: String,
@@ -501,4 +501,36 @@ impl Drop for Timing {
             );
         }
     }
+}
+
+/// Short in-request recovery only. Longer Retry-After waits belong to provider
+/// lifecycle state, never a sleeping database writer or an unbounded loop.
+pub fn transient_retry_delay(error: &CatalogError, attempt: u8) -> Option<std::time::Duration> {
+    let CatalogError::ServiceUnavailable { retry_after, .. } = error else {
+        return None;
+    };
+    if attempt >= 2 {
+        return None;
+    }
+    let minimum = std::time::Duration::from_millis(250u64 << attempt);
+    let requested = retry_after
+        .as_deref()
+        .map(|s| s.trim())
+        .map(|s| {
+            s.parse::<u64>()
+                .ok()
+                .map(std::time::Duration::from_secs)
+                .or_else(|| {
+                    httpdate::parse_http_date(s)
+                        .ok()?
+                        .duration_since(std::time::SystemTime::now())
+                        .ok()
+                })
+        })
+        .flatten()
+        .unwrap_or_default();
+    if requested > std::time::Duration::from_secs(5) {
+        return None;
+    }
+    Some(requested.max(minimum))
 }
