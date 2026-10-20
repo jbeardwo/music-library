@@ -25,8 +25,10 @@ static NEXT_REQUEST: Mutex<Option<Instant>> = Mutex::new(None);
 pub struct MusicBrainz {
     agent: ureq::Agent,
     base: Url,
-    programs: Vec<music_library::album_program::Programs>,
+    programs: Vec<(music_library::album_program::Programs, SystemTime)>,
     observations: Vec<catalog::AlbumCandidate>,
+    request_count: std::sync::atomic::AtomicUsize,
+    request_counts: Mutex<std::collections::BTreeMap<String, usize>>,
 }
 impl Default for MusicBrainz {
     fn default() -> Self {
@@ -164,6 +166,17 @@ impl MusicBrainz {
         };
         Ok((release, programs))
     }
+    /// Request attempts by endpoint class, including existing transport retries.
+    pub fn request_counts(&self) -> std::collections::BTreeMap<String, usize> {
+        self.request_counts
+            .lock()
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    }
+    pub fn request_count(&self) -> usize {
+        self.request_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
     pub fn new() -> Self {
         Self::at(Url::parse("https://musicbrainz.org/ws/2/").unwrap())
     }
@@ -172,6 +185,8 @@ impl MusicBrainz {
             base,
             programs: vec![],
             observations: vec![],
+            request_count: std::sync::atomic::AtomicUsize::new(0),
+            request_counts: Mutex::new(Default::default()),
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(30)))
                 .max_redirects(0)
@@ -206,6 +221,25 @@ impl MusicBrainz {
             ));
             let http = catalog::Timing::new(format!("{path}.http"));
             let headers = catalog::Timing::new(format!("{path}.http_headers"));
+            self.request_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let class = if path == "release-group" {
+                if params.iter().any(|(k, _)| *k == "artist") {
+                    "artist_group_pages"
+                } else {
+                    "title_group_queries"
+                }
+            } else if path == "release" {
+                "release_browses"
+            } else if path.starts_with("release/") {
+                "program_details"
+            } else {
+                "artist_or_other"
+            };
+            if let Ok(mut counts) = self.request_counts.lock() {
+                *counts.entry(class.into()).or_default() += 1;
+            }
+
             let mut response = self
                 .agent
                 .get(url.as_str())
@@ -456,6 +490,9 @@ impl MusicBrainz {
                 .into_iter()
                 .map(|v| format!("releasegroup:{}", quoted(&v.title))),
         );
+        for variant in music_library::musicbrainz_discovery::title_query_variants(title) {
+            alternatives.push(format!("releasegroup:{}", quoted(&variant.title)));
+        }
         let terms = if alternatives.len() == 1 {
             alternatives.remove(0)
         } else {
@@ -533,6 +570,58 @@ impl MusicBrainz {
     }
 }
 impl CatalogProvider for MusicBrainz {
+    fn refresh_discovery(&mut self, refresh: bool) {
+        if refresh {
+            self.programs.clear();
+        }
+    }
+    fn album_program_observed_at(&self, album: &ExternalIdentity) -> Option<i64> {
+        self.programs
+            .iter()
+            .find(|(p, _)| &p.album == album)
+            .and_then(|(_, at)| at.duration_since(SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+    }
+    fn structured_group_discovery(&self) -> bool {
+        true
+    }
+    fn artist_release_groups(
+        &mut self,
+        artist: &ExternalIdentity,
+        offset: u32,
+    ) -> Result<catalog::Page<catalog::AlbumCandidate>, CatalogError> {
+        require_identity(artist, "artist")?;
+        let page: Groups = self.request(
+            "release-group",
+            &[
+                ("artist", artist.external_id.clone()),
+                ("inc", "artist-credits".into()),
+                ("limit", PAGE_SIZE.to_string()),
+                ("offset", offset.to_string()),
+            ],
+        )?;
+        let next_offset = next_offset(offset, page.groups.len(), page.count);
+        let items = page
+            .groups
+            .into_iter()
+            .map(|g| {
+                mbid(&g.id)?;
+                Ok(catalog::AlbumCandidate {
+                    identity: identity("release_group", &g.id),
+                    title: g.title,
+                    artist: catalog::credit_display(&credits(g.credits.clone())),
+                    credits: credits(g.credits),
+                    date: g.date.unwrap_or_default(),
+                    primary_type: g.primary_type.unwrap_or_default(),
+                    secondary_types: g.secondary_types,
+                    comment: g.disambiguation.unwrap_or_default(),
+                    score: g.score,
+                })
+            })
+            .collect::<Result<Vec<_>, CatalogError>>()?;
+        self.observations = items.clone();
+        Ok(catalog::Page { items, next_offset })
+    }
     fn album_candidate_observation(
         &self,
         id: &ExternalIdentity,
@@ -552,7 +641,14 @@ impl CatalogProvider for MusicBrainz {
     ) -> Result<music_library::album_program::Programs, CatalogError> {
         use music_library::album_program::{Program, Programs};
         require_identity(album, "release_group")?;
-        if let Some(cached) = self.programs.iter().find(|p| &p.album == album) {
+        if let Some((cached, _)) = self.programs.iter().find(|(p, at)| {
+            &p.album == album
+                && SystemTime::now()
+                    .duration_since(*at)
+                    .unwrap_or_default()
+                    .as_secs()
+                    < music_library::musicbrainz_lifecycle::OBSERVATION_TTL as u64
+        }) {
             return Ok(cached.clone());
         }
         let page = self.representative_releases(album)?;
@@ -609,10 +705,11 @@ impl CatalogProvider for MusicBrainz {
             ),
             programs,
         };
+        self.programs.retain(|(p, _)| p.album != result.album);
         if self.programs.len() == 4 {
             self.programs.remove(0);
         }
-        self.programs.push(result.clone());
+        self.programs.push((result.clone(), SystemTime::now()));
         Ok(result)
     }
     fn recordings(
@@ -776,17 +873,30 @@ impl CatalogProvider for MusicBrainz {
         &mut self,
         name: &str,
     ) -> Result<catalog::Page<catalog::ArtistCandidate>, CatalogError> {
-        let page: Artists = self.request(
+        let mut page: Artists = self.request(
             "artist",
             &[
-                (
-                    "query",
-                    format!("(artist:{} OR alias:{})", quoted(name), quoted(name)),
-                ),
+                ("query", format!("artist:{}", quoted(name))),
                 ("limit", PAGE_SIZE.to_string()),
                 ("offset", "0".into()),
             ],
         )?;
+        if !page.artists.iter().any(|a| {
+            music_library::artist_credit::name_key(&a.name)
+                == music_library::artist_credit::name_key(name)
+        }) {
+            // One bounded alias fallback after the canonical/current-name query.
+            // Returned aliases retain provider provenance; resolve_artist still
+            // vetoes ambiguous aliases and never uses Artist substrings.
+            page = self.request(
+                "artist",
+                &[
+                    ("query", format!("alias:{}", quoted(name))),
+                    ("limit", PAGE_SIZE.to_string()),
+                    ("offset", "0".into()),
+                ],
+            )?;
+        }
         let next_offset = next_offset(0, page.artists.len(), page.count);
         let items = page
             .artists
@@ -1065,6 +1175,7 @@ struct ArtistRef {
 
 #[derive(Deserialize)]
 struct Groups {
+    #[serde(alias = "release-group-count")]
     count: u32,
     #[serde(rename = "release-groups")]
     groups: Vec<Group>,
@@ -1550,6 +1661,7 @@ mod tests {
         library.add_to_library(&release.track_ids[0]).unwrap();
         let album = library.album_id_for_track(&release.track_ids[0]).unwrap();
         let (mut provider, requests, thread) = mock(vec![
+            (200, r#"{"count":0,"artists":[]}"#),
             (
                 200,
                 r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000001","name":"Artist B","aliases":[{"name":"Artist A"}]}]}"#,
@@ -1575,7 +1687,9 @@ mod tests {
                 .is_empty()
         );
         let first = requests.recv().unwrap().1;
+        let alias = requests.recv().unwrap().1;
         let second = requests.recv().unwrap().1;
+        assert!(alias.contains("alias"));
         assert!(first.contains("artist?"));
         assert!(second.contains("inc=aliases"));
         thread.join().unwrap();
@@ -1683,8 +1797,12 @@ mod tests {
     fn aliases_and_ep_type_arrive_in_two_searches_without_candidate_lookups() {
         let artists = r#"{"count":1,"artists":[{"id":"00000000-0000-4000-8000-000000000002","name":"tsosis","aliases":[{"name":"The Speed of Sound in Seawater"}]}]}"#;
         let groups = r#"{"count":1,"release-groups":[{"id":"00000000-0000-4000-8000-000000000001","title":"Hugs","primary-type":"EP","artist-credit":[{"name":"The Speed of Sound in Seawater","artist":{"id":"00000000-0000-4000-8000-000000000002","name":"tsosis"}}]}]}"#;
-        let (mut client, requests, server) =
-            mock(vec![(200, artists), (200, groups), (200, groups)]);
+        let (mut client, requests, server) = mock(vec![
+            (200, artists),
+            (200, artists),
+            (200, groups),
+            (200, groups),
+        ]);
         let page = client
             .search_artists("The Speed of Sound in Seawater")
             .unwrap();
@@ -1703,13 +1821,14 @@ mod tests {
             .unwrap();
         server.join().unwrap();
         let calls = requests.try_iter().collect::<Vec<_>>();
-        assert_eq!(calls.len(), 3);
+        assert_eq!(calls.len(), 4);
         let q = request_params(&calls[0].1);
-        assert!(q["query"].contains("alias:"));
-        let q = request_params(&calls[1].1);
+        assert!(q["query"].starts_with("artist:"));
+        assert!(request_params(&calls[1].1)["query"].starts_with("alias:"));
+        let q = request_params(&calls[2].1);
         assert!(q["query"].contains(&format!("arid:{}", artist.external_id)));
         assert!(q["query"].contains(r#"releasegroup:"hugs""#));
-        let q = request_params(&calls[2].1);
+        let q = request_params(&calls[3].1);
         assert!(q["query"].contains("~2"));
         for calls in calls.windows(2) {
             assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
@@ -1730,7 +1849,7 @@ mod tests {
         assert_eq!(calls.len(), 2);
         assert!(calls[1].0.duration_since(calls[0].0) >= Duration::from_millis(950));
         let first = request_params(&calls[0].1);
-        assert_eq!(first["query"], r#"(artist:"Hella" OR alias:"Hella")"#);
+        assert_eq!(first["query"], r#"artist:"Hella""#);
         assert_eq!(first["limit"], "10");
         let second = request_params(&calls[1].1);
         assert_eq!(second["limit"], "10");
@@ -2048,6 +2167,82 @@ mod tests {
         );
     }
 
+    #[test]
+    fn structured_catalog_browse_retains_native_title_type_and_offset() {
+        let body = r#"{"release-group-count":25,"release-groups":[{"id":"00000000-0000-4000-8000-000000000001","title":"工作","primary-type":"EP","first-release-date":"2016-10-18","artist-credit":[{"name":"大象體操","artist":{"id":"00000000-0000-4000-8000-000000000002"}}]}]}"#;
+        let (mut client, requests, server) = mock(vec![(200, body)]);
+        let page = client
+            .artist_release_groups(
+                &identity("artist", "00000000-0000-4000-8000-000000000002"),
+                20,
+            )
+            .unwrap();
+        assert_eq!(page.items[0].title, "工作");
+        assert_eq!(page.items[0].primary_type, "EP");
+        assert_eq!(page.next_offset, Some(21));
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        let p = request_params(&calls[0].1);
+        assert_eq!(p["offset"], "20");
+        assert_eq!(p["limit"], "10");
+        assert_eq!(p["inc"], "artist-credits");
+        assert!(!p.contains_key("query"));
+        assert_eq!(client.request_count(), 1);
+    }
+    #[test]
+    fn slash_spacing_is_bounded_query_preparation() {
+        let body = r#"{"count":0,"release-groups":[]}"#;
+        let (mut client, requests, server) = mock(vec![(200, body)]);
+        client
+            .artist_albums(
+                &identity("artist", "00000000-0000-4000-8000-000000000002"),
+                "Church Gone Wild/Chirpin Hard",
+            )
+            .unwrap();
+        server.join().unwrap();
+        let calls = requests.try_iter().collect::<Vec<_>>();
+        let p = request_params(&calls[0].1);
+        assert!(p["query"].contains(&quoted("Church Gone Wild/Chirpin Hard")));
+        assert!(p["query"].contains(&quoted("Church Gone Wild / Chirpin Hard")));
+        assert!(p["query"].starts_with("arid:"));
+        assert_eq!(calls.len(), 1);
+    }
+    #[test]
+    fn program_cache_preserves_age_expires_and_explicit_refresh_bypasses_it() {
+        let empty = r#"{"release-count":0,"releases":[]}"#;
+        let (mut client, requests, server) =
+            mock(vec![(200, empty), (200, empty), (200, empty), (200, empty)]);
+        let album = identity("release_group", "00000000-0000-4000-8000-000000000001");
+        let old = SystemTime::now()
+            - Duration::from_secs(
+                music_library::musicbrainz_lifecycle::OBSERVATION_TTL as u64 + 10,
+            );
+        client.programs.push((
+            music_library::album_program::Programs {
+                album: album.clone(),
+                programs: vec![],
+                note: "expired".into(),
+            },
+            old,
+        ));
+        client.album_programs(&album).unwrap();
+        let at = client.album_program_observed_at(&album).unwrap();
+        client.album_programs(&album).unwrap();
+        assert_eq!(client.request_count(), 2);
+        assert_eq!(client.album_program_observed_at(&album), Some(at));
+        assert!(
+            at > old
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        );
+        client.refresh_discovery(true);
+        assert_eq!(client.album_program_observed_at(&album), None);
+        client.album_programs(&album).unwrap();
+        assert_eq!(client.request_count(), 4);
+        server.join().unwrap();
+        assert_eq!(requests.try_iter().count(), 4);
+    }
     fn request_params(request: &str) -> std::collections::HashMap<String, String> {
         let target = request.split_whitespace().nth(1).unwrap();
         Url::parse(&format!("http://localhost{target}"))

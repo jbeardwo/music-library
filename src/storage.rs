@@ -112,6 +112,52 @@ impl Store {
         {
             return Ok(MatchOutcome::Skipped);
         }
+        if let Some(snapshot) = reply
+            .diagnostic
+            .as_ref()
+            .and_then(|r| r.musicbrainz_discovery.as_ref())
+        {
+            if snapshot.local_fingerprint
+                != crate::musicbrainz_discovery::evidence_fingerprint(
+                    &crate::album_program::local_tracks(&tx, &reply.input.album_id)?.0,
+                )
+            {
+                return Ok(MatchOutcome::Skipped);
+            }
+        }
+        // Existing MusicBrainz Group is authoritative. Structured discovery may
+        // retain alternate evidence, but never enters identity attachment here.
+        if scope.provider == "musicbrainz"
+            && reply
+                .diagnostic
+                .as_ref()
+                .is_some_and(|r| r.musicbrainz_discovery.is_some())
+            && matches!(
+                prepare_album_match(&tx, &reply.input.album_id, scope, false)?,
+                Preparation::Done(MatchOutcome::AlreadyMatched)
+            )
+        {
+            let Preparation::Ready(current) =
+                prepare_album_match(&tx, &reply.input.album_id, scope, true)?
+            else {
+                return Ok(MatchOutcome::Skipped);
+            };
+            if current.evidence != reply.input.evidence
+                || current.raw_title != reply.input.raw_title
+                || current.artist_id != reply.input.artist_id
+            {
+                return Ok(MatchOutcome::Skipped);
+            }
+            crate::musicbrainz_lifecycle::record_match(
+                &tx,
+                &reply.input.album_id,
+                &reply.outcome,
+                reply.diagnostic.as_ref(),
+                None,
+            )?;
+            tx.commit()?;
+            return Ok(MatchOutcome::AlreadyMatched);
+        }
         // Snapshot before Artist canonicalization adds independently resolved identities.
         let candidate_tracks = if matches!(reply.outcome, MatchOutcome::AlbumEquivalent { .. }) {
             Some(crate::album_program::local_tracks(
@@ -293,7 +339,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 37 {
+        } else if version > 38 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -499,6 +545,10 @@ impl Store {
         if version < 37 {
             connection
                 .execute_batch(include_str!("../migrations/0037_musicbrainz_lifecycle.sql"))?;
+        }
+        if version < 38 {
+            connection
+                .execute_batch(include_str!("../migrations/0038_musicbrainz_discovery.sql"))?;
         }
         Ok(Self {
             connection,
@@ -2286,6 +2336,33 @@ pub(crate) fn prepare_album_match(
             value: year.to_string(),
             origin: crate::canonical_evidence::Origin::Application,
         });
+    }
+    if scope.provider == "musicbrainz" {
+        let mut q=db.prepare("SELECT external_id FROM album_external_identity WHERE album_id=?1 AND provider='musicbrainz' AND kind='release_group' ORDER BY external_id")?;
+        for row in q.query_map([id.as_ref()], |r| r.get::<_, String>(0))? {
+            let identity = ExternalIdentity {
+                provider: "musicbrainz".into(),
+                kind: "release_group".into(),
+                external_id: row?,
+            };
+            if !evidence.titles.iter().any(|o|matches!(&o.origin,crate::canonical_evidence::Origin::Provider {identity:i} if *i==identity)) {
+                evidence.titles.push(crate::canonical_evidence::Observation {value:String::new(),origin:crate::canonical_evidence::Origin::Provider {identity}});
+            }
+        }
+    }
+    // MusicBrainz discovery may use retained source dates as cheap ranking
+    // observations when no canonical/provider date exists. Never identity proof.
+    if scope.provider == "musicbrainz" && evidence.dates.is_empty() {
+        let mut q=db.prepare("SELECT DISTINCT f.source_id,f.year FROM release r JOIN track t ON t.release_id=r.id JOIN track_source s ON s.track_id=t.id JOIN file_metadata_observation f ON f.source_id=s.source_id WHERE r.album_id=?1 AND f.year IS NOT NULL ORDER BY f.source_id LIMIT 256")?;
+        for row in q.query_map([id.as_ref()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i32>(1)?))
+        })? {
+            let (source_id, year) = row?;
+            evidence.dates.push(crate::canonical_evidence::Observation {
+                value: year.to_string(),
+                origin: crate::canonical_evidence::Origin::Local { source_id },
+            });
+        }
     }
     let date = crate::canonical_evidence::agreed_date(&evidence.dates);
     Ok(if usable {

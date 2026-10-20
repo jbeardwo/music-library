@@ -25,6 +25,7 @@ pub enum Reason {
     UnmatchedTrack,
     IncompleteCandidatePage,
     CandidateLimit,
+    AcceptedProgramCorroboration,
     AcceptedExactTitle,
     AcceptedNormalizedTitle,
     AcceptedArtistBoilerplate,
@@ -100,6 +101,9 @@ impl Reason {
                 "Candidate page has more results; uniqueness is not established"
             }
             Self::CandidateLimit => "Program comparison bound exceeded",
+            Self::AcceptedProgramCorroboration => {
+                "Trusted Artist and unique strong shared program corroborate Release Group identity"
+            }
             Self::AcceptedExactTitle => {
                 "Established Artist, exact Album title and compatible positioned program"
             }
@@ -366,6 +370,10 @@ impl CandidateEvidence {
         }
     }
     pub fn acceptance_requirements(&self) -> String {
+        if self.identity.provider == "musicbrainz" {
+            return "Trusted exact Artist identity; at least three independent program anchors; coherent shared alignment; at least 80% coverage in both programs; complete supporting evidence; no material competing Group, trusted Group conflict, meaningful version/type contradiction or multiple duration conflicts. Sampled Releases do not select an exact Release. Automatic Recording certainty remains separate.".into();
+        }
+
         let title_requirement = if self.minimum_program_anchors() == 0 {
             "Exact or typographically equivalent title: the standard compatible positioned program is still required".into()
         } else {
@@ -381,6 +389,7 @@ impl CandidateEvidence {
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Report {
+    pub musicbrainz_discovery: Option<crate::musicbrainz_discovery::Snapshot>,
     pub discovery_queries: Vec<String>,
     pub local_title: String,
     pub established_artist: Option<ExternalIdentity>,
@@ -427,6 +436,7 @@ pub fn initial_report_with_equivalents(
     candidates.dedup_by(|a, b| a.identity == b.identity);
     let count = candidates.len();
     Report {
+        musicbrainz_discovery: None,
         discovery_queries: provider.album_discovery_queries(),
         local_title: context.0.into(),
         established_artist: artist.cloned(),
@@ -436,7 +446,11 @@ pub fn initial_report_with_equivalents(
         reasons: vec![],
         candidates: candidates
             .into_iter()
-            .take(10)
+            .take(if artist.is_some_and(|a| a.provider == "musicbrainz") {
+                40
+            } else {
+                10
+            })
             .map(|c| {
                 let mut title = title_evidence(context.0, &c);
                 let accepted = artist.is_some_and(|a| {

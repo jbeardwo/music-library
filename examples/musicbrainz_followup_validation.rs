@@ -191,7 +191,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let after = lib.connection_coverage("musicbrainz")?;
         assert_eq!(before.saved, after.saved);
         let schema: i64 = sql.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        assert_eq!(schema, 37);
+        assert_eq!(schema, 38);
         // New process/connection boundary: observations and programs remain accessible offline.
         drop(lib);
         let lib = Library::open(&path)?;

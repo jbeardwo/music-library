@@ -37,6 +37,8 @@ pub struct Programs {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Input {
+    /// Original provider observation time when replaying a retained program.
+    pub provider_observed_at: Option<i64>,
     pub album_id: AlbumId,
     pub album: ExternalIdentity,
     pub tracks: Vec<LocalTrackEvidence>,
@@ -1078,6 +1080,7 @@ impl Store {
         let (tracks, artist_conflicts) = local_tracks(&tx, album)?;
         tx.commit()?;
         Ok((!tracks.is_empty()).then(|| Input {
+            provider_observed_at: None,
             album_id: album.clone(),
             album: identity.clone(),
             tracks,
@@ -1320,6 +1323,9 @@ impl Store {
         }
         if programs.album.provider == "musicbrainz" {
             crate::musicbrainz_lifecycle::retain_programs(&tx, &reply.input.album_id, &programs)?;
+            if let Some(at) = reply.input.provider_observed_at {
+                tx.execute("UPDATE musicbrainz_candidate SET program_observed_at=?3,observed_at=min(observed_at,?3) WHERE album_id=?1 AND group_id=?2",params![reply.input.album_id.as_ref(),programs.album.external_id,at])?;
+            }
         }
         tx.commit()?;
         Ok(Outcome::Complete(results))

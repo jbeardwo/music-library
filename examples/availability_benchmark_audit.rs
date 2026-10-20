@@ -714,3 +714,7 @@ mod program_correspondence;
 #[allow(dead_code)]
 #[path = "../src/musicbrainz_recording.rs"]
 mod musicbrainz_recording;
+
+#[allow(dead_code)]
+#[path = "../src/musicbrainz_discovery.rs"]
+mod musicbrainz_discovery;

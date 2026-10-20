@@ -701,3 +701,288 @@ Recording decisions, and reopens the copies. Its provider stub panics on search
 or Release requests. Coverage uses `Library::connection_coverage`; missing rows
 use bounded `connection_groups` / `connection_tracks`. Targeted reason projection
 tests were rerun after adding structured per-Track `{code,label}` state.
+
+### Phase 3 — structured MusicBrainz discovery and safe Release Group association
+
+Implemented 2026-10-19; **not committed**. Shared semantic/program correspondence
+is not provider discovery. MusicBrainz discovery now follows MusicBrainz topology;
+no translation, transliteration, hard-coded Album translations/MBIDs, Artist
+substring identity, global Album substring identity, per-Track search, or Spotify
+matching changes were added.
+
+#### Previous automatic call graph and failure boundaries
+
+`AlbumMatcher::match_album` / `after_import` → preparation in `storage.rs` → worker
+Artist resolution → `MusicBrainz::artist_albums` → `scoped_artist_albums` →
+`album_candidates::resolve_canonical` → `Store::complete_album_match_for` →
+`enqueue_recordings` → bounded sampled Group programs → existing Recording policy.
+An already trusted Group went directly to program enrichment.
+
+Preparation supplied the trusted Artist MBID when present. Otherwise Artist text
+search used the canonical input in one primary-name/alias OR query, followed by
+full-name/alias resolution and ambiguity checks. The known MBID already scoped
+Group retrieval with `arid:`; it did not remove the Album-title constraint. The
+query combined the complete title, bounded per-word edit tokens, and typed
+EP/LP/CD/disc suffix alternatives. It requested ten results at offset zero.
+`next_offset` could prevent acceptance but did not continue automatic discovery.
+Manual paging was separate. Manual Artist confirmation raised the edit budget to
+two; provider score/order was not an identity rule.
+
+MusicBrainz did not opt into Spotify's candidate-program resolver. Phase 2 added
+one narrow established-Artist-boilerplate program corroboration path, but most
+rejected titles still stopped before program retrieval. A Group attached only
+when application completion accepted its identity; programs normally followed
+that attachment. No Group meant no normal program/Recording continuation.
+
+| Remaining case | Previous failure stage |
+|---|---|
+| Angle / Dreams / Underwater / Work | English title constraint hid native Groups; Dreams also returned an unrelated English-titled soundtrack. Native title rejection prevented program-based Album corroboration. |
+| Church Gone Wild/Chirpin Hard | Slash layout prevented retrieval. Historical reduced title-only search ranked the correct Group third behind unrelated Artists. |
+| Hippy Jam Fest | Short exact query/full-title acceptance did not establish the longer provider title; printed Artist name differed despite an existing trusted Artist MBID. |
+| More Skin… (2015 Remaster) | No typed base-title retrieval in the normal query; meaningful original/remaster semantics still blocked identity after discovery. |
+| Gaze at Blue | Already trusted one-Track Group bypassed alternate Group discovery; a different three-Track Group could not replace that identity safely. |
+
+These are separate discovery, corroboration, and identity-safety failures.
+
+#### New normal path and explicit bounds
+
+The worker and UI-independent `Library::reconcile_musicbrainz` use
+`musicbrainz_discovery::discover`:
+
+```text
+canonical Artist/Album + retained observations
+  → trusted Artist MBID (text resolution only when necessary)
+  → one bounded Artist-ID/title query, including slash-spacing alternatives
+  → bounded Artist-ID Release Group browse when still unresolved
+  → cheap contextual ranking, bounded sampled Group ensembles
+  → shared program correspondence and structured Group-association decision
+  → existing completion boundary / existing automatic Recording certainty
+```
+
+Text Artist discovery now queries the canonical/current name first and makes at
+most one alias-field fallback for that same input. Returned aliases retain
+provider provenance and existing ambiguity vetoes. Known MBIDs avoid Artist text
+rediscovery, including TTNG versus This Town Needs Guns.
+
+The topology budget is **one title query, at most three ten-Group catalog pages,
+at most 40 unique candidate observations, and at most six Group ensembles**.
+Each ensemble uses the existing bounded representative browse (one official
+browse, at most one unfiltered fallback) and at most three Release details:
+**34 logical endpoint calls maximum**. Existing transport retries remain bounded
+at three attempts per call, so the conservative transport ceiling is 102 attempts;
+there are no new retries or parallel provider calls. Independently necessary
+Artist resolution/observation is outside this Group-discovery budget. Validation
+starts with trusted Artist IDs and records actual HTTP attempts, not estimates.
+
+Internal pages continue within one worker operation. Strong unique evidence can
+stop further catalog paging; otherwise discovery stops on catalog exhaustion,
+three pages, six ensembles, or a provider error/defer. An unfinished bounded
+catalog is `discovery_budget`, not completed-empty. Provider errors retain partial
+observations and remain distinct from empty/rejected evidence.
+
+Cheap ranking considers exact trusted Artist IDs, typed title relationships,
+Album type, date proximity, secondary types and retained observations. Retained
+local date provenance is used when canonical/provider dates are absent; this is
+ranking evidence, never identity. Parenthetical extended titles and existing
+edition/boilerplate relationships are retrieval hints. They do not turn Album
+substring containment into title equivalence. Provider score is retained only as
+an observation. Strong correspondence and then supported coverage rank inspected
+candidates before weaker ones; provider rank remains separately observable.
+
+Program-based Group association requires all of:
+
+* trusted exact Artist identity;
+* a complete supporting program, at least three independent anchors, strong shared
+  alignment and at least 80% correspondence in **both** programs;
+* compatible counts, no trusted Recording contradiction in the supporting program,
+  and no multiple duration contradictions;
+* one strong candidate, no material competing Group and no uninspected plausible
+  peer hidden by the program budget;
+* compatible meaningful version/type evidence, including explicit edition-year
+  contradictions, and no existing trusted Group conflict.
+
+A complete competitor with three anchors and substantial two-sided coverage
+(60% or more) remains material even if it falls below the strong gate. Multiple
+material possibilities require review. This is a conjunction of explainable
+conditions, not a provider-score threshold. A one/two-song overlap, same Artist,
+same count, first song, or native title alone cannot establish identity.
+
+A sampled Release remains evidence, not an exact canonical edition selection.
+Incomplete samples do not poison complete support. Recording consistency,
+version/Artist certainty, duration vetoes and explicit confirmation remain in the
+unchanged Phase 1–2 engines.
+
+#### Persistence and Connections
+
+Migration 38 adds `musicbrainz_discovery` (bounded Album-level discovery snapshot)
+and `musicbrainz_artist_page` (Artist-ID/offset page observations shared across
+Albums). Pages and programs retain 30-day freshness; replay does not renew their
+provider timestamps. Changed titles/Artists cannot reuse an incompatible title
+query; still-fresh matching Artist pages remain reusable. Explicit refresh bypasses
+observations. Program evidence, input fingerprints and canonical state are checked
+again at completion, outside network work; stale replies cannot attach a Group.
+
+All inspected metadata and programs also enter migration 37's candidate lifecycle.
+The candidate bound expands from ten to forty to retain the inspected catalog.
+Search rank, application rank, browse origin/page, provider credits/IDs, type/date,
+program completeness, mappings and structured rejection reasons are retained.
+Manual inspection continues to have a separate program column. Retained ranking
+survives automatic program completion. Connections opens these same candidates
+and programs immediately, with no discovery request; manual confirmation remains
+available. No second ephemeral candidate path was introduced.
+
+Trusted partial Albums can retain alternate catalog evidence through normal worker
+reconciliation. Completion never replaces their trusted Group or authorizes
+Recording use from an incompatible alternate. Candidate rejection reasons are
+scoped to the candidate: an unrelated version-conflicting competitor cannot make
+Angle or Dreams appear to be version failures.
+
+#### Disposable-copy results
+
+Both sources were Phase 1–2 disposable snapshots, opened read-only for SQLite
+backup. Neither original audit database was opened through a mutable API. The
+normal MusicBrainz adapter/application path located the candidates; no Group IDs
+were injected. Re-running the final application policy with a provider that
+panics on **every** provider call succeeded from retained state and left coverage
+unchanged. Full compact candidate/program mappings and reasons are checked in as
+[`musicbrainz-structured-discovery-evidence.json`](musicbrainz-structured-discovery-evidence.json).
+
+| Dataset | Before connected / saved | After connected / saved | Remaining gaps | Albums with gaps |
+|---|---:|---:|---:|---:|
+| Fresh | 854 / 930 | **897 / 930** | **33** | **5** |
+| UI profile | 866 / 942 | **909 / 942** | **33** | **5** |
+
+Four Groups attach automatically in both copies:
+
+| Artist / canonical Album | Group MBID / provider title | Discovery / provider position | Program evidence / decision |
+|---|---|---|---|
+| Elephant Gym / Work | `8dd0b2dd-b46d-45ed-95e3-5e6ce7718dba` / 工作 | Artist catalog, page 1, row 6 | Three complete 5/5 programs; sole strong supported Group; no trusted Group, type or version conflict. **5 Recordings connected.** |
+| Elephant Gym / Underwater | `14165569-4114-43ca-b040-140898f5855d` / 水底 | Artist catalog, page 1, row 2 | Complete samples map 12/12, 11/12 and 0/12; sole strong Group; remix/provider-only material does not force an exact Release. **9 Recordings connected**, three certainty blockers retained. |
+| Hella / Church Gone Wild/Chirpin Hard | `385cbc6c-a9b5-3a7b-8146-f4a14bdcdfd2` / Church Gone Wild / Chirpin Hard | Slash-expanded Artist-ID/title query, provider/application rank 1 | Shared sequence engine supports 23 and 22 rows in two differently ordered 24-Track programs. Existing cross-program certainty connects **24** in this run. No Hella-specific rule or forced last-row mapping. |
+| TTNG / Hippy Jam Fest | `680ff456-5e82-4d0c-ba1f-86479004d52d` / Hippy Jam Fest (The Likes of Which Has Never Been Seen) | Artist-ID/title query, provider/application rank 1 | Complete five-Track sample has five independent anchors; shorter three-Track sample cannot establish an alternate Album; unique strong Group. **5 Recordings connected** under existing initial certainty. |
+
+Other inspected Groups/programs did not provide material competing Album support;
+the JSON records every competitor and its rejection. These page positions differ
+from the historical audit's **search** results: current structured **browse**
+returned the native Groups on page one, while all three retained catalog pages
+were inspected where needed. The later-page fixture proves that page-three
+candidates are still reached. Hella's historical broad unscoped rank was 3; the
+new `arid:` query excludes unrelated Artist results before application ranking.
+The adversarial provider-order regression separately verifies that an unrelated
+first result cannot win when returned by a provider.
+
+The shorter Hippy sample remains inspectable. After the five Recording identities
+become trusted, a retained re-evaluation flags an identity conflict in that
+alternative; existing connections are preserved, and no replacement is attempted.
+This is retained provider/Recording disagreement, not failed Group discovery or
+an exact-edition selection. Recording-policy changes are outside Phase 3.
+
+All remaining gaps are the same in both copies:
+
+| Album | Gaps | Exact retained outcome |
+|---|---:|---|
+| Angle | 11 | **角度 found and retained**, `e0ac3da3-5279-47de-9e42-8d06897962fb`; insufficient shared anchors (0/0/0 mappings), not an empty provider result. Native-only/bilingual components remain a review case. |
+| Dreams | 12 | **夢境 found and retained**, `e5c00483-80f6-440f-8bdc-ac070010eebf`; two complete English 13-Track samples have seven positional anchors but no strong unique alignment around the inserted duplicate Shadow and version differences. Shared decisions are 0/0/1 across the three samples. No title/version or alignment rule was weakened. |
+| Gaze at Blue | 2 | Existing trusted one-Track Group unchanged. Alternate **凝視** and its programs retained (2/0 mappings); `existing_group_conflict` blocks replacement and alternate Recording use. |
+| Underwater | 3 | Half Asleep: **duration conflict**, local 90,770 ms versus provider 86,586 ms. Bad Dream and Shell: **Artist certainty unresolved**. Group association is already established. |
+| More Skin With Milk-Mouth (2015 Remaster) | 5 | Base-title Group found/retained; 4/5 structural rows in each of three samples. **Original/remaster version uncertainty** withholds Group/Recording equivalence. |
+
+Thus 23 gaps are insufficient program/Album corroboration, two are trusted Group
+conflicts, five are remaster uncertainty, one is duration conflict, and two are
+Artist-certainty failures. There are **no completed-empty discoveries** among the
+eight controls. Retained candidates requiring review are successful discovery.
+Exact MusicBrainz Release associations and membership are preserved (fresh has
+zero exact Release identities; profile retains its existing one).
+
+Endpoint/request measurements and reproducibility commands follow below.
+
+#### Request efficiency
+
+Pairs below are **fresh / UI profile**. A single value means both measurements
+agree. HTTP attempts include the existing transport's transient retries. Catalog
+pages inspected include pages read from the durable Artist cache; the adjacent
+column counts actual new page requests. Ensembles/samples are the evidence
+inspected, including retained/session-cache hits. The final column reports actual
+Release-detail HTTP attempts, so cached samples are not misreported as new network
+fetches. All sampled Releases remain evidence, not exact edition choices.
+
+| Album | HTTP attempts | New catalog-page requests | Catalog pages inspected | Unique Groups inspected | Group ensembles | Sampled programs retained | Release-detail attempts |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Angle | 12 / 20 | 3 / 3 | 3 | 23 | 2 / 4 | 6 / 7 | 6 / 10 |
+| Dreams | 25 / 19 | 0 / 0 | 3 | 23 | 5 | 13 | 16 / 13 |
+| Gaze at Blue | 14 / 28 | 0 / 0 | 3 | 23 | 4 | 9 | 9 / 18 |
+| Underwater | 5 / 6 | 0 / 0 | 3 | 23 | 4 | 7 | 2 / 3 |
+| Work | 9 / 9 | 0 / 0 | 3 | 23 | 3 | 7 | 6 / 6 |
+| More Skin With Milk-Mouth (2015 Remaster) | 11 / 12 | 2 / 2 | 2 | 12 | 3 | 5 | 5 / 5 |
+| Church Gone Wild/Chirpin Hard | 4 / 4 | 0 / 0 | 0 | 1 | 1 | 2 | 2 / 2 |
+| Hippy Jam Fest | 4 / 4 | 0 / 0 | 0 | 1 | 1 | 2 | 2 / 2 |
+
+Totals: **84 fresh / 102 profile HTTP attempts** across eight Albums each. The
+largest individual observation was 28 attempts, including transient retries;
+no discovery exceeded three pages or six ensembles. Elephant Gym's three pages
+were fetched once per copy and reused across its other Albums. Hella and TTNG
+needed no Artist-catalog page. Retained final-policy replay used **zero provider
+requests for all sixteen Album cases**, including the newly associated Groups.
+Variation between copies includes retained evidence/session-cache differences
+and provider retries; the JSON retains endpoint classes rather than hiding these
+inside a nominal program-count estimate.
+
+#### Tests, performance and reproduction
+
+The full core suite passed **531 tests** (18 ignored), including 31 MusicBrainz
+follow-up controls. MusicBrainz adapter mocks passed **25** (3 live tests ignored);
+Spotify adapter tests passed **84** (3 unit live tests and the separate authorized
+playlist integration test ignored). Existing Spotify behavior/fixture assertions
+were retained; compile fixtures add the optional discovery diagnostic and migration
+checks expect schema 38. The schema-newer-than-supported control now uses 39.
+
+Focused tests cover trusted Artist scope, absent first-page/later-page candidates,
+early completion, page/program budgets and completed-empty versus deferred state,
+zero-request replay, Artist-page reuse across Albums, original provider timestamps,
+expiry/explicit refresh, native titles, weak overlap, strong program corroboration,
+competing candidates, extended-title retrieval without substring identity,
+canonical-name-before-alias queries, trusted-ID reranking, slash variants,
+trusted Group protection through the actual worker, remaster/version safety,
+incomplete alternatives, durable program evidence, unchanged membership and no
+exact Release assertion. Phase 1–2 semantic/Recording tests remain in the suite.
+
+Backend Connections review tests passed **7** (1 audit-only ignored). The isolated
+offscreen retained MusicBrainz review scenario and the 200k-Track continuous
+Connections scrolling scenario passed. On a separate disposable deterministic
+200k copy, backend MusicBrainz page p95 was **9.57 ms** over 2,000 paged Groups;
+a representative Track expansion took **0.50 ms**. The bounded UI/window behavior
+remains intact. These are local measurements, not universal budgets. A concurrent
+benchmark on the same mutable UI fixture initially saw a Spotify count mismatch;
+repeating on an isolated copy passed the authoritative Spotify count assertion.
+A timing-sensitive adapter assertion also passed when the suite was run serially.
+No production policy was changed to accommodate either test setup issue.
+
+Reproduction uses pre-created disposable copies of the Phase 1–2 snapshots. For
+each dataset, open the source read-only and use SQLite backup into a **new**
+`/tmp/mb-phase3-NAME-fresh.sqlite` / `...-profile.sqlite` path. The live executable
+refuses paths outside that disposable prefix:
+
+```sh
+cargo run --offline --manifest-path adapters/musicbrainz/Cargo.toml --example structured_validation -- /tmp/mb-phase3-NAME-fresh.sqlite
+cargo run --offline --manifest-path adapters/musicbrainz/Cargo.toml --example structured_validation -- /tmp/mb-phase3-NAME-profile.sqlite
+cargo run --offline --example musicbrainz_structured_summary -- /tmp/mb-phase3-NAME
+cargo test --offline
+cargo test --offline --manifest-path adapters/musicbrainz/Cargo.toml -- --test-threads=1
+cargo test --offline --manifest-path adapters/spotify/Cargo.toml
+QT_QPA_PLATFORM=offscreen cargo test --offline --manifest-path tools/qml-diagnostic/Cargo.toml connection_review::tests -- --nocapture
+QT_QPA_PLATFORM=offscreen MUSIC_LIBRARY_DIAGNOSTIC_DATABASE=/tmp/mb-phase3-200k.sqlite cargo test --offline --manifest-path tools/qml-diagnostic/Cargo.toml connections_200k_bounded_continuous_scrolling -- --ignored --nocapture
+```
+
+`structured_validation` uses the real adapter and normal application completion,
+checkpointing per-Album JSON beside the copy. `musicbrainz_structured_summary`
+creates fresh read-only-source baseline backups, replays the normal application
+path with a provider that panics on any request, and reports all retained
+competitors, mappings, certainty decisions, reasons, ranks and measurements. It
+refuses to reuse its baseline-copy paths. No known Group injection is involved.
+
+Intentionally deferred: translation/transliteration, stronger bilingual Angle
+correspondence, relaxing Dreams' inserted/duplicate/version semantics, replacing a
+trusted Group automatically, global fuzzy/substring identity, exact edition
+selection, and changes to automatic Recording certainty (including disagreement
+exposed by shorter TTNG alternatives). Review remains available for retained
+candidates. **No commit was made.**

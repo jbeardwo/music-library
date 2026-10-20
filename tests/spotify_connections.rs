@@ -114,6 +114,7 @@ fn persisted_structured_reason_sort_filter_and_keyset_pages() {
     let b = release(&mut l, "Second", true);
     let album = l.album_id_for_track(&a.track_ids[0]).unwrap();
     let report = Report {
+        musicbrainz_discovery: None,
         discovery_queries: vec![],
         local_title: "First".into(),
         established_artist: None,

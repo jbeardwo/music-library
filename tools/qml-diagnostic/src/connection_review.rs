@@ -1639,6 +1639,7 @@ mod tests {
             programs.push(p);
         }
         let mut report = Report {
+            musicbrainz_discovery: None,
             discovery_queries: vec![],
             local_title: "Diagnostic edition".into(),
             established_artist: None,

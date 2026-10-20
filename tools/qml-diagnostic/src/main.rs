@@ -5157,6 +5157,7 @@ mod library_ui_tests {
             let pinned = bridge.pinned();
             let mut b = pinned.borrow_mut();
             b.spotify_review_report = Some(Report {
+                musicbrainz_discovery: None,
                 discovery_queries: vec![],
                 local_title: "Example".into(),
                 established_artist: Some(id("artist", "a")),

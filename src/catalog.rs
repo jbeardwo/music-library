@@ -196,10 +196,28 @@ pub trait CatalogProvider: Send {
         release.album = album.album();
         Ok(release)
     }
+    /// Structured provider topology, opt-in. A page is discovery, never identity.
+    fn artist_release_groups(
+        &mut self,
+        _artist: &ExternalIdentity,
+        _offset: u32,
+    ) -> Result<Page<AlbumCandidate>, CatalogError> {
+        Ok(Page {
+            items: vec![],
+            next_offset: None,
+        })
+    }
+    fn structured_group_discovery(&self) -> bool {
+        false
+    }
     /// Opt-in: bounded candidate program discovery is meaningful for this provider.
     /// Existing providers retain their request strategy unless they expose this.
     fn album_candidate_programs(&self) -> bool {
         false
+    }
+    /// Freshness of a provider's retained program observation, if available.
+    fn album_program_observed_at(&self, _album: &ExternalIdentity) -> Option<i64> {
+        None
     }
     /// Cheap search-result evidence; must never perform network work.
     fn album_candidate_track_count(&self, _album: &ExternalIdentity) -> Option<u32> {

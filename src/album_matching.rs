@@ -464,9 +464,13 @@ enum WorkerCommand {
     Refresh(AlbumId),
     Programs(
         crate::album_program::Input,
-        Option<crate::album_program::Programs>,
+        Option<(crate::album_program::Programs, i64)>,
     ),
-    Match(MatchInput, Vec<crate::edition::LocalTrackEvidence>),
+    Match(
+        MatchInput,
+        Vec<crate::edition::LocalTrackEvidence>,
+        Option<crate::musicbrainz_discovery::Snapshot>,
+    ),
     Recordings(crate::recording::Input),
     Arm {
         token: u64,
@@ -506,6 +510,7 @@ impl WorkerTimer {
 /// One owned serial worker, session-only deduplication and explicit completion on
 /// the application owner thread. Drop cancels queued work and joins in-flight HTTP.
 pub struct AlbumMatcher {
+    structured_discovery: bool,
     candidate_programs: bool,
     candidate_input: Option<Vec<crate::edition::LocalTrackEvidence>>,
     scope: crate::catalog::MatchingScope,
@@ -601,6 +606,7 @@ impl AlbumMatcher {
         let program_enabled = programs.is_some();
         let program_namespaces = provider.album_program_namespaces();
         let candidate_programs = provider.album_candidate_programs();
+        let structured_discovery = provider.structured_group_discovery();
         let (sender, receiver) = mpsc::channel::<WorkerCommand>();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
@@ -636,23 +642,27 @@ impl AlbumMatcher {
                     if stopped.load(Ordering::Acquire) {
                         break;
                     }
-                    let (input, local) = match command {
+                    let (input, local, retained_discovery) = match command {
                         WorkerCommand::Refresh(album) => {
                             refresh_album = Some(album);
                             continue;
                         }
-                        WorkerCommand::Programs(input, retained) => {
+                        WorkerCommand::Programs(mut input, retained) => {
                             let refresh = refresh_album.as_ref() == Some(&input.album_id);
                             if refresh {
                                 refresh_album = None;
                                 candidate_cache.clear();
                             }
                             provider.refresh_discovery(refresh);
+                            let retained = retained.filter(|_| !refresh).map(|(p, at)| {
+                                input.provider_observed_at = Some(at);
+                                p
+                            });
                             let result = retained
-                                .filter(|_| !refresh)
                                 .or_else(|| {
                                     candidate_cache
                                         .iter()
+                                        .filter(|_| input.album.provider != "musicbrainz")
                                         .find(|p: &&crate::album_program::Programs| {
                                             p.album == input.album
                                         })
@@ -660,6 +670,10 @@ impl AlbumMatcher {
                                 })
                                 .map(Ok)
                                 .unwrap_or_else(|| provider.album_programs(&input.album));
+                            if input.provider_observed_at.is_none() {
+                                input.provider_observed_at =
+                                    provider.album_program_observed_at(&input.album);
+                            }
                             provider.refresh_discovery(false);
                             if !stopped.load(Ordering::Acquire)
                                 && let Some(emit) = &programs
@@ -676,7 +690,7 @@ impl AlbumMatcher {
                             timer.0 = None;
                             continue;
                         }
-                        WorkerCommand::Match(input, local) => (input, local),
+                        WorkerCommand::Match(input, local, retained) => (input, local, retained),
                         WorkerCommand::Recordings(input) => {
                             let result = provider.recordings(&input.group);
                             if !stopped.load(Ordering::Acquire)
@@ -785,6 +799,29 @@ impl AlbumMatcher {
                             // Deliberately not cached by Artist name: this identity depended on this Album.
                         }
                         Err(outcome) => (None, outcome),
+                        Ok(id) if provider.structured_group_discovery() => {
+                            let retained = if refresh { None } else { retained_discovery };
+                            let resolution = crate::musicbrainz_discovery::discover(
+                                &mut provider,
+                                &input,
+                                &id,
+                                &local,
+                                retained,
+                            );
+                            let page = Page {
+                                items: resolution
+                                    .report
+                                    .candidates
+                                    .iter()
+                                    .filter_map(|c| c.observation.as_ref())
+                                    .map(crate::musicbrainz_discovery::artist_candidate)
+                                    .collect(),
+                                next_offset: None,
+                            };
+                            selected_album = matched_album(&resolution.outcome, &page);
+                            diagnostic = Some(resolution.report);
+                            (Some(id), resolution.outcome)
+                        }
                         Ok(id) => {
                             let response = if input.equivalent_artists.len() > 1 {
                                 provider.albums_for_artists(&input.equivalent_artists, &input.title)
@@ -833,6 +870,7 @@ impl AlbumMatcher {
                 }
             })?;
         Ok(Self {
+            structured_discovery,
             candidate_programs,
             candidate_input: None,
             program_namespaces,
@@ -894,6 +932,20 @@ impl AlbumMatcher {
         self.match_album(library, id)
     }
     pub fn match_album(&mut self, library: &Library, id: &AlbumId) -> Result<MatchOutcome> {
+        if self.structured_discovery
+            && self.scope.provider == "musicbrainz"
+            && self.prepare_program(library, id)?.is_some()
+            && library.musicbrainz_has_gaps(id)?
+            && !library.has_musicbrainz_discovery(id)?
+        {
+            if !self.queue.iter().any(|w| w.album_id() == id) {
+                self.queue.push_back(Work::Album(id.clone()));
+            }
+            self.outcomes.insert(id.clone(), MatchOutcome::Pending);
+            self.dispatch(library, false)?;
+            return Ok(MatchOutcome::Pending);
+        }
+
         if self.program_enabled && self.prepare_program(library, id)?.is_some() {
             self.outcomes
                 .insert(id.clone(), MatchOutcome::AlreadyMatched);
@@ -1018,6 +1070,7 @@ impl AlbumMatcher {
             };
             if let Some(reason) = reason {
                 diagnostic = Some(Report {
+                    musicbrainz_discovery: None,
                     discovery_queries: vec![],
                     local_title: retry.raw_title.clone(),
                     established_artist: retry.known_artist.clone(),
@@ -1355,8 +1408,8 @@ impl AlbumMatcher {
                                                 < crate::musicbrainz_lifecycle::OBSERVATION_TTL
                                         })
                                     })
-                                    .filter_map(|c| c.programs)
-                                    .find(|p| p.album == input.album)
+                                    .filter_map(|c| c.programs.zip(c.program_observed_at))
+                                    .find(|(p, _)| p.album == input.album)
                             } else {
                                 None
                             },
@@ -1392,7 +1445,16 @@ impl AlbumMatcher {
                 continue;
             }
             // Refresh identities after prior completions/consolidation or manual selection.
-            let preparation = library.prepare_album_match_for(work.album_id(), &self.scope)?;
+            let mut preparation = library.prepare_album_match_for(work.album_id(), &self.scope)?;
+            if self.structured_discovery
+                && self.scope.provider == "musicbrainz"
+                && matches!(preparation, Preparation::Done(MatchOutcome::AlreadyMatched))
+                && !library.has_musicbrainz_discovery(work.album_id())?
+                && library.musicbrainz_has_gaps(work.album_id())?
+            {
+                preparation = library.prepare_musicbrainz_discovery(work.album_id())?;
+            }
+
             let id = work.album_id().clone();
             match preparation {
                 Preparation::Done(outcome) => {
@@ -1411,7 +1473,8 @@ impl AlbumMatcher {
                     } else {
                         vec![]
                     };
-                    self.candidate_input = self.candidate_programs.then(|| tracks.clone());
+                    self.candidate_input = (self.candidate_programs || self.structured_discovery)
+                        .then(|| tracks.clone());
                     if self.scope.provider == "musicbrainz" {
                         library.musicbrainz_state(
                             &id,
@@ -1421,7 +1484,15 @@ impl AlbumMatcher {
                     self.sender
                         .as_ref()
                         .unwrap()
-                        .send(WorkerCommand::Match(input, tracks))
+                        .send(WorkerCommand::Match(
+                            input,
+                            tracks,
+                            if self.scope.provider == "musicbrainz" {
+                                library.retained_musicbrainz_discovery(&id)?
+                            } else {
+                                None
+                            },
+                        ))
                         .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
                     self.queue.pop_front();
                     self.active = true;

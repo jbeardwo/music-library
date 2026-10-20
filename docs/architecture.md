@@ -2459,7 +2459,7 @@ batches. Typed provider failures survive the catalog-credit preparation boundary
 Opening review cannot overwrite a temporary-provider state with cache-refresh
 required. See [reconciliation correction validation](connections-reconciliation-report.md).
 
-### MusicBrainz correspondence and retained observations (schema 37)
+### MusicBrainz correspondence and retained observations (schemas 37–38)
 
 MusicBrainz automatic enrichment and Connections review both consume
 `program_correspondence::correspond`, which wraps the existing authoritative
@@ -2487,7 +2487,7 @@ not change canonical entities, library membership or playback availability.
 
 Migration 37 adds two provider-specific observation tables:
 `musicbrainz_match_state` stores Album-scoped lifecycle/evaluation and compact
-per-Track reasons; `musicbrainz_candidate` stores at most ten candidate observations
+per-Track reasons; `musicbrainz_candidate` now stores at most forty candidate observations
 and bounded typed programs. Automatic sampled programs and a manually inspected
 Release are separate columns: selecting one Release must not discard evidence of
 disagreement among automatic alternatives. Neither table establishes identity.
@@ -2505,6 +2505,29 @@ Cached programs remain inspectable while stale evaluations are identified.
 Connections reads compact reasons with its bounded indexed Album/Track queries;
 it does not load provider programs for the whole library or perform matching in
 QML. Network discovery and program retrieval stay outside write transactions and
-remain Album-scoped/rate-limited. Broader structured/native-script MusicBrainz
-discovery remains deferred. See the implementation follow-up in
+remain Album-scoped/rate-limited.
+
+`musicbrainz_discovery` separates provider topology retrieval from semantic
+correspondence. It searches inside a trusted MusicBrainz Artist, then continues
+through at most three ten-Group Artist catalog pages and six sampled Group
+ensembles. Typed title/type/date observations rank retrieval; a unique complete,
+strongly aligned program can corroborate a differently titled Group. At least
+three independent anchors and 80% coverage in both programs are required, with
+material competition, trusted Group, meaningful version/type and Recording
+contradictions withholding association. Recording certainty remains separate.
+No exact Release is selected. One title query plus the existing official/fallback
+browse and three-details-per-Group bounds cap discovery at 34 logical endpoint
+calls; existing serial transport rate limiting and bounded retries still apply.
+
+Migration 38's `musicbrainz_discovery` snapshot retains queries/pages, sampled
+programs and structured evaluation; `musicbrainz_artist_page` shares fresh
+Artist-ID/offset observations across Albums. Existing migration 37 candidates
+remain the Connections boundary, including application rank and provider rank as
+separate observations. Re-evaluation does not extend provider freshness. Network
+work precedes short persistence transactions, and completion rechecks canonical
+inputs and the local program fingerprint. Trusted partial Albums may discover
+and retain alternates but cannot replace their trusted Group automatically.
+
+Machine translation/transliteration and broader correspondence or Recording-policy
+changes remain deferred. See the implementation follow-up in
 [musicbrainz-matching-audit.md](musicbrainz-matching-audit.md).
