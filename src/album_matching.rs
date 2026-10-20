@@ -86,7 +86,7 @@ pub fn resolve_artist(
     name: &str,
     page: &Page<ArtistCandidate>,
 ) -> std::result::Result<ExternalIdentity, MatchOutcome> {
-    let key = normalize(name);
+    let key = crate::artist_credit::name_key(name);
     let mut candidates = Vec::<ArtistCandidate>::new();
     for candidate in &page.items {
         if !candidate.identity.provider.is_empty()
@@ -100,7 +100,7 @@ pub fn resolve_artist(
     let names = |c: &ArtistCandidate| {
         std::iter::once(c.name.as_str())
             .chain(c.aliases.iter().map(String::as_str))
-            .map(normalize)
+            .map(crate::artist_credit::name_key)
             .collect::<Vec<_>>()
     };
     let exact = candidates
@@ -114,7 +114,7 @@ pub fn resolve_artist(
     let Some(winner) = exact.first() else {
         return Err(MatchOutcome::NoConfidentMatch);
     };
-    if normalize(&winner.name) != key {
+    if crate::artist_credit::name_key(&winner.name) != key {
         let competitors = candidates
             .iter()
             .filter(|c| {
@@ -165,11 +165,11 @@ pub fn corroborate_artist_album(
         .filter(|(_, _, supported)| *supported)
         .collect::<Vec<_>>();
     if let [(artist, outcome, _)] = supported.as_slice() {
-        let exact_name = normalize(&artist.name) == normalize(local_artist)
-            || artist
-                .aliases
-                .iter()
-                .any(|name| normalize(name) == normalize(local_artist));
+        let exact_name = crate::artist_credit::name_key(&artist.name)
+            == crate::artist_credit::name_key(local_artist)
+            || artist.aliases.iter().any(|name| {
+                crate::artist_credit::name_key(name) == crate::artist_credit::name_key(local_artist)
+            });
         if exact_name
             && matches!(
                 outcome,
@@ -462,10 +462,16 @@ impl Cooldown {
 }
 enum WorkerCommand {
     Refresh(AlbumId),
-    Programs(crate::album_program::Input),
+    Programs(
+        crate::album_program::Input,
+        Option<crate::album_program::Programs>,
+    ),
     Match(MatchInput, Vec<crate::edition::LocalTrackEvidence>),
     Recordings(crate::recording::Input),
-    Arm { token: u64, deadline: Instant },
+    Arm {
+        token: u64,
+        deadline: Instant,
+    },
     Cancel,
 }
 #[derive(Clone)]
@@ -635,17 +641,23 @@ impl AlbumMatcher {
                             refresh_album = Some(album);
                             continue;
                         }
-                        WorkerCommand::Programs(input) => {
+                        WorkerCommand::Programs(input, retained) => {
                             let refresh = refresh_album.as_ref() == Some(&input.album_id);
                             if refresh {
                                 refresh_album = None;
                                 candidate_cache.clear();
                             }
                             provider.refresh_discovery(refresh);
-                            let result = candidate_cache
-                                .iter()
-                                .find(|p: &&crate::album_program::Programs| p.album == input.album)
-                                .cloned()
+                            let result = retained
+                                .filter(|_| !refresh)
+                                .or_else(|| {
+                                    candidate_cache
+                                        .iter()
+                                        .find(|p: &&crate::album_program::Programs| {
+                                            p.album == input.album
+                                        })
+                                        .cloned()
+                                })
                                 .map(Ok)
                                 .unwrap_or_else(|| provider.album_programs(&input.album));
                             provider.refresh_discovery(false);
@@ -984,6 +996,15 @@ impl AlbumMatcher {
             .complete_album_match_for(reply, &self.scope)
             .unwrap_or_else(|e| MatchOutcome::Error(e.to_string()));
         self.active = false;
+        if self.scope.provider == "musicbrainz"
+            && matches!(
+                outcome,
+                MatchOutcome::Error(_) | MatchOutcome::ConfigurationError(_)
+            )
+        {
+            let _ =
+                library.musicbrainz_state(&id, crate::musicbrainz_lifecycle::Reason::ProviderError);
+        }
         if self.scope.provider == "spotify" && diagnostic.is_none() {
             use crate::album_candidates::{Reason, Report};
             let reason = match &outcome {
@@ -1307,10 +1328,39 @@ impl AlbumMatcher {
         while let Some(work) = self.queue.front().cloned() {
             if let Work::Programs(id) = &work {
                 if let Some(input) = self.prepare_program(library, id)? {
+                    if self.scope.provider == "musicbrainz" {
+                        library.musicbrainz_state(
+                            id,
+                            crate::musicbrainz_lifecycle::Reason::Matching,
+                        )?;
+                    }
                     self.sender
                         .as_ref()
                         .unwrap()
-                        .send(WorkerCommand::Programs(input))
+                        .send(WorkerCommand::Programs(
+                            input.clone(),
+                            if self.scope.provider == "musicbrainz" {
+                                library
+                                    .musicbrainz_review(id)?
+                                    .candidates
+                                    .into_iter()
+                                    .filter(|c| {
+                                        c.program_observed_at.is_some_and(|at| {
+                                            std::time::SystemTime::now()
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .unwrap_or_default()
+                                                .as_secs()
+                                                as i64
+                                                - at
+                                                < crate::musicbrainz_lifecycle::OBSERVATION_TTL
+                                        })
+                                    })
+                                    .filter_map(|c| c.programs)
+                                    .find(|p| p.album == input.album)
+                            } else {
+                                None
+                            },
+                        ))
                         .map_err(|e| crate::storage::Error::Invalid(e.to_string()))?;
                     self.queue.pop_front();
                     self.active = true;
@@ -1355,12 +1405,19 @@ impl AlbumMatcher {
                         .manual_artists
                         .get(&id)
                         .is_some_and(|identity| input.known_artist.as_ref() == Some(identity));
-                    let tracks = if self.candidate_programs {
+                    let tracks = if self.candidate_programs || self.scope.provider == "musicbrainz"
+                    {
                         library.local_album_tracks(&id)?
                     } else {
                         vec![]
                     };
                     self.candidate_input = self.candidate_programs.then(|| tracks.clone());
+                    if self.scope.provider == "musicbrainz" {
+                        library.musicbrainz_state(
+                            &id,
+                            crate::musicbrainz_lifecycle::Reason::Matching,
+                        )?;
+                    }
                     self.sender
                         .as_ref()
                         .unwrap()

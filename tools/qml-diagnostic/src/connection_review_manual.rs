@@ -58,9 +58,14 @@ impl Bridge {
         if target.provider == "musicbrainz" {
             if action == "manual-recording" {
                 let recordings = self
-                    .connection_catalog_review_candidate(&target.album)
-                    .ok_or("Inspect a Release first")?
-                    .0;
+                    .connection_review_state
+                    .programs
+                    .clone()
+                    .or_else(|| {
+                        self.connection_catalog_review_candidate(&target.album)
+                            .map(|c| c.0)
+                    })
+                    .ok_or("Inspect a Release first")?;
                 let candidate = recordings
                     .programs
                     .iter()
@@ -394,12 +399,7 @@ impl Bridge {
         &self,
         target: &Target,
     ) -> Result<Vec<Value>, String> {
-        let Some(program) = self
-            .connection_review_state
-            .programs
-            .as_ref()
-            .and_then(|p| p.programs.first())
-        else {
+        let Some(programs) = self.connection_review_state.programs.as_ref() else {
             return Ok(vec![]);
         };
         let mappings = self.musicbrainz_review_mappings()?;
@@ -408,13 +408,17 @@ impl Bridge {
             .library
             .local_album_tracks(&target.album)
             .map_err(e_string)?;
-        let comparison = music_library::album_program::inspect_album_program(
+        let Some((selected, comparison)) = music_library::musicbrainz_recording::review_program(
             &local,
-            program,
+            programs,
             self.connection_review_state.known["title"]
                 .as_str()
                 .unwrap_or(""),
-        );
+        ) else {
+            return Ok(vec![]);
+        };
+        let program = &programs.programs[selected];
+        let comparison = comparison.program;
         let mut rows = Vec::new();
         for t in local.iter().take(200) {
             let mapped = mappings.iter().find(|(track, _)| track == &t.track_id);

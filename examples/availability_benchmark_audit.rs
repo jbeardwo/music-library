@@ -703,3 +703,14 @@ mod spotify_lifecycle;
 #[allow(dead_code)]
 #[path = "../src/metadata.rs"]
 mod metadata;
+
+#[allow(dead_code)]
+#[path = "../src/musicbrainz_lifecycle.rs"]
+mod musicbrainz_lifecycle;
+#[allow(dead_code)]
+#[path = "../src/program_correspondence.rs"]
+mod program_correspondence;
+
+#[allow(dead_code)]
+#[path = "../src/musicbrainz_recording.rs"]
+mod musicbrainz_recording;

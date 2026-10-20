@@ -35,7 +35,7 @@ fn album(key: &str, title: &str, kind: &str) -> ArtistAlbumCandidate {
     }
 }
 #[test]
-fn album_hyphen_typography_matches_short_titles_without_fuzzy_artist_matching() {
+fn narrow_hyphen_typography_is_shared_without_fuzzy_artist_matching() {
     let artist_id = id("artist", "a");
     for title in ["by-", "by\u{2010}", "by\u{2011}"] {
         let candidates = page(vec![album("by", title, "Album")]);
@@ -79,7 +79,7 @@ fn album_hyphen_typography_matches_short_titles_without_fuzzy_artist_matching() 
     ));
     assert_eq!(
         resolve_artist("by-", &page(vec![artist("a", "by\u{2010}", &[])])),
-        Err(MatchOutcome::NoConfidentMatch)
+        Ok(artist_id)
     );
     assert_eq!(
         music_library::matching::normalize("by\u{2010}"),

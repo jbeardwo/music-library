@@ -294,7 +294,7 @@ pub fn contextual_title_class(left: &str, right: &str) -> Option<ContextualTitle
     let compact = |s: &str| s.split_whitespace().collect::<String>();
     if a != b
         && compact(&a) == compact(&b)
-        && compact(&a).chars().count() >= 6
+        && compact(&a).chars().count() >= 4
         && a.split_whitespace()
             .chain(b.split_whitespace())
             .all(|w| w.chars().count() >= 2)

@@ -181,7 +181,58 @@ pub fn resolve_canonical(
             known,
         );
     }
-    let report = initial_report(provider, context, Some(artist), page, local);
+    let mut report = initial_report(provider, context, Some(artist), page, local);
+    // Reuse the existing typed boilerplate relationship; no new string strip
+    // rule or search expansion. Only a unique, completely corroborated program
+    // inside the established MusicBrainz Artist may relax this Album title.
+    if artist.provider == "musicbrainz"
+        && page.next_offset.is_none()
+        && matches!(
+            accepted_album_confirmed(context.0, artist, page, manual),
+            MatchOutcome::NoConfidentMatch
+        )
+    {
+        let plausible = report
+            .candidates
+            .iter()
+            .filter(|c| {
+                c.title.comparison == TitleComparison::EstablishedArtistBoilerplate
+                    && c.artist_ids.as_slice() == std::slice::from_ref(artist)
+            })
+            .map(|c| c.identity.clone())
+            .collect::<Vec<_>>();
+        if let [identity] = plausible.as_slice() {
+            let programs = provider.album_programs(identity)?;
+            let strong = !programs.programs.is_empty()
+                && local.len() >= 3
+                && programs.programs.iter().all(|p| {
+                    let c = crate::program_correspondence::correspond(local, p, context.0);
+                    p.complete
+                        && c.program.alignment.strong
+                        && c.program
+                            .tracks
+                            .iter()
+                            .all(|r| r.decision.is_correspondence())
+                });
+            if cache.len() >= 4 {
+                cache.remove(0);
+            }
+            cache.push(programs);
+            if strong {
+                report.decision = "Accepted".into();
+                for row in &mut report.candidates {
+                    if row.identity == *identity {
+                        row.decision = "Accepted".into();
+                        row.reasons = vec![Reason::AcceptedArtistBoilerplate];
+                    }
+                }
+                return Ok(Resolution {
+                    outcome: MatchOutcome::MatchedClose(identity.clone()),
+                    report,
+                });
+            }
+        }
+    }
     let outcome = resolve_legacy(provider, context, artist, page, manual, local, cache)?;
     Ok(Resolution { outcome, report })
 }

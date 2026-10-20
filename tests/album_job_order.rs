@@ -26,6 +26,7 @@ impl MetadataExtractor for Tags {
             release_title: Some(self.0.clone()),
             release_artists: vec!["Artist".into()],
             track_title: Some("Song".into()),
+            track_artists: vec!["Artist".into()],
             track_number: Some(1),
             ..Default::default()
         })
@@ -139,6 +140,11 @@ impl CatalogProvider for Provider {
                 complete: true,
                 tracks: vec![TrackEvidence {
                     number: Some(1),
+                    artists: vec![music_library::edition::ArtistEvidence {
+                        name: "Artist".into(),
+                        identities: vec![identity("artist", "a")],
+                        join_phrase: String::new(),
+                    }],
                     title: Some(
                         if self.scenario == Scenario::UnresolvedTrack && album.external_id == "a" {
                             "Unrelated"

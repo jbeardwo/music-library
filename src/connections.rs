@@ -117,13 +117,20 @@ impl Library {
         let c = connected(provider)?;
         let reason = match provider {
             "local" => "'No usable local file'",
-            "musicbrainz" => "'No MusicBrainz Recording'",
+            "musicbrainz" => {
+                "COALESCE(json_extract(ms.track_reasons,'$.\"'||t.id||'\".label'),CASE ms.reason WHEN 'version_uncertain' THEN 'Track version needs review' WHEN 'insufficient_evidence' THEN 'Candidate retained — insufficient correspondence evidence' WHEN 'identity_conflict' THEN 'Trusted identity conflicts' WHEN 'duration_conflict' THEN 'Track duration conflicts' WHEN 'matching' THEN 'Matching…' WHEN 'candidates_found' THEN 'Candidate found — needs review' WHEN 'album_title_conflict' THEN 'Candidate rejected: Album title conflict' WHEN 'artist_unresolved' THEN 'Artist identity needs review' WHEN 'no_candidates' THEN 'No candidates after bounded search' WHEN 'provider_deferred' THEN 'Provider temporarily unavailable' WHEN 'provider_error' THEN 'Provider request failed' WHEN 'program_incomplete' THEN 'Candidate program incomplete' WHEN 'recording_ambiguous' THEN 'Recording correspondence ambiguous' WHEN 'partial_mapping' THEN 'Candidate retained — partial mapping' WHEN 'evidence_changed' THEN 'Evidence changed — re-evaluate' WHEN 'program_retained' THEN 'Candidate program retained' ELSE 'Not checked yet' END)"
+            }
             _ => {
                 "COALESCE((SELECT reason FROM spotify_connection_review v WHERE v.track_id=t.id),'No reconciliation attempted yet')"
             }
         };
+        let lifecycle_join = if provider == "musicbrainz" {
+            "LEFT JOIN musicbrainz_match_state ms ON ms.album_id=r.album_id"
+        } else {
+            ""
+        };
         let sql = format!(
-            "SELECT t.id,e.title,{reason} FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN effective_track_metadata e ON e.track_id=t.id WHERE r.album_id=?1 AND (?4 IS NULL OR (COALESCE(t.disc_number,1),COALESCE(t.track_number,0),t.id)>(SELECT COALESCE(disc_number,1),COALESCE(track_number,0),id FROM track WHERE id=?4)) AND {}EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider=?2) {} ORDER BY COALESCE(t.disc_number,1),COALESCE(t.track_number,0),t.id LIMIT ?3",
+            "SELECT t.id,e.title,{reason} FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id JOIN effective_track_metadata e ON e.track_id=t.id {lifecycle_join} WHERE r.album_id=?1 AND (?4 IS NULL OR (COALESCE(t.disc_number,1),COALESCE(t.track_number,0),t.id)>(SELECT COALESCE(disc_number,1),COALESCE(track_number,0),id FROM track WHERE id=?4)) AND {}EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider=?2) {} ORDER BY COALESCE(t.disc_number,1),COALESCE(t.track_number,0),t.id LIMIT ?3",
             if marked { "" } else { "NOT " },
             if marked {
                 String::new()

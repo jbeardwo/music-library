@@ -30,6 +30,7 @@ pub struct State {
     provider_header: Value,
     inspection: Value,
     programs: Option<Programs>,
+    retained_candidates: Vec<music_library::musicbrainz_lifecycle::Candidate>,
     recordings: Vec<TrackEvidence>,
     recording_best: Option<ExternalIdentity>,
     file: Option<FileCandidate>,
@@ -53,7 +54,7 @@ pub fn release_program(release: &music_library::catalog::Release) -> Programs {
         note: "Explicitly inspected MusicBrainz Release".into(),
         programs: vec![Program {
             identity: Some(release.identity.clone()),
-            complete: true,
+            complete: false,
             tracks: release
                 .media
                 .iter()
@@ -179,6 +180,24 @@ impl Bridge {
             } else {
                 None
             };
+            let durable = if provider == "musicbrainz" {
+                Some(
+                    self.session
+                        .library
+                        .musicbrainz_review(&album)
+                        .map_err(e_string)?,
+                )
+            } else {
+                None
+            };
+            let best = durable.as_ref().and_then(|r| {
+                r.candidates
+                    .iter()
+                    .find(|c| c.review_programs().is_some())
+                    .or_else(|| r.candidates.first())
+            });
+            let programs = best.and_then(|c| c.review_programs().cloned()).or(programs);
+            let provider_header=best.map(|c|json!({"title":c.metadata.title,"album":c.metadata.title,"artist":c.metadata.artist,"date":c.metadata.date,"kind":c.metadata.primary_type})).unwrap_or(Value::Null);
             let generation = self.connection_review_state.generation.wrapping_add(1);
             self.connection_review_state = State {
                 target: Some(Target {
@@ -188,6 +207,8 @@ impl Bridge {
                 }),
                 known,
                 programs,
+                provider_header,
+                retained_candidates: durable.map(|r| r.candidates).unwrap_or_default(),
                 generation,
                 ..Default::default()
             };
@@ -288,6 +309,16 @@ impl Bridge {
             }
             self.connection_review_state.error.clear();
             self.connection_review_state.index = index as usize;
+            if target.provider == "musicbrainz" && target.track.is_none() {
+                if let Some(c) = self
+                    .connection_review_state
+                    .retained_candidates
+                    .get(index as usize)
+                {
+                    self.connection_review_state.programs = c.review_programs().cloned();
+                    self.connection_review_state.provider_header = json!({"title":c.metadata.title,"album":c.metadata.title,"artist":c.metadata.artist,"date":c.metadata.date,"kind":c.metadata.primary_type});
+                }
+            }
             if target.provider == "spotify" && target.track.is_none() {
                 let raw = self.spotify_review_action_impl("inspect", target.album.as_ref(), index);
                 let value: Value = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
@@ -473,58 +504,6 @@ impl Bridge {
             .map(|c| c.evidence)
             .collect::<Vec<_>>();
         if let Some(track) = &target.track {
-            let input = self
-                .session
-                .library
-                .song_resolution_input(track)
-                .map_err(e_string)?;
-            let local = music_library::recording::LocalTrack {
-                track_id: track.clone(),
-                recording_id: self
-                    .session
-                    .library
-                    .recording_for_track(track)
-                    .map_err(e_string)?
-                    .recording_id,
-                title: input.title,
-                artist: input.artist,
-                artist_ids: input
-                    .artists
-                    .iter()
-                    .flat_map(|a| {
-                        a.identities
-                            .iter()
-                            .filter(|id| id.provider == "musicbrainz" && id.kind == "artist")
-                            .cloned()
-                    })
-                    .collect(),
-                duration_ms: input.duration_ms,
-                known: false,
-            };
-            let candidates: Vec<_> =
-                rows.iter()
-                    .filter_map(|r| {
-                        r.recording.identities.first().map(|id| {
-                            music_library::recording::Candidate {
-                                identity: id.clone(),
-                                title: r.title.clone().unwrap_or_default(),
-                                artist: r
-                                    .artists
-                                    .iter()
-                                    .map(|a| a.name.clone())
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                artist_ids: r
-                                    .artists
-                                    .iter()
-                                    .flat_map(|a| a.identities.clone())
-                                    .collect(),
-                                duration_ms: r.duration_ms,
-                                isrcs: vec![],
-                            }
-                        })
-                    })
-                    .collect();
             let local_program = self
                 .session
                 .library
@@ -532,13 +511,14 @@ impl Bridge {
                 .map_err(e_string)?;
             let mut relevant = Vec::new();
             for program in &programs.programs {
-                let comparison = music_library::album_program::inspect_album_program(
+                let comparison = music_library::program_correspondence::correspond(
                     &local_program,
                     program,
                     self.connection_review_state.known["album"]
                         .as_str()
                         .unwrap_or(""),
-                );
+                )
+                .program;
                 for row in &comparison.tracks {
                     if row.track_id == track.as_ref()
                         && matches!(row.decision,
@@ -553,39 +533,29 @@ impl Bridge {
                     }
                 }
             }
-            for candidate in &candidates {
-                if matches!(
-                    music_library::recording::compare(
-                        &local,
-                        &music_library::catalog::Page {
-                            items: vec![candidate.clone()],
-                            next_offset: None,
-                        }
-                    ),
-                    music_library::recording::TrackOutcome::Matched(_)
-                ) {
-                    relevant.push(candidate.identity.clone());
-                }
-            }
             rows.retain(|row| {
                 row.recording
                     .identities
                     .iter()
                     .any(|id| relevant.contains(id))
             });
-            if let music_library::recording::TrackOutcome::Matched(best) =
-                music_library::recording::compare(
-                    &local,
-                    &music_library::catalog::Page {
-                        items: candidates,
-                        next_offset: None,
-                    },
-                )
+            let assessment = music_library::musicbrainz_recording::assess(
+                &local_program,
+                programs,
+                self.connection_review_state.known["album"]
+                    .as_str()
+                    .unwrap_or(""),
+            );
+            if let Some(best) = assessment
+                .recordings
+                .iter()
+                .find(|r| &r.track == track)
+                .and_then(|r| r.recording.as_ref())
             {
-                self.connection_review_state.recording_best = Some(best.identity.clone());
+                self.connection_review_state.recording_best = Some(best.clone());
                 if let Some(index) = rows
                     .iter()
-                    .position(|r| r.recording.identities.contains(&best.identity))
+                    .position(|r| r.recording.identities.contains(best))
                 {
                     let first = rows.remove(index);
                     rows.insert(0, first);
@@ -604,21 +574,20 @@ impl Bridge {
         let Some(programs) = &self.connection_review_state.programs else {
             return Ok(vec![]);
         };
-        let Some(program) = programs.programs.first() else {
-            return Ok(vec![]);
-        };
         let local = self
             .session
             .library
             .local_album_tracks(&target.album)
             .map_err(e_string)?;
-        let comparison = music_library::album_program::inspect_album_program(
+        let Some((_, comparison)) = music_library::musicbrainz_recording::review_program(
             &local,
-            program,
+            programs,
             self.connection_review_state.known["title"]
                 .as_str()
                 .unwrap_or(""),
-        );
+        ) else {
+            return Ok(vec![]);
+        };
         let mut relevant = vec![];
         let mut after = None;
         loop {
@@ -633,33 +602,20 @@ impl Bridge {
                 break;
             }
         }
-        Ok(comparison
-            .tracks
-            .iter()
-            .filter(|r| relevant.iter().any(|id| id.as_ref() == r.track_id))
-            .filter(|r| {
-                matches!(
-                    r.decision,
-                    music_library::album_program::PositionDecision::ExactAnchor
-                        | music_library::album_program::PositionDecision::CorroboratedPosition
-                        | music_library::album_program::PositionDecision::AlignedAfterInsertion
-                        | music_library::album_program::PositionDecision::ReorderedTrack
-                )
-            })
-            .filter_map(|r| {
-                r.provider.as_ref().and_then(|p| {
-                    let ids = &p.recording.identities;
-                    (ids.len() == 1).then(|| (TrackId(r.track_id.clone()), ids[0].clone()))
-                })
-            })
-            .collect())
+        Ok(
+            music_library::musicbrainz_recording::confirmation(&comparison)
+                .into_iter()
+                .filter(|(track, _)| relevant.contains(track))
+                .collect(),
+        )
     }
     fn connection_review_snapshot(&mut self, target: &Target) -> Result<Value, String> {
         self.poll_connection_manual(target)?;
         self.sync_connection_program(target)?;
         if target.provider == "musicbrainz" {
-            if let Some((programs, header)) =
-                self.connection_catalog_review_candidate(&target.album)
+            if let Some((programs, header)) = self
+                .connection_catalog_review_candidate(&target.album)
+                .filter(|_| self.connection_review_state.retained_candidates.is_empty())
             {
                 self.connection_review_state.programs = Some(programs);
                 self.connection_review_state.provider_header = header;
@@ -671,7 +627,7 @@ impl Bridge {
         let mut program = vec![];
         let mut evidence = vec![];
         let count;
-        let mut decision = String::new();
+        let mut decision: String;
         let mut can_connect = false;
         let mut confirm = false;
         if target.provider == "spotify" && target.track.is_none() {
@@ -820,6 +776,14 @@ impl Bridge {
             can_connect = count > 0;
             confirm = count > 0 && evaluation["final_decision"].as_str() != Some("accept");
         } else if target.provider == "musicbrainz" {
+            decision = self
+                .session
+                .library
+                .musicbrainz_review(&target.album)
+                .map_err(e_string)?
+                .reason
+                .label()
+                .into();
             let candidate = if target.track.is_some() {
                 count = self.connection_review_state.recordings.len();
                 self.connection_review_state
@@ -827,7 +791,11 @@ impl Bridge {
                     .get(self.connection_review_state.index)
                     .cloned()
             } else {
-                count = usize::from(self.connection_review_state.programs.is_some());
+                count = self
+                    .connection_review_state
+                    .retained_candidates
+                    .len()
+                    .max(usize::from(self.connection_review_state.programs.is_some()));
                 None
             };
             for (label, key) in if target.track.is_some() {
@@ -881,11 +849,12 @@ impl Bridge {
                         .local_album_tracks(&target.album)
                         .map_err(e_string)?;
                     for p in &programs.programs {
-                        let comparison = music_library::album_program::inspect_album_program(
+                        let comparison = music_library::program_correspondence::correspond(
                             &local,
                             p,
                             known["title"].as_str().unwrap_or(""),
-                        );
+                        )
+                        .program;
                         program.extend(rows_from_comparison(&json!([
                             Self::spotify_program_comparison("MusicBrainz", &comparison)
                         ])));
@@ -908,7 +877,14 @@ impl Bridge {
                     decision = "Established program / Recording correspondence".into();
                 }
                 if count == 0 {
-                    decision.clear();
+                    decision = self
+                        .session
+                        .library
+                        .musicbrainz_review(&target.album)
+                        .map_err(e_string)?
+                        .reason
+                        .label()
+                        .into();
                 }
                 evidence.push(programs.note.clone());
             }
@@ -1319,7 +1295,148 @@ mod tests {
         assert_eq!(read["track"], json!(other));
     }
     #[test]
-    fn cached_musicbrainz_program_uses_recording_matcher_and_partial_album_confirmation() {
+    fn musicbrainz_review_restores_retained_program_after_bridge_and_library_restart() {
+        let (_temp, mut library) = sample::create().unwrap();
+        let track = TrackId(
+            library
+                .browse(&music_library::browse::Request {
+                    limit: 1,
+                    ..Default::default()
+                })
+                .unwrap()[0]
+                .id
+                .clone(),
+        );
+        let album = library.album_id_for_track(&track).unwrap();
+        let local = library.local_album_tracks(&album).unwrap();
+        let path = library.database_path().unwrap();
+        let programs = Programs {
+            album: ExternalIdentity {
+                provider: "musicbrainz".into(),
+                kind: "release_group".into(),
+                external_id: "retained".into(),
+            },
+            programs: vec![Program {
+                identity: None,
+                complete: true,
+                tracks: local
+                    .iter()
+                    .map(|t| {
+                        let mut e = t.evidence.clone();
+                        e.recording.identities = vec![ExternalIdentity {
+                            provider: "musicbrainz".into(),
+                            kind: "recording".into(),
+                            external_id: t.track_id.0.clone(),
+                        }];
+                        e
+                    })
+                    .collect(),
+            }],
+            note: "cached fixture".into(),
+        };
+        library
+            .retain_musicbrainz_programs(&album, &programs)
+            .unwrap();
+        library
+            .retain_musicbrainz_inspection(&album, &programs)
+            .unwrap();
+        drop(library);
+        for _ in 0..2 {
+            let bridge = QObjectBox::new(Bridge::new(Session::new(
+                music_library::Library::open(&path).unwrap(),
+            )));
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.auto_match = false;
+            begin(&mut b, "musicbrainz", &album, None);
+            let snapshot: Value =
+                serde_json::from_str(&b.connection_review_impl("read", "", 0)).unwrap();
+            assert_eq!(snapshot["count"], 1);
+            assert!(!snapshot["program"].as_array().unwrap().is_empty());
+            assert!(b.connection_catalog_state.idle());
+            assert!(!b.connection_review_state.manual.pending());
+            let expected = music_library::musicbrainz_recording::confirmation(
+                &music_library::program_correspondence::correspond(
+                    &b.session.library.local_album_tracks(&album).unwrap(),
+                    &programs.programs[0],
+                    "Diagnostic edition",
+                ),
+            );
+            let displayed = b.musicbrainz_review_mappings().unwrap();
+            assert_eq!(displayed, expected);
+        }
+    }
+    #[test]
+    #[ignore = "audit-only: disposable database and retained MusicBrainz audit JSON directory required"]
+    fn musicbrainz_audit_retained_real_programs() {
+        let source = std::env::var("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE").unwrap();
+        assert!(source.starts_with("/tmp/mb-audit-"));
+        let directory = std::env::var("MUSIC_LIBRARY_MB_AUDIT_EVIDENCE").unwrap();
+        let selected = [
+            "Freshman Year",
+            "The Devil Isn't Red",
+            "Business & Pleasure",
+            "The EP of a Band Called Adebisi Shank",
+        ];
+        let mut inspected = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            let data: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let Some(title) = data["title"].as_str().filter(|s| selected.contains(s)) else {
+                continue;
+            };
+            let temp = tempfile::tempdir().unwrap();
+            let copy = temp.path().join("audit.sqlite");
+            // VACUUM INTO is read-only on the disposable source; each confirmation is isolated.
+            rusqlite::Connection::open(&source)
+                .unwrap()
+                .execute("VACUUM INTO ?1", [copy.to_str().unwrap()])
+                .unwrap();
+            let library = music_library::Library::open(&copy).unwrap();
+            let before = library.connection_coverage("musicbrainz").unwrap();
+            let album = AlbumId(data["album_id"].as_str().unwrap().into());
+            let album_ids = library.list_album_external_identities(&album).unwrap();
+            let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+            let pinned = bridge.pinned();
+            let mut b = pinned.borrow_mut();
+            b.auto_match = false;
+            begin(&mut b, "musicbrainz", &album, None);
+            b.connection_review_state.programs =
+                Some(serde_json::from_value(data["programs"].clone()).unwrap());
+            let mappings = b.musicbrainz_review_mappings().unwrap();
+            let snapshot: Value =
+                serde_json::from_str(&b.connection_review_impl("read", "", 0)).unwrap();
+            assert!(!snapshot["program"].as_array().unwrap().is_empty());
+            assert!(!mappings.is_empty(), "{title}: {snapshot}");
+            let result: Value =
+                serde_json::from_str(&b.connection_review_impl("connect", "", 0)).unwrap();
+            assert_eq!(result["completed"], true, "{title}: {result}");
+            let after = b
+                .session
+                .library
+                .connection_coverage("musicbrainz")
+                .unwrap();
+            assert_eq!(after.connected - before.connected, mappings.len() as i64);
+            assert_eq!(after.saved, before.saved);
+            assert_eq!(
+                b.session
+                    .library
+                    .list_album_external_identities(&album)
+                    .unwrap(),
+                album_ids
+            );
+            eprintln!(
+                "MB_AUDIT_REVIEW {title}: persisted {} Recording mappings; coverage {} -> {}; Album identities unchanged",
+                mappings.len(),
+                before.connected,
+                after.connected
+            );
+            inspected += 1;
+        }
+        assert_eq!(inspected, selected.len());
+    }
+    #[test]
+    fn cached_musicbrainz_program_uses_shared_correspondence_and_partial_album_confirmation() {
         let (_temp, library) = sample::create().unwrap();
         let rows = library
             .browse(&music_library::browse::Request {
@@ -1349,6 +1466,7 @@ mod tests {
         exact.recording.identities = vec![identity.clone()];
         let mut bad = exact.clone();
         bad.title = Some("Wrong recording".into());
+        bad.number = Some(999); // A distinct candidate position, not contradictory duplicate evidence.
         bad.recording.identities[0].external_id = "aaa-sorts-first".into();
         let programs = Programs {
             album: ExternalIdentity {
@@ -1487,6 +1605,7 @@ mod tests {
                 comment: String::new(),
             };
             candidates.push(CandidateEvidence {
+                observation: None,
                 identity,
                 artist: candidate.artist.clone(),
                 artist_ids: vec![],

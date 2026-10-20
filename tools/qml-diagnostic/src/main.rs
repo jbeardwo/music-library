@@ -5053,6 +5053,7 @@ mod library_ui_tests {
                 comment: String::new(),
             };
             candidates.push(CandidateEvidence {
+                observation: None,
                 identity: p.album.clone(),
                 artist: "A".into(),
                 artist_ids: candidate.artist_ids.clone(),

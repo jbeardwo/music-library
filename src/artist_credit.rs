@@ -24,6 +24,17 @@ fn conflict(a: &[ExternalIdentity], b: &[ExternalIdentity]) -> bool {
             })
     })
 }
+/// Full-name typography policy shared by initial resolution and established credits.
+pub fn name_key(value: &str) -> String {
+    crate::matching::normalize_album_title(value)
+}
+/// Only matching trusted Artist identities count. Conflicts veto textual agreement.
+pub fn trusted_overlap(a: &ArtistEvidence, b: &ArtistEvidence) -> bool {
+    !conflict(&a.identities, &b.identities)
+        && a.identities
+            .iter()
+            .any(|i| i.kind == "artist" && !i.external_id.is_empty() && b.identities.contains(i))
+}
 pub fn same_artist(a: &ArtistEvidence, b: &ArtistEvidence) -> bool {
     !conflict(&a.identities, &b.identities)
         && (a.identities.iter().any(|id| b.identities.contains(id))

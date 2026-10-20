@@ -47,7 +47,7 @@ impl CatalogError {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Credit {
     /// Optional strong provider Artist identity, separate from credited presentation.
     pub identity: Option<ExternalIdentity>,
@@ -65,7 +65,7 @@ pub struct Page<T> {
     pub items: Vec<T>,
     pub next_offset: Option<u32>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct AlbumCandidate {
     pub credits: Vec<Credit>,
     pub identity: ExternalIdentity,
@@ -210,6 +210,10 @@ pub trait CatalogProvider: Send {
     /// Actual bounded search texts, retained for review; never credentials.
     fn album_discovery_queries(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// Bounded provider presentation retained alongside evaluation, never identity authority.
+    fn album_candidate_observation(&self, _identity: &ExternalIdentity) -> Option<AlbumCandidate> {
+        None
     }
     fn rejected_album_candidates(&self) -> Vec<ArtistAlbumCandidate> {
         vec![]

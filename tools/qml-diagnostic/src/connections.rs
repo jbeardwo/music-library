@@ -203,7 +203,10 @@ impl Bridge {
 
 enum CatalogReply {
     Search(Vec<music_library::catalog::AlbumCandidate>),
-    Inspect(music_library::catalog::Release),
+    Inspect(
+        Option<music_library::catalog::Release>,
+        music_library::album_program::Programs,
+    ),
 }
 #[derive(Default)]
 pub struct CatalogState {
@@ -214,9 +217,12 @@ pub struct CatalogState {
         std::sync::mpsc::Receiver<Result<music_library::connections::Coverage, String>>,
     )>,
     attachment: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
-    receiver: Option<std::sync::mpsc::Receiver<Result<CatalogReply, String>>>,
+    receiver: Option<
+        std::sync::mpsc::Receiver<Result<CatalogReply, music_library::catalog::CatalogError>>,
+    >,
     candidates: Vec<music_library::catalog::AlbumCandidate>,
     release: Option<music_library::catalog::Release>,
+    programs: Option<music_library::album_program::Programs>,
 }
 impl Bridge {
     pub fn connection_catalog_impl(&mut self, action: &str, value: &str, index: i32) -> String {
@@ -226,13 +232,38 @@ impl Bridge {
                     match receiver.try_recv() {
                         Ok(result) => {
                             self.connection_catalog_state.receiver = None;
-                            match result? {
+                            let result = result.map_err(|e| {
+                                if let Some(album) = &self.connection_catalog_state.review_album {
+                                    let _ = self.session.library.musicbrainz_state(
+                                        album,
+                                        if e.is_provider_unavailable() {music_library::musicbrainz_lifecycle::Reason::ProviderDeferred}else{music_library::musicbrainz_lifecycle::Reason::ProviderError},
+                                    );
+                                }
+                                e.to_string()
+                            })?;
+                            match result {
                                 CatalogReply::Search(rows) => {
+                                    if let Some(album) = &self.connection_catalog_state.review_album
+                                    {
+                                        self.session
+                                            .library
+                                            .retain_musicbrainz_candidates(album, &rows, true)
+                                            .map_err(|e| e.to_string())?;
+                                    }
                                     self.connection_catalog_state.candidates = rows;
                                     self.connection_catalog_state.release = None;
+                                    self.connection_catalog_state.programs = None;
                                 }
-                                CatalogReply::Inspect(release) => {
-                                    self.connection_catalog_state.release = Some(release)
+                                CatalogReply::Inspect(release, programs) => {
+                                    if let Some(album) = &self.connection_catalog_state.review_album
+                                    {
+                                        self.session
+                                            .library
+                                            .retain_musicbrainz_inspection(album, &programs)
+                                            .map_err(|e| e.to_string())?;
+                                    }
+                                    self.connection_catalog_state.programs = Some(programs);
+                                    self.connection_catalog_state.release = release
                                 }
                             }
                         }
@@ -300,23 +331,64 @@ impl Bridge {
             } else {
                 None
             };
+            if let (Some(album), Some(candidate)) =
+                (&self.connection_catalog_state.review_album, &candidate)
+            {
+                let retained = self
+                    .session
+                    .library
+                    .musicbrainz_review(album)
+                    .map_err(|e| e.to_string())?;
+                if let Some(c) = retained.candidates.into_iter().find(|c| {
+                    c.metadata.identity == candidate.identity
+                        && Some(c.review_observed_at()).is_some_and(|at| {
+                            std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs() as i64
+                                - at
+                                < music_library::musicbrainz_lifecycle::OBSERVATION_TTL
+                        })
+                }) {
+                    if let Some(p) = c.review_programs().cloned() {
+                        self.connection_catalog_state.programs = Some(p);
+                        return Ok(serde_json::json!({"pending":false,"retained":true}));
+                    }
+                }
+            }
             if action != "search" && action != "inspect" {
                 return Err("Unknown catalog action".into());
+            }
+            if let Some(album) = &self.connection_catalog_state.review_album {
+                if let Some(c) = &candidate {
+                    self.session
+                        .library
+                        .retain_musicbrainz_candidates(album, std::slice::from_ref(c), true)
+                        .map_err(|e| e.to_string())?;
+                }
+                self.session
+                    .library
+                    .musicbrainz_state(
+                        album,
+                        music_library::musicbrainz_lifecycle::Reason::Matching,
+                    )
+                    .map_err(|e| e.to_string())?;
             }
             let query = value.to_owned();
             let (send, recv) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
-                let mut catalog = music_library::catalog::CatalogSession::new(
-                    music_library_musicbrainz::MusicBrainz::new(),
-                );
+                use music_library::catalog::CatalogProvider;
+                let mut catalog = music_library_musicbrainz::MusicBrainz::new();
                 let result = if let Some(candidate) = candidate {
-                    catalog.add_album(&candidate).map(CatalogReply::Inspect)
+                    catalog
+                        .inspect_album(&candidate)
+                        .map(|(r, p)| CatalogReply::Inspect(r, p))
                 } else {
                     catalog
                         .search_albums(&query, 0)
                         .map(|p| CatalogReply::Search(p.items))
                 };
-                let _ = send.send(result.map_err(|e| e.to_string()));
+                let _ = send.send(result);
             });
             self.connection_catalog_state.receiver = Some(recv);
             Ok(serde_json::json!({"pending":true}))
@@ -344,7 +416,7 @@ impl Bridge {
             self.connection_catalog_state
                 .release
                 .as_ref()
-                .map(crate::connection_review::release_program)
+                .and_then(|_| self.connection_catalog_state.programs.clone())
         } else {
             None
         };
@@ -353,8 +425,13 @@ impl Bridge {
         self.connection_catalog_state.candidates.clear();
         if album.is_some() && self.connection_catalog_state.review_album.as_ref() != album {
             self.connection_catalog_state.release = None;
+            self.connection_catalog_state.programs = None;
         }
         if let Some(album) = album {
+            if let Ok(review) = self.session.library.musicbrainz_review(album) {
+                self.connection_catalog_state.candidates =
+                    review.candidates.into_iter().map(|c| c.metadata).collect();
+            }
             self.connection_catalog_state.review_album = Some(album.clone());
         }
         retained
@@ -369,8 +446,16 @@ impl Bridge {
         if self.connection_catalog_state.review_album.as_ref() != Some(album) {
             return None;
         }
+        if let Some(p) = &self.connection_catalog_state.programs {
+            let c = self
+                .connection_catalog_state
+                .candidates
+                .iter()
+                .find(|c| c.identity == p.album);
+            return Some((p.clone(),c.map(|c|serde_json::json!({"title":c.title,"album":c.title,"artist":c.artist,"date":c.date,"kind":c.primary_type})).unwrap_or(serde_json::Value::Null)));
+        }
         self.connection_catalog_state.release.as_ref().map(|release|(
-            crate::connection_review::release_program(release),
+            self.connection_catalog_state.programs.clone().unwrap_or_else(||crate::connection_review::release_program(release)),
             serde_json::json!({"title":release.album.title,"album":release.album.title,"artist":music_library::catalog::credit_display(&release.album.credits),"date":release.date,"kind":release.album.release_type})
         ))
     }

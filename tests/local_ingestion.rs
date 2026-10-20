@@ -627,7 +627,7 @@ fn migration_from_18_preserves_exclusion_identity_and_seeds_root_links() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
             .unwrap(),
-        36
+        37
     );
     assert_eq!(
         run(&mut l, Request::ConfiguredLocations, &mut Tags::default()).imported,

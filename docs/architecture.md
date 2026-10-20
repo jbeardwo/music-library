@@ -2458,3 +2458,53 @@ provider work; the active coordinator completes cached/local work across remaini
 batches. Typed provider failures survive the catalog-credit preparation boundary.
 Opening review cannot overwrite a temporary-provider state with cache-refresh
 required. See [reconciliation correction validation](connections-reconciliation-report.md).
+
+### MusicBrainz correspondence and retained observations (schema 37)
+
+MusicBrainz automatic enrichment and Connections review both consume
+`program_correspondence::correspond`, which wraps the existing authoritative
+program inspector/sequence aligner. Its typed result retains each local Track's
+decision and evidence, unmatched provider rows, ambiguity, conflicts and warnings.
+It does not attach identity. Unicode-preserving full Artist equality, trusted-ID
+conflict vetoes, structured credits and contextual title relations are shared
+semantics; provider discovery remains in adapters.
+
+`musicbrainz_recording::assess` applies a separate automatic identity policy to
+those correspondences. Complete sampled Releases must agree on the Recording;
+observed contradictions, Artist uncertainty, meaningful version differences,
+insufficient contextual anchors and Recording duration conflicts remain blockers.
+An incomplete alternative retains uncertainty without erasing independent complete
+support. All-incomplete samples cannot authorize automatic persistence. Explicit
+review confirmation selects one inspected program through the existing
+conflict-safe confirmation operation; it does not promote that selection into
+automatic cross-Release certainty.
+
+A MusicBrainz Release Group remains the normal Album identity anchor. Sampled
+Releases provide program evidence. Recording IDs identify Track-level music;
+exact Release selection is not required. Retained alternate Groups cannot replace
+a trusted Group automatically. These are provider evidence relationships and do
+not change canonical entities, library membership or playback availability.
+
+Migration 37 adds two provider-specific observation tables:
+`musicbrainz_match_state` stores Album-scoped lifecycle/evaluation and compact
+per-Track reasons; `musicbrainz_candidate` stores at most ten candidate observations
+and bounded typed programs. Automatic sampled programs and a manually inspected
+Release are separate columns: selecting one Release must not discard evidence of
+disagreement among automatic alternatives. Neither table establishes identity.
+Historical absence remains unattempted, not a fabricated empty search.
+
+Normal matching and manual search/inspection write this same lifecycle. Review
+restores candidates and programs directly from SQLite without provider requests.
+Fresh programs can also serve the normal worker; explicit refresh bypasses them.
+Observation freshness is 30 days, independent of review access. Fingerprints and
+mutation triggers invalidate evaluation when canonical metadata, membership,
+program evidence or trusted Artist identity changes. An interrupted prior-process
+matching state becomes evidence-changed instead of appearing perpetually active.
+Cached programs remain inspectable while stale evaluations are identified.
+
+Connections reads compact reasons with its bounded indexed Album/Track queries;
+it does not load provider programs for the whole library or perform matching in
+QML. Network discovery and program retrieval stay outside write transactions and
+remain Album-scoped/rate-limited. Broader structured/native-script MusicBrainz
+discovery remains deferred. See the implementation follow-up in
+[musicbrainz-matching-audit.md](musicbrainz-matching-audit.md).

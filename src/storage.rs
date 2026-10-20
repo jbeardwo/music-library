@@ -253,6 +253,15 @@ impl Store {
                 Some(&candidate.primary_type),
             )?;
         }
+        if scope.provider == "musicbrainz" {
+            crate::musicbrainz_lifecycle::record_match(
+                &tx,
+                &reply.input.album_id,
+                &outcome,
+                reply.diagnostic.as_ref(),
+                reply.matched_album.as_ref(),
+            )?;
+        }
         tx.commit()?;
         Ok(outcome)
     }
@@ -284,7 +293,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 36 {
+        } else if version > 37 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -486,6 +495,10 @@ impl Store {
         }
         if version < 36 {
             connection.execute_batch(include_str!("../migrations/0036_connections.sql"))?;
+        }
+        if version < 37 {
+            connection
+                .execute_batch(include_str!("../migrations/0037_musicbrainz_lifecycle.sql"))?;
         }
         Ok(Self {
             connection,

@@ -140,7 +140,7 @@ impl Library {
         )?;
         if std::iter::once(&observation.name)
             .chain(&observation.aliases)
-            .all(|n| crate::matching::normalize(n) != crate::matching::normalize(&name))
+            .all(|n| crate::artist_credit::name_key(n) != crate::artist_credit::name_key(&name))
         {
             return Err(crate::Error::Invalid(
                 "Catalog Artist names do not support the canonical Artist".into(),

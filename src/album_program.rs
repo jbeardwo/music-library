@@ -1087,8 +1087,28 @@ impl Store {
     pub fn complete_album_program(&mut self, reply: Reply) -> Result<Outcome> {
         let programs = match reply.result {
             Ok(p) => p,
-            Err(e) if e.is_provider_unavailable() => return Ok(Outcome::Deferred(e)),
-            Err(e) => return Ok(Outcome::Error(e.to_string())),
+            Err(e) if e.is_provider_unavailable() => {
+                if reply.input.album.provider == "musicbrainz" {
+                    crate::musicbrainz_lifecycle::state(
+                        &self.connection,
+                        &reply.input.album_id,
+                        crate::musicbrainz_lifecycle::Reason::ProviderDeferred,
+                        &serde_json::json!({}),
+                    )?;
+                }
+                return Ok(Outcome::Deferred(e));
+            }
+            Err(e) => {
+                if reply.input.album.provider == "musicbrainz" {
+                    crate::musicbrainz_lifecycle::state(
+                        &self.connection,
+                        &reply.input.album_id,
+                        crate::musicbrainz_lifecycle::Reason::ProviderError,
+                        &serde_json::json!({}),
+                    )?;
+                }
+                return Ok(Outcome::Error(e.to_string()));
+            }
         };
         if programs.album != reply.input.album {
             return Ok(Outcome::Error("provider returned another Album".into()));
@@ -1138,6 +1158,16 @@ impl Store {
         {
             established_occurrences(
                 &reply.input.tracks,
+                &programs,
+                &tx.query_row(
+                    "SELECT title FROM effective_album_metadata WHERE album_id=?1",
+                    [reply.input.album_id.as_ref()],
+                    |r| r.get::<_, String>(0),
+                )?,
+            )
+        } else if programs.album.provider == "musicbrainz" {
+            crate::musicbrainz_recording::automatic(
+                &eligible,
                 &programs,
                 &tx.query_row(
                     "SELECT title FROM effective_album_metadata WHERE album_id=?1",
@@ -1287,6 +1317,9 @@ impl Store {
         }
         if programs.album.provider == "spotify" {
             tx.execute("UPDATE spotify_connection_review SET evaluation_version=?2,stale=0,state='unresolved' WHERE track_id IN(SELECT t.id FROM track t JOIN release r ON r.id=t.release_id WHERE r.album_id=?1) AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=spotify_connection_review.track_id AND x.provider='spotify')",params![reply.input.album_id.as_ref(),crate::spotify_lifecycle::EVALUATION_VERSION])?;
+        }
+        if programs.album.provider == "musicbrainz" {
+            crate::musicbrainz_lifecycle::retain_programs(&tx, &reply.input.album_id, &programs)?;
         }
         tx.commit()?;
         Ok(Outcome::Complete(results))

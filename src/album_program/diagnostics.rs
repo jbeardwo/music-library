@@ -386,6 +386,33 @@ fn inspect_program_context(
             known[index] = local[index].clone();
         }
     }
+    // A featured annotation is comparison-only and must be explained by that
+    // candidate's structured additional credits. A whole-program gate below
+    // prevents this derivation from bootstrapping isolated title identity.
+    let mut featured = 0;
+    for t in &mut known {
+        let raw = t.evidence.title.as_deref().unwrap_or("");
+        let choices = derived
+            .tracks
+            .iter()
+            .filter(|p| {
+                let base = crate::artist_credit::musical_title(raw, &p.artists);
+                base != raw
+                    && crate::matching::normalize_album_title(base)
+                        == crate::matching::normalize_album_title(p.title.as_deref().unwrap_or(""))
+                    && t.evidence
+                        .artists
+                        .first()
+                        .zip(p.artists.first())
+                        .is_some_and(|(a, b)| crate::artist_credit::same_artist(a, b))
+            })
+            .collect::<Vec<_>>();
+        if let [p] = choices.as_slice() {
+            t.evidence.title = Some(crate::artist_credit::musical_title(raw, &p.artists).into());
+            t.evidence.title_observations.clear();
+            featured += 1;
+        }
+    }
     // Full correspondence always wins. Only unmatched titles may use a contained
     // component, and only a unique, Artist/duration-compatible whole program
     // can corroborate that fallback. No script is designated canonical.
@@ -446,7 +473,7 @@ fn inspect_program_context(
             if let Some(class) = contextual
                 && position(&t.evidence).is_some()
                 && position(&t.evidence) == position(p)
-                && t.evidence.artists.first().is_some_and(|artist| artist.identities.iter().any(|id| id.provider == "spotify" && p.artists.iter().any(|a| a.identities.contains(id))))
+                && t.evidence.artists.first().zip(p.artists.first()).is_some_and(|(a,b)| crate::artist_credit::trusted_overlap(a,b))
                 // Consider competitors even at other positions: a position cannot
                 // resolve two equally close title observations by itself.
                 && derived.tracks.iter().filter(|other| crate::matching::contextual_title_class(a, other.title.as_deref().unwrap_or("")) == Some(class)).count() == 1
@@ -518,7 +545,8 @@ fn inspect_program_context(
         }
     }
     let shared_systematic = !shared_spans.is_empty();
-    let systematic = changed >= 3 && changed * 5 >= program.tracks.len() * 4
+    let systematic = featured > 0
+        || changed >= 3 && changed * 5 >= program.tracks.len() * 4
         || movements >= 3
         || edition_systematic
         || shared_systematic;

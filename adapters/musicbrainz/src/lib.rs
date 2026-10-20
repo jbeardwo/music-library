@@ -26,6 +26,7 @@ pub struct MusicBrainz {
     agent: ureq::Agent,
     base: Url,
     programs: Vec<music_library::album_program::Programs>,
+    observations: Vec<catalog::AlbumCandidate>,
 }
 impl Default for MusicBrainz {
     fn default() -> Self {
@@ -117,6 +118,52 @@ impl MusicBrainz {
         }
         Ok(observation)
     }
+    /// One selected Release response supplies both catalog presentation and typed
+    /// program completeness. Manual inspection must not fabricate completeness.
+    pub fn inspect_album(
+        &mut self,
+        album: &catalog::AlbumCandidate,
+    ) -> Result<
+        (
+            Option<catalog::Release>,
+            music_library::album_program::Programs,
+        ),
+        CatalogError,
+    > {
+        let page = self.representative_releases(&album.identity)?;
+        let selected = catalog::representative_release(album, &page.items)
+            .ok_or_else(|| error("No track list is available"))?;
+        let raw: serde_json::Value = self.request(
+            &format!("release/{}", selected.identity.external_id),
+            &[(
+                "inc",
+                "release-groups+recordings+artist-credits+isrcs+media".into(),
+            )],
+        )?;
+        let evidence = edition_evidence(serde_json::from_value(raw.clone()).map_err(error)?)?;
+        if evidence.grouping.as_ref() != Some(&album.identity)
+            || evidence.identity != selected.identity
+        {
+            return Err(error("Candidate Release/Group changed"));
+        }
+        let release = if evidence.tracklist_complete {
+            let mut r = convert_release(serde_json::from_value(raw).map_err(error)?)?;
+            r.album = album.album();
+            Some(r)
+        } else {
+            None
+        };
+        let programs = music_library::album_program::Programs {
+            album: album.identity.clone(),
+            note: "Explicitly inspected Release; adapter completeness retained".into(),
+            programs: vec![music_library::album_program::Program {
+                identity: Some(evidence.identity),
+                tracks: evidence.tracks,
+                complete: evidence.tracklist_complete,
+            }],
+        };
+        Ok((release, programs))
+    }
     pub fn new() -> Self {
         Self::at(Url::parse("https://musicbrainz.org/ws/2/").unwrap())
     }
@@ -124,6 +171,7 @@ impl MusicBrainz {
         Self {
             base,
             programs: vec![],
+            observations: vec![],
             agent: ureq::Agent::config_builder()
                 .timeout_global(Some(Duration::from_secs(30)))
                 .max_redirects(0)
@@ -422,6 +470,22 @@ impl MusicBrainz {
                 ("offset", "0".into()),
             ],
         )?;
+        self.observations = page
+            .groups
+            .iter()
+            .take(PAGE_SIZE as usize)
+            .map(|g| catalog::AlbumCandidate {
+                identity: identity("release_group", &g.id),
+                title: g.title.clone(),
+                artist: catalog::credit_display(&credits(g.credits.clone())),
+                credits: credits(g.credits.clone()),
+                date: g.date.clone().unwrap_or_default(),
+                primary_type: g.primary_type.clone().unwrap_or_default(),
+                secondary_types: g.secondary_types.clone(),
+                comment: g.disambiguation.clone().unwrap_or_default(),
+                score: g.score,
+            })
+            .collect();
         let next_offset = next_offset(0, page.groups.len(), page.count);
         let items = page
             .groups
@@ -469,6 +533,16 @@ impl MusicBrainz {
     }
 }
 impl CatalogProvider for MusicBrainz {
+    fn album_candidate_observation(
+        &self,
+        id: &ExternalIdentity,
+    ) -> Option<catalog::AlbumCandidate> {
+        self.observations
+            .iter()
+            .find(|c| &c.identity == id)
+            .cloned()
+    }
+
     fn album_program_namespaces(&self) -> Vec<(String, String)> {
         vec![("musicbrainz".into(), "release_group".into())]
     }
@@ -1314,6 +1388,42 @@ mod tests {
     const GROUPS: &str = include_str!("../tests/fixtures/groups.json");
     const EDITIONS: &str = include_str!("../tests/fixtures/editions.json");
     const RELEASE: &str = include_str!("../tests/fixtures/release.json");
+    #[test]
+    fn manual_inspection_retains_real_completeness_without_duplicate_detail_requests() {
+        for incomplete in [false, true] {
+            let mut raw: serde_json::Value = serde_json::from_str(RELEASE).unwrap();
+            if incomplete {
+                raw["media"][0]["track-count"] = 999.into();
+            }
+            let body = raw.to_string();
+            let album = catalog::AlbumCandidate {
+                identity: identity(
+                    "release_group",
+                    raw["release-group"]["id"].as_str().unwrap(),
+                ),
+                title: "Album".into(),
+                artist: String::new(),
+                credits: vec![],
+                date: String::new(),
+                primary_type: "Album".into(),
+                secondary_types: vec![],
+                comment: String::new(),
+                score: None,
+            };
+            let (mut client, requests, server) = mock(vec![(200, EDITIONS), (200, &body)]);
+            let (release, programs) = client.inspect_album(&album).unwrap();
+            assert_eq!(programs.programs[0].complete, !incomplete);
+            assert_eq!(release.is_none(), incomplete);
+            if let Some(release) = release {
+                assert_eq!(
+                    programs.programs[0].identity.as_ref(),
+                    Some(&release.identity)
+                );
+            }
+            server.join().unwrap();
+            assert_eq!(requests.try_iter().count(), 2);
+        }
+    }
     #[test]
     fn album_program_discovery_is_bounded_and_cached_with_many_editions() {
         let mut release: serde_json::Value = serde_json::from_str(RELEASE).unwrap();

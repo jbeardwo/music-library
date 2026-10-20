@@ -328,6 +328,7 @@ pub fn title_evidence(local: &str, candidate: &ArtistAlbumCandidate) -> TitleEvi
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct CandidateEvidence {
+    pub observation: Option<crate::catalog::AlbumCandidate>,
     pub identity: ExternalIdentity,
     pub artist: String,
     pub artist_ids: Vec<ExternalIdentity>,
@@ -445,7 +446,9 @@ pub fn initial_report_with_equivalents(
                         && a.kind == "artist"
                         && !a.external_id.is_empty()
                         && c.identity.provider == a.provider
-                        && c.identity.kind == "album"
+                        && (c.identity.kind == "album"
+                            || c.identity.provider == "musicbrainz"
+                                && c.identity.kind == "release_group")
                         && !c.identity.external_id.is_empty()
                 });
                 let primary_established = artist.is_some_and(|id| {
@@ -519,6 +522,7 @@ pub fn initial_report_with_equivalents(
                     reasons.push(Reason::TrackCountMismatch);
                 }
                 CandidateEvidence {
+                    observation: provider.album_candidate_observation(&c.identity),
                     identity: c.identity.clone(),
                     artist: c.artist,
                     artist_ids: sorted_ids(&c.artist_ids),

@@ -51,3 +51,8 @@ pub mod preferences;
 mod spotify_playable_program;
 
 pub mod connections;
+
+pub mod musicbrainz_lifecycle;
+pub mod program_correspondence;
+
+pub mod musicbrainz_recording;
