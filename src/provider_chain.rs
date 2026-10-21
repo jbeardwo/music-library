@@ -42,6 +42,9 @@ pub struct ProviderChain {
     selected: HashMap<AlbumId, usize>,
     outcomes: HashMap<AlbumId, MatchOutcome>,
     history: HashMap<AlbumId, Vec<Attempt>>,
+    policy_cursor: Option<AlbumId>,
+    policy_started: bool,
+    policy_finished: bool,
 }
 impl From<AlbumMatcher> for ProviderChain {
     fn from(m: AlbumMatcher) -> Self {
@@ -60,6 +63,9 @@ impl From<AlbumMatcher> for ProviderChain {
             selected: HashMap::new(),
             outcomes: HashMap::new(),
             history: HashMap::new(),
+            policy_cursor: None,
+            policy_started: false,
+            policy_finished: false,
         }
     }
 }
@@ -112,6 +118,9 @@ impl ProviderChain {
             selected: HashMap::new(),
             outcomes: HashMap::new(),
             history: HashMap::new(),
+            policy_cursor: None,
+            policy_started: false,
+            policy_finished: false,
         })
     }
     fn first(&self) -> &AlbumMatcher {
@@ -222,6 +231,58 @@ impl ProviderChain {
             ));
         }
         Ok(updates)
+    }
+    pub fn reconcile_musicbrainz_policy(&mut self, library: &Library) -> Result<()> {
+        if self.policy_started {
+            return Ok(());
+        }
+        self.policy_started = true;
+        self.continue_musicbrainz_policy(library)
+    }
+    /// Refill a bounded queue as callbacks complete. Keyset progress also avoids
+    /// repeatedly scheduling a deferred Album already owned by worker retry.
+    pub fn continue_musicbrainz_policy(&mut self, library: &Library) -> Result<()> {
+        if !self.policy_started || self.policy_finished || self.pending_count() > 128 {
+            return Ok(());
+        }
+        let Some(i) = self
+            .slots
+            .iter()
+            .position(|s| s.scope.provider == "musicbrainz")
+        else {
+            self.policy_finished = true;
+            return Ok(());
+        };
+        let pending = library.pending_musicbrainz_policy_after(self.policy_cursor.as_ref(), 128)?;
+        if let Some(last) = pending.last() {
+            self.policy_cursor = Some(last.clone());
+        }
+        if pending.len() < 128 {
+            self.policy_finished = true;
+        }
+        if self.legacy {
+            for id in pending {
+                self.first_mut().match_album(library, &id)?;
+            }
+            return Ok(());
+        }
+        for id in pending {
+            if self.active.as_ref().is_some_and(|j| j.album == id)
+                || self.queue.iter().any(|j| j.album == id)
+            {
+                continue;
+            }
+            self.queue.push_back(Job {
+                album: id.clone(),
+                order: vec![i],
+                at: 0,
+                deferred: vec![],
+                pinned: true,
+                resolved: false,
+            });
+            self.outcomes.insert(id, MatchOutcome::Pending);
+        }
+        self.pump(library)
     }
     pub fn match_album(&mut self, library: &Library, id: &AlbumId) -> Result<MatchOutcome> {
         if self.legacy {

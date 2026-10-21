@@ -2531,3 +2531,48 @@ and retain alternates but cannot replace their trusted Group automatically.
 Machine translation/transliteration and broader correspondence or Recording-policy
 changes remain deferred. See the implementation follow-up in
 [musicbrainz-matching-audit.md](musicbrainz-matching-audit.md).
+
+
+MusicBrainz policy upgrades use migration 39's `musicbrainz_policy` automatic
+completion receipts, with independent evaluation and discovery generations.
+Manual search/inspection cannot satisfy a startup reconciliation receipt. Opening
+an eligible persistent UI profile schedules unresolved, unmarked Albums through
+the normal MusicBrainz worker, in keyset batches of 128 with a bounded queue that
+refills from completion callbacks. An unchanged completed generation does not
+schedule permanent review cases again. Deferred/provider failures remain owned
+by the existing worker retry policy rather than fabricated completed-empty results.
+
+Policy invalidation retains raw candidate metadata, Artist pages, sampled Release
+ensembles and their observation timestamps. Current policy first recomputes from
+fresh retained evidence; attached Groups with fresh ensembles need no discovery
+requests. New discovery generations may refresh insufficient title retrieval while
+reusing fresh Artist pages. The three-page/six-ensemble budgets remain unchanged.
+Recognized edition-qualified titles have a bounded representation-title query
+variant; their meaningful qualifiers remain present throughout evaluation.
+Candidate bounds apply after topology ranking and complete persistence batches;
+identifier sorting/pruning must not discard metadata for an inspected program.
+
+Connections review projects MusicBrainz rows from saved membership and the same
+`connected_musicbrainz_track` authority as the Connections list. Shared program
+correspondence is separate from Connected status. Rows explicitly show Connected,
+Proposed, Blocked with a reason, or Unmatched; provider-only rows are outside the
+Library denominator. Recording certainty uses the retained automatic ensemble,
+even when the user explicitly inspects one Release. Default manual Album search
+uses trusted Artist scope and retained candidates; Search all Artists explicitly
+broadens it. Manual search does not replace a completed automatic evaluation's
+summary or structured candidate reasons. See
+[musicbrainz-real-profile-reconciliation.md](musicbrainz-real-profile-reconciliation.md)
+for the real-profile reproduction and remaining safety cases.
+
+
+Shared title/program comparison distinguishes exact alternate representation
+components from substring evidence. Candidate spaced-dash or whitespace-block
+layouts are comparison-only proposals, not aliases. Repeated complete-program
+corroboration, trusted Artist identity, unique component equality, sequence,
+coverage and duration evidence can validate them, including one-character whole
+components. Neither a script transition nor punctuation alone creates equivalence.
+Full normalized equality wins; mixed-script words and meaningful parenthetical
+versions remain whole. A positional fallback cannot promote an otherwise
+uncorroborated fragment. All raw evidence is restored and automatic Recording
+certainty remains separate. See
+[musicbrainz-multilingual-components.md](musicbrainz-multilingual-components.md).

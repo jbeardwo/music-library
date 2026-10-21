@@ -7,6 +7,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("disposable database path required")?;
     let l = Library::open(path)?;
     println!("roots={:?}", l.local_locations()?);
+    let started = Instant::now();
+    let pending = l.pending_musicbrainz_policy(256)?;
+    assert!(pending.len() <= 256);
+    println!(
+        "MusicBrainz policy startup batch={} elapsed={:?}",
+        pending.len(),
+        started.elapsed()
+    );
     for provider in music_library::connections::PROVIDERS {
         let now = Instant::now();
         let coverage = l.connection_coverage(provider.key)?;

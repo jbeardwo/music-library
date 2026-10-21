@@ -339,7 +339,7 @@ impl Store {
         if version == 0 {
             connection.execute_batch(INITIAL_MIGRATION)?;
             connection.pragma_update(None, "user_version", 1)?;
-        } else if version > 38 {
+        } else if version > 39 {
             return Err(Error::Invalid(format!(
                 "database schema version {version} is newer than this application supports"
             )));
@@ -549,6 +549,9 @@ impl Store {
         if version < 38 {
             connection
                 .execute_batch(include_str!("../migrations/0038_musicbrainz_discovery.sql"))?;
+        }
+        if version < 39 {
+            connection.execute_batch(include_str!("../migrations/0039_musicbrainz_policy.sql"))?;
         }
         Ok(Self {
             connection,

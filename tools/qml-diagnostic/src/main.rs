@@ -1648,13 +1648,18 @@ impl Bridge {
                 self.refresh_manual_album(&album.album_id)?;
             }
         }
-        if enabled && !imports.is_empty() {
+        if enabled {
             if let Err(error) = self.ensure_matcher() {
                 self.session.error = error;
                 self.changed();
                 self.matching_changed();
                 return Ok(());
             }
+            self.matcher
+                .as_mut()
+                .unwrap()
+                .reconcile_musicbrainz_policy(&self.session.library)
+                .map_err(|e| e.to_string())?;
             let outcomes = self
                 .matcher
                 .as_mut()
@@ -2476,6 +2481,9 @@ fn program_callback(
                     .matching_tracks
                     .insert(id.clone(), reply.input.tracks.clone());
                 matcher.complete_programs(&mut bridge.session.library, reply);
+                if let Err(e) = matcher.continue_musicbrainz_policy(&bridge.session.library) {
+                    bridge.session.error = e.to_string();
+                }
                 bridge.browse_action_impl("refresh", 0, String::new());
                 bridge.matcher = Some(matcher);
                 if let Err(e) = bridge.refresh_manual_album(&id) {
@@ -2573,6 +2581,9 @@ fn matching_callback(
                 return;
             };
             let outcome = matcher.complete(&mut bridge.session.library, reply);
+            if let Err(e) = matcher.continue_musicbrainz_policy(&bridge.session.library) {
+                bridge.session.error = e.to_string();
+            }
             bridge.matcher = Some(matcher);
             if let Some(row) = bridge.matching_rows.iter_mut().find(|r| r.0 == id) {
                 row.2 = outcome;
@@ -4516,6 +4527,124 @@ mod event_delivery_tests {
 #[cfg(test)]
 mod library_ui_tests {
     use super::*;
+
+    #[test]
+    #[ignore = "normal startup reconciliation on an explicit disposable real-profile backup"]
+    fn musicbrainz_real_profile_startup_and_review() {
+        let path = std::env::var("MUSIC_LIBRARY_DIAGNOSTIC_DATABASE").unwrap();
+        assert!(path.starts_with("/tmp/mb-real-ui-"));
+        let library = music_library::Library::open(&path).unwrap();
+        let before = library.connection_coverage("musicbrainz").unwrap();
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let mut engine = QmlEngine::new();
+        engine.set_object_property("diagnostic".into(), bridge.pinned());
+        let qml=include_str!("../Main.qml").replacen("import QtQuick\n","import QtQuick\nimport QtTest\n",1).replacen("    function ready() {","    TestCase { id: reconciliationWait; when:false }\n    function reconciliationTick() { reconciliationWait.wait(200); return true; }\n    function ready() {",1);
+        engine.load_data(qml.into());
+        assert!(engine.invoke_method("ready".into(), &[]).to_bool());
+        bridge.pinned().borrow_mut().post_import(&[], true).unwrap();
+        let start = std::time::Instant::now();
+        while bridge
+            .pinned()
+            .borrow()
+            .matcher
+            .as_ref()
+            .is_some_and(|m| m.is_processing() || m.pending_count() > 0)
+        {
+            assert!(
+                start.elapsed().as_secs() < 420,
+                "startup reconciliation timed out"
+            );
+            engine.invoke_method("reconciliationTick".into(), &[]);
+        }
+        let mut reports = vec![];
+        let groups = bridge
+            .pinned()
+            .borrow()
+            .session
+            .library
+            .connection_groups("musicbrainz", false, None, 200)
+            .unwrap();
+        for g in groups {
+            let payload =
+                serde_json::json!({"provider":"musicbrainz","album":g.id,"track":""}).to_string();
+            let raw = bridge
+                .pinned()
+                .borrow_mut()
+                .connection_review_impl("open", &payload, 0);
+            let review: serde_json::Value = serde_json::from_str(&raw).unwrap();
+            assert!(review["error"].as_str().unwrap_or("").is_empty(), "{raw}");
+            assert!(
+                review["count"].as_u64().unwrap() > 0,
+                "retained candidates must project: {}",
+                g.title
+            );
+            let mut manual = serde_json::Value::Null;
+            if ["Angle", "Dreams"].contains(&g.title.as_str()) {
+                let raw = bridge
+                    .pinned()
+                    .borrow_mut()
+                    .connection_catalog_impl("search", &g.title, 0);
+                assert!(
+                    serde_json::from_str::<serde_json::Value>(&raw).unwrap()["pending"]
+                        .as_bool()
+                        .unwrap()
+                );
+                for _ in 0..200 {
+                    engine.invoke_method("reconciliationTick".into(), &[]);
+                    manual = serde_json::from_str(
+                        &bridge
+                            .pinned()
+                            .borrow_mut()
+                            .connection_catalog_impl("poll", "", 0),
+                    )
+                    .unwrap();
+                    if manual["pending"] != true {
+                        break;
+                    }
+                }
+                assert!(manual.get("error").is_none(), "{manual}");
+                let expected = if g.title == "Angle" {
+                    "角度"
+                } else {
+                    "夢境"
+                };
+                assert!(
+                    manual["candidates"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|c| c["title"] == expected),
+                    "native candidate in scoped manual results: {manual}"
+                );
+            }
+            reports.push(serde_json::json!({"group":g,"review":review,"manual":manual}));
+        }
+        let pinned = bridge.pinned();
+        let mut b = pinned.borrow_mut();
+        let after = b
+            .session
+            .library
+            .connection_coverage("musicbrainz")
+            .unwrap();
+        assert_eq!(after.connected, 897);
+        assert_eq!(after.saved, 930);
+        assert!(
+            b.session
+                .library
+                .pending_musicbrainz_policy(256)
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::write(
+            format!("{path}.ui.json"),
+            serde_json::to_vec_pretty(
+                &serde_json::json!({"before":before,"after":after,"albums":reports}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        b.matcher.take();
+    }
     #[cfg(feature = "gstreamer")]
     #[test]
     #[ignore = "opt-in desktop/audio audit on a disposable copy of a real library"]

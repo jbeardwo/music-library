@@ -444,7 +444,8 @@ fn shared_title_spans_are_language_neutral_contextual_unique_and_preserve_raw_da
             result
                 .warnings
                 .iter()
-                .any(|w| w.contains("shared title span"))
+                .any(|w| w.contains("shared title span")
+                    || w.contains("exact alternate-title component"))
         );
     }
     let names = [

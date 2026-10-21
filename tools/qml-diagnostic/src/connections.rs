@@ -356,7 +356,7 @@ impl Bridge {
                     }
                 }
             }
-            if action != "search" && action != "inspect" {
+            if action != "search" && action != "search-global" && action != "inspect" {
                 return Err("Unknown catalog action".into());
             }
             if let Some(album) = &self.connection_catalog_state.review_album {
@@ -366,14 +366,38 @@ impl Bridge {
                         .retain_musicbrainz_candidates(album, std::slice::from_ref(c), true)
                         .map_err(|e| e.to_string())?;
                 }
-                self.session
-                    .library
-                    .musicbrainz_state(
-                        album,
-                        music_library::musicbrainz_lifecycle::Reason::Matching,
-                    )
-                    .map_err(|e| e.to_string())?;
             }
+            let context = if action != "search-global" {
+                self.connection_catalog_state
+                    .review_album
+                    .as_ref()
+                    .and_then(|album| {
+                        match self
+                            .session
+                            .library
+                            .prepare_musicbrainz_discovery(album)
+                            .ok()?
+                        {
+                            music_library::album_matching::Preparation::Ready(input) => Some(input),
+                            _ => None,
+                        }
+                    })
+            } else {
+                None
+            };
+            let retained = if context.as_ref().is_some_and(|c| {
+                music_library::matching::normalize_album_title(&c.raw_title)
+                    == music_library::matching::normalize_album_title(value)
+            }) {
+                self.connection_catalog_state
+                    .review_album
+                    .as_ref()
+                    .and_then(|a| self.session.library.musicbrainz_review(a).ok())
+                    .map(|r| r.candidates)
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
             let query = value.to_owned();
             let (send, recv) = std::sync::mpsc::channel();
             std::thread::spawn(move || {
@@ -384,9 +408,50 @@ impl Bridge {
                         .inspect_album(&candidate)
                         .map(|(r, p)| CatalogReply::Inspect(r, p))
                 } else {
-                    catalog
-                        .search_albums(&query, 0)
-                        .map(|p| CatalogReply::Search(p.items))
+                    if let Some(context) = context {
+                        let artist = match context.known_artist {
+                            Some(artist) => Ok(artist),
+                            None => catalog.search_artists(&context.artist).and_then(|artists| {
+                                music_library::album_matching::resolve_artist(
+                                    &context.artist,
+                                    &artists,
+                                )
+                                .map_err(|_| {
+                                    music_library::catalog::CatalogError::Other(
+                                        "Artist identity needs review".into(),
+                                    )
+                                })
+                            }),
+                        };
+                        artist.and_then(|artist| {
+                            catalog.artist_albums(&artist, &query).map(|p| {
+                                let mut rows = retained
+                                    .into_iter()
+                                    .filter(|c| {
+                                        c.metadata
+                                            .credits
+                                            .iter()
+                                            .any(|credit| credit.identity.as_ref() == Some(&artist))
+                                    })
+                                    .map(|c| c.metadata)
+                                    .collect::<Vec<_>>();
+                                for c in p.items {
+                                    if !rows.iter().any(|r| r.identity == c.identity) {
+                                        if let Some(c) =
+                                            catalog.album_candidate_observation(&c.identity)
+                                        {
+                                            rows.push(c);
+                                        }
+                                    }
+                                }
+                                CatalogReply::Search(rows)
+                            })
+                        })
+                    } else {
+                        catalog
+                            .search_albums(&query, 0)
+                            .map(|p| CatalogReply::Search(p.items))
+                    }
                 };
                 let _ = send.send(result);
             });

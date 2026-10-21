@@ -1138,7 +1138,7 @@ mod structured_discovery {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
                 .unwrap(),
-            38
+            39
         );
     }
     #[test]
@@ -1410,10 +1410,751 @@ mod structured_discovery {
             [],
         )
         .unwrap();
+        // Expired catalog pages do not invalidate independently fresh raw ensembles.
+        let retained = lib.retained_musicbrainz_discovery(&album).unwrap().unwrap();
+        assert!(retained.pages.is_empty());
+        assert!(!retained.programs.is_empty());
+    }
+
+    #[test]
+    fn incoming_insufficient_program_keeps_native_metadata_when_candidate_cache_is_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut lib, album, _) = policy_fixture(&tmp.path().join("db"));
+        for batch in 0..4 {
+            let rows = (0..10)
+                .map(|n| {
+                    let mut c = candidate("Unrelated", &format!("other-{batch}-{n}"));
+                    c.credits[0].identity = Some(id("artist", "other"));
+                    c
+                })
+                .collect::<Vec<_>>();
+            lib.retain_musicbrainz_candidates(&album, &rows, true)
+                .unwrap();
+        }
+        let mut provider = Provider {
+            pages: vec![Page {
+                items: vec![candidate("夢境", "zz-native")],
+                next_offset: None,
+            }],
+            programs: vec![pg(
+                "zz-native",
+                &["Track 1", "Other B", "Other C", "Other D"],
+            )],
+            ..Default::default()
+        };
+        lib.reconcile_musicbrainz(&album, &mut provider).unwrap();
+        let review = lib.musicbrainz_review(&album).unwrap();
+        assert!(review.candidates.len() <= 40);
+        let native = review
+            .candidates
+            .iter()
+            .find(|c| c.metadata.identity.external_id == "zz-native")
+            .unwrap();
+        assert_eq!(native.metadata.title, "夢境");
+        assert!(native.programs.is_some());
+        assert_eq!(review.candidates[0].metadata.title, "夢境");
+    }
+    #[test]
+    fn old_ocdc_and_artist_boilerplate_rejections_reconcile_with_current_policy_locally() {
+        for (album_title, provider_title, first, provider_first, kind) in [
+            ("100 Onces", "100 Onces", "OCDC", "OC/DC", "Album"),
+            (
+                "The EP of a Band Called Adebisi Shank",
+                "This Is the EP of a Band Called Adebisi Shank",
+                "First",
+                "First",
+                "EP",
+            ),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join("db");
+            let mut lib = Library::open(&path).unwrap();
+            let artist = ArtistCreditInput {
+                name: "Band".into(),
+                role: None,
+            };
+            let names = [first, "Second", "Third", "Fourth", "Fifth"];
+            let release = lib
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: album_title.into(),
+                    year: None,
+                    artists: vec![artist.clone()],
+                    tracks: names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, n)| CatalogTrackInput {
+                            title: (*n).into(),
+                            disc_number: Some(1),
+                            track_number: Some(i as u32 + 1),
+                            artists: vec![artist.clone()],
+                        })
+                        .collect(),
+                })
+                .unwrap();
+            for t in &release.track_ids {
+                lib.add_to_library(t).unwrap();
+            }
+            let album = lib.album_id_for_track(&release.track_ids[0]).unwrap();
+            let music_library::album_matching::Preparation::Ready(input) =
+                lib.prepare_album_match(&album).unwrap()
+            else {
+                panic!()
+            };
+            lib.attach_artist_external_identity(&input.artist_id, &id("artist", "band"))
+                .unwrap();
+            let db = rusqlite::Connection::open(&path).unwrap();
+            db.execute(
+                "UPDATE track_artist_credit SET artist_id=?1",
+                [input.artist_id.as_ref()],
+            )
+            .unwrap();
+            let mut c = candidate(provider_title, "group");
+            c.primary_type = kind.into();
+            lib.retain_musicbrainz_candidates(&album, &[c], false)
+                .unwrap();
+            lib.retain_musicbrainz_programs(
+                &album,
+                &pg(
+                    "group",
+                    &[provider_first, "Second", "Third", "Fourth", "Fifth"],
+                ),
+            )
+            .unwrap();
+            rusqlite::Connection::open(&path).unwrap().execute("UPDATE musicbrainz_match_state SET evaluation_version=1,reason='album_title_conflict'",[]).unwrap();
+            let mut provider = Provider::default();
+            let result = lib.reconcile_musicbrainz(&album, &mut provider).unwrap();
+            assert!(provider.calls.is_empty());
+            assert!(matches!(result.outcome, MatchOutcome::MatchedClose(_)));
+            assert_eq!(
+                lib.connection_coverage("musicbrainz").unwrap().connected,
+                5,
+                "{album_title}"
+            );
+        }
+    }
+
+    #[test]
+    fn startup_policy_work_uses_bounded_keyset_pages_and_respects_marked_albums() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut lib = Library::open(tmp.path().join("db")).unwrap();
+        for n in 0..130 {
+            let release = lib
+                .create_catalog_release(&CatalogReleaseInput {
+                    title: format!("Album {n}"),
+                    year: None,
+                    artists: vec![ArtistCreditInput {
+                        name: "Band".into(),
+                        role: None,
+                    }],
+                    tracks: vec![CatalogTrackInput {
+                        title: "Song".into(),
+                        disc_number: Some(1),
+                        track_number: Some(1),
+                        artists: vec![],
+                    }],
+                })
+                .unwrap();
+            lib.add_to_library(&release.track_ids[0]).unwrap();
+        }
+        let first = lib.pending_musicbrainz_policy(128).unwrap();
+        assert_eq!(first.len(), 128);
+        let second = lib
+            .pending_musicbrainz_policy_after(first.last(), 128)
+            .unwrap();
+        assert_eq!(second.len(), 2);
+        assert!(second.iter().all(|id| !first.contains(id)));
         assert!(
-            lib.retained_musicbrainz_discovery(&album)
+            lib.pending_musicbrainz_policy_after(second.last(), 128)
                 .unwrap()
-                .is_none()
+                .is_empty()
+        );
+        lib.mark_connection_unavailable("musicbrainz", Some(&second[1]), None)
+            .unwrap();
+        assert_eq!(
+            lib.pending_musicbrainz_policy_after(first.last(), 128)
+                .unwrap(),
+            vec![second[0].clone()]
+        );
+    }
+    fn policy_fixture(path: &std::path::Path) -> (Library, AlbumId, Vec<TrackId>) {
+        let (mut lib, album, tracks) = library(path);
+        let music_library::album_matching::Preparation::Ready(i) =
+            lib.prepare_album_match(&album).unwrap()
+        else {
+            panic!()
+        };
+        lib.attach_artist_external_identity(&i.artist_id, &id("artist", "band"))
+            .unwrap();
+        let db = rusqlite::Connection::open(path).unwrap();
+        for t in &tracks {
+            db.execute(
+                "INSERT INTO track_artist_credit(track_id,position,artist_id) VALUES(?1,0,?2)",
+                rusqlite::params![t.as_ref(), i.artist_id.as_ref()],
+            )
+            .unwrap();
+        }
+        (lib, album, tracks)
+    }
+    #[test]
+    fn old_evaluation_replays_fresh_raw_programs_without_requests_and_manual_is_not_completion() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db");
+        let (mut lib, album, _) = policy_fixture(&path);
+        lib.retain_musicbrainz_candidates(&album, &[candidate("Album", "group")], true)
+            .unwrap();
+        lib.retain_musicbrainz_programs(
+            &album,
+            &pg("group", &["Track 1", "Track 2", "Track 3", "Track 4"]),
+        )
+        .unwrap();
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute(
+            "UPDATE musicbrainz_match_state SET evaluation_version=1,reason='album_title_conflict'",
+            [],
+        )
+        .unwrap();
+        assert!(lib.musicbrainz_review(&album).unwrap().stale);
+        assert_eq!(
+            lib.pending_musicbrainz_policy(256).unwrap(),
+            vec![album.clone()]
+        );
+        let mut provider = Provider::default();
+        lib.reconcile_musicbrainz(&album, &mut provider).unwrap();
+        assert!(provider.calls.is_empty());
+        assert!(!lib.musicbrainz_policy_stale(&album).unwrap());
+        assert!(lib.pending_musicbrainz_policy(256).unwrap().is_empty());
+        assert!(
+            lib.musicbrainz_review(&album).unwrap().candidates[0]
+                .programs
+                .is_some()
+        );
+        drop(lib);
+        let lib = Library::open(&path).unwrap();
+        assert!(lib.pending_musicbrainz_policy(256).unwrap().is_empty());
+    }
+    #[test]
+    fn discovery_generation_reconsiders_unresolved_once_preserving_raw_candidates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("db");
+        let (mut lib, album, _) = policy_fixture(&path);
+        let mut provider = Provider {
+            pages: vec![Page {
+                items: vec![candidate("角度", "native")],
+                next_offset: None,
+            }],
+            ..Default::default()
+        };
+        lib.reconcile_musicbrainz(&album, &mut provider).unwrap();
+        assert!(lib.pending_musicbrainz_policy(256).unwrap().is_empty());
+        assert_eq!(lib.musicbrainz_review(&album).unwrap().candidates.len(), 1);
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute("UPDATE musicbrainz_policy SET discovery_version=0", [])
+            .unwrap();
+        assert_eq!(
+            lib.pending_musicbrainz_policy(1).unwrap(),
+            vec![album.clone()]
+        );
+        provider.calls.clear();
+        lib.reconcile_musicbrainz(&album, &mut provider).unwrap();
+        assert!(
+            provider.calls.is_empty(),
+            "fresh raw observations need no refetch"
+        );
+        assert!(lib.pending_musicbrainz_policy(256).unwrap().is_empty());
+        assert_eq!(
+            lib.musicbrainz_review(&album).unwrap().reason,
+            Reason::InsufficientEvidence
+        );
+    }
+    #[test]
+    fn review_counts_connections_not_proposals_and_separates_provider_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (mut lib, album, tracks) = policy_fixture(&tmp.path().join("db"));
+        let pg = pg(
+            "group",
+            &["Track 1", "Track 2", "Track 3", "Track 4", "Provider bonus"],
+        );
+        lib.retain_musicbrainz_programs(&album, &pg).unwrap();
+        lib.confirm_musicbrainz_connection(&tracks[0], &id("recording", "rec0"))
+            .unwrap();
+        let review = lib.musicbrainz_program_review(&album, &pg).unwrap();
+        assert_eq!(review["connected"], 1);
+        assert_eq!(review["total"], 4);
+        assert_eq!(review["corresponding"], 4);
+        assert_eq!(review["rows"][0]["status"], "Connected");
+        assert_eq!(review["rows"][1]["status"], "Proposed");
+        assert_eq!(review["rows"][4]["status"], "Provider only");
+        let group = lib
+            .connection_groups("musicbrainz", false, None, 20)
+            .unwrap()
+            .remove(0);
+        assert_eq!((group.matched, group.total), (1, 4));
+        lib.attach_album_external_identity(&album, &id("release_group", "trusted"))
+            .unwrap();
+        let review = lib.musicbrainz_program_review(&album, &pg).unwrap();
+        assert_eq!(
+            review["rows"][1]["status"],
+            "Blocked — trusted Group conflict"
+        );
+        assert_eq!(review["connected"], 1);
+    }
+    #[test]
+    fn edition_representation_is_retrieval_only_and_preserves_version_veto() {
+        let title = "More Skin With Milk-Mouth (2015 Remaster)";
+        let variants = d::title_query_variants(title);
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].kind, d::QueryVariantKind::EditionRepresentation);
+        assert_eq!(variants[0].title, "More Skin With Milk-Mouth");
+        let mut i = input();
+        i.title = title.into();
+        i.raw_title = title.into();
+        let e = d::evaluate(
+            &i,
+            &candidate("More Skin With Milk-Mouth", "group"),
+            &id("artist", "band"),
+            &local(&NAMES),
+            &pg("group", &NAMES),
+        );
+        assert!(!e.strong);
+        assert!(e.reasons.iter().any(|r| r == "version_conflict"));
+        assert!(d::title_query_variants("Different (Meaningful Words)").is_empty());
+    }
+}
+
+#[test]
+fn article_difference_requires_four_independent_siblings_position_duration_and_unique_counterpart()
+{
+    let a = "When The Catholic Girls Go Camping The Nicotine Vampires Rule Supreme";
+    let b = "When Catholic Girls Go Camping The Nicotine Vampires Rule Supreme";
+    let names = [a, "Second", "Third", "Fourth", "Fifth"];
+    let mut provider = program(&[b, "Second", "Third", "Fourth", "Fifth"]);
+    let l = local(&names);
+    assert_ne!(
+        music_library::matching::normalize(a),
+        music_library::matching::normalize(b)
+    );
+    assert!(
+        pc::correspond(&l, &provider, "Album").program.tracks[0]
+            .decision
+            .is_correspondence()
+    );
+    assert!(
+        !pc::correspond(&l[..2], &program(&[b, "Second"]), "Album")
+            .program
+            .tracks[0]
+            .decision
+            .is_correspondence()
+    );
+    provider.tracks.push(provider.tracks[0].clone());
+    assert!(
+        !pc::correspond(&l, &provider, "Album").program.tracks[0]
+            .decision
+            .is_correspondence()
+    );
+    assert_eq!(
+        music_library::matching::contextual_title_class("The One", "One"),
+        None
+    );
+    assert_eq!(
+        music_library::matching::contextual_title_class("The End", "End"),
+        None
+    );
+    assert_eq!(
+        music_library::matching::contextual_title_class("Dance The Night Away", "Dance Night Away"),
+        None
+    );
+}
+
+mod alternate_components {
+    use super::*;
+    use music_library::matching::{
+        alternate_title_components as parts, exact_alternate_component as component,
+    };
+    const BILINGUAL: [&str; 4] = ["Intro - 序", "Light - 燈", "Head - 頭", "Fourth"];
+    const NATIVE: [&str; 4] = ["序", "燈", "頭", "Fourth"];
+    const LATIN: [&str; 4] = ["Intro", "Light", "Head", "Fourth"];
+    fn matched(a: &[&str], b: &[&str]) -> Vec<bool> {
+        pc::correspond(&local(a), &program(b), "Album")
+            .program
+            .tracks
+            .iter()
+            .map(|r| r.decision.is_correspondence())
+            .collect()
+    }
+    #[test]
+    fn syntax_is_exact_complete_components_not_translation_or_substrings() {
+        let p = parts("Day time - 白日").unwrap();
+        assert_eq!(p.components, ["day time", "白日"]);
+        assert_eq!(component("Intro - 序", "序").unwrap().component, "序");
+        assert!(component("Intro - 序曲", "序").is_none());
+        assert!(component("序曲", "序").is_none());
+        assert!(component("Intro - 序", "Intro - 序").is_none());
+        assert!(music_library::matching::shared_title_span("Intro - 序", "序").is_none());
+    }
+    #[test]
+    fn repeated_native_and_latin_components_are_symmetric_with_no_script_primacy() {
+        for a in [&NATIVE, &LATIN] {
+            assert_eq!(matched(&BILINGUAL, a), vec![true; 4]);
+            assert_eq!(matched(a, &BILINGUAL), vec![true; 4]);
+        }
+        let c = pc::correspond(&local(&BILINGUAL), &program(&NATIVE), "Album");
+        assert!(
+            c.program
+                .warnings
+                .iter()
+                .any(|w| w.contains("exact alternate-title component"))
+        );
+        assert_eq!(
+            c.program.tracks[0].local.title.as_deref(),
+            Some(BILINGUAL[0])
+        );
+        assert_eq!(
+            c.program.tracks[0]
+                .provider
+                .as_ref()
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("序")
+        );
+    }
+    #[test]
+    fn systematic_layout_does_not_require_one_language_or_one_formatted_side() {
+        assert_eq!(
+            matched(
+                &["Intro - 序", "燈", "Head - 頭", "Fourth"],
+                &["Intro", "Light - 燈", "頭", "Fourth"]
+            ),
+            vec![true; 4]
+        );
+        assert!(parts("Ordinary-Hyphenated-Title").is_none());
+    }
+    #[test]
+    fn isolated_dash_or_single_character_overlap_is_not_an_alias() {
+        for (a, b) in [
+            ("Foo - Bar", "Foo"),
+            ("Intro - 序", "序"),
+            ("序曲", "序"),
+            ("WordSequence", "Sequence"),
+        ] {
+            assert!(
+                !matched(
+                    &[a, "Second", "Third", "Fourth"],
+                    &[b, "Second", "Third", "Fourth"]
+                )[0],
+                "{a} -> {b}"
+            );
+            assert!(
+                !matched(
+                    &[b, "Second", "Third", "Fourth"],
+                    &[a, "Second", "Third", "Fourth"]
+                )[0]
+            );
+        }
+        assert!(music_library::matching::shared_title_span("Long title", "title").is_some());
+        assert!(!matched(&["Long title"], &["title"])[0]);
+    }
+    #[test]
+    fn script_transitions_do_not_split_whole_mixed_titles_even_under_sibling_context() {
+        for (whole, fragment) in [
+            ("ABCの歌", "歌"),
+            ("TokyoラブSong", "ラブ"),
+            ("水Dance", "Dance"),
+            ("Rock音楽Part2", "音楽"),
+            ("A水B", "水"),
+        ] {
+            assert!(parts(whole).is_none());
+            assert!(component(whole, fragment).is_none());
+            assert!(
+                !matched(
+                    &[whole, "Second", "Third", "Fourth"],
+                    &[fragment, "Second", "Third", "Fourth"]
+                )[0],
+                "{whole} -> {fragment}"
+            );
+            assert_eq!(
+                matched(
+                    &[whole, "Second", "Third", "Fourth"],
+                    &[whole, "Second", "Third", "Fourth"]
+                ),
+                vec![true; 4]
+            );
+        }
+    }
+    #[test]
+    fn whitespace_blocks_need_actual_whitespace_and_program_corroboration() {
+        for b in ["水中漫步", "Underwater"] {
+            assert!(component("水中漫步 Underwater", b).is_some());
+            assert!(
+                matched(
+                    &["水中漫步 Underwater", "Second", "Third", "Fourth"],
+                    &[b, "Second", "Third", "Fourth"]
+                )[0]
+            );
+        }
+        assert!(parts("Tokyo ラブ Song").is_none());
+        assert!(parts("水 Dance音楽").is_none());
+        assert!(
+            !matched(
+                &["水 Water", "Second", "Third", "Fourth"],
+                &["水", "Second", "Third", "Fourth"]
+            )[0]
+        );
+        assert_eq!(
+            matched(
+                &["水 Water", "火 Fire", "山 Hill", "Fourth"],
+                &["水", "火", "山", "Fourth"]
+            ),
+            vec![true; 4]
+        );
+    }
+    #[test]
+    fn parenthetical_versions_and_featured_annotations_are_not_components() {
+        for suffix in [
+            "Remix",
+            "Live",
+            "Acoustic",
+            "Album Version",
+            "2015 Remaster",
+            "feat. Guest",
+            "JP Version",
+            "2022 ver.",
+        ] {
+            let title = format!("A - 序 ({suffix})");
+            assert!(parts(&title).is_none());
+            assert!(component(&title, "序").is_none());
+        }
+        assert_eq!(
+            matched(
+                &["A - 序 (Live)", "B - 燈 (Live)", "C - 頭 (Live)", "Fourth"],
+                &NATIVE
+            ),
+            vec![false, false, false, true]
+        );
+    }
+    #[test]
+    fn duplicate_components_untrusted_artist_and_incomplete_samples_do_not_bootstrap() {
+        assert!(
+            !matched(
+                &["Intro - 序", "Another - 序", "Head - 頭", "Fourth"],
+                &["序", "序", "頭", "Fourth"]
+            )[0]
+        );
+        let l = local(&BILINGUAL);
+        let mut p = program(&NATIVE);
+        p.complete = false;
+        assert!(
+            !pc::correspond(&l, &p, "Album").program.tracks[0]
+                .decision
+                .is_correspondence()
+        );
+        p.complete = true;
+        for t in &mut p.tracks {
+            t.artists[0].identities = vec![id("artist", "other")];
+        }
+        assert!(
+            !pc::correspond(&l, &p, "Album").program.tracks[0]
+                .decision
+                .is_correspondence()
+        );
+        let mut p = program(&NATIVE);
+        let mut l = l;
+        l[0].evidence.recording.identities = vec![id("recording", "conflicting")];
+        p.tracks[0].recording.identities = vec![id("recording", "candidate")];
+        assert!(
+            !pc::correspond(&l, &p, "Album").program.tracks[0]
+                .decision
+                .is_correspondence()
+        );
+    }
+    #[test]
+    fn structural_component_evidence_does_not_bypass_duration_certainty() {
+        let names = [
+            "Intro - 序",
+            "Light - 燈",
+            "Head - 頭",
+            "Fourth - 四",
+            "Fifth - 五",
+        ];
+        let l = local(&names);
+        let mut p = program(&["序", "燈", "頭", "四", "五"]);
+        p.tracks[0].duration_ms = Some(105000);
+        let a = music_library::musicbrainz_recording::assess(&l, &programs(vec![p]), "Album");
+        assert!(
+            a.programs[0]
+                .program
+                .tracks
+                .iter()
+                .all(|r| r.decision.is_correspondence())
+        );
+        assert_eq!(a.recordings[0].certainty, C::DurationConflict);
+    }
+}
+
+mod retained_component_controls {
+    use super::*;
+    fn fixture(title: &str) -> (Vec<LocalTrackEvidence>, Programs) {
+        let fixtures: serde_json::Value =
+            serde_json::from_str(include_str!("fixtures/alternate_title_programs.json")).unwrap();
+        let row = fixtures
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["title"] == title)
+            .unwrap();
+        let local = row["local"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, e)| LocalTrackEvidence {
+                track_id: TrackId(format!("t{i}")),
+                recording_id: RecordingId(format!("r{i}")),
+                evidence: serde_json::from_value(e.clone()).unwrap(),
+            })
+            .collect();
+        (
+            local,
+            serde_json::from_value(row["programs"].clone()).unwrap(),
+        )
+    }
+    fn audit(title: &str) -> music_library::musicbrainz_recording::Assessment {
+        let (l, p) = fixture(title);
+        music_library::musicbrainz_recording::assess(&l, &p, title)
+    }
+    fn coverage(a: &music_library::musicbrainz_recording::Assessment) -> usize {
+        a.programs
+            .iter()
+            .map(|p| {
+                p.program
+                    .tracks
+                    .iter()
+                    .filter(|r| r.decision.is_correspondence())
+                    .count()
+            })
+            .max()
+            .unwrap()
+    }
+    #[test]
+    fn angle_actual_retained_native_program_has_eleven_exact_components_and_separate_certainty() {
+        let a = audit("Angle");
+        assert_eq!(coverage(&a), 11);
+        assert_eq!(
+            a.programs[0]
+                .program
+                .tracks
+                .iter()
+                .filter(|r| r.decision.is_correspondence())
+                .count(),
+            11
+        );
+        assert_eq!(
+            a.recordings
+                .iter()
+                .filter(|r| matches!(r.certainty, C::Supported | C::AlreadyKnown))
+                .count(),
+            11
+        );
+        assert!(
+            a.programs[0]
+                .program
+                .warnings
+                .iter()
+                .any(|w| w.contains("component '序'"))
+        );
+        let (l, p) = fixture("Angle");
+        let mut reverse = local(&vec!["unused"; 11]);
+        for (r, t) in reverse.iter_mut().zip(&p.programs[0].tracks) {
+            r.evidence = t.clone();
+            r.evidence.recording.identities.clear();
+        }
+        let reversed = Program {
+            identity: None,
+            complete: true,
+            tracks: l.iter().map(|t| t.evidence.clone()).collect(),
+        };
+        assert!(
+            pc::correspond(&reverse, &reversed, "Angle")
+                .program
+                .tracks
+                .iter()
+                .all(|r| r.decision.is_correspondence())
+        );
+    }
+    #[test]
+    fn dreams_inserted_track_and_meaningful_versions_are_unchanged() {
+        let a = audit("Dreams");
+        assert_eq!(coverage(&a), 1);
+        let (l, p) = fixture("Dreams");
+        assert_eq!(l.len(), 12);
+        assert_eq!(p.programs[0].tracks.len(), 13);
+        for i in [8, 9] {
+            assert!(!matches!(
+                a.recordings[i].certainty,
+                C::Supported | C::AlreadyKnown
+            ));
+        }
+        assert!(
+            l[8].evidence
+                .title
+                .as_deref()
+                .unwrap()
+                .contains("JP Version")
+        );
+        assert!(
+            p.programs[0].tracks[10]
+                .title
+                .as_deref()
+                .unwrap()
+                .contains("2022 ver.")
+        );
+    }
+    #[test]
+    fn work_bilingual_program_remains_five_of_five() {
+        assert_eq!(coverage(&audit("Work")), 5);
+    }
+    #[test]
+    fn underwater_keeps_twelve_structural_and_preserves_connections_and_conflict_vetoes() {
+        let a = audit("Underwater");
+        eprintln!("Underwater {:?}", a.recordings);
+        assert_eq!(coverage(&a), 12);
+        assert_eq!(
+            a.recordings
+                .iter()
+                .filter(|r| matches!(r.certainty, C::Supported | C::AlreadyKnown))
+                .count(),
+            9
+        );
+        let (local, _) = fixture("Underwater");
+        assert_eq!(
+            local
+                .iter()
+                .filter(|t| !t.evidence.recording.identities.is_empty())
+                .count(),
+            9
+        );
+        assert_eq!(a.recordings[8].certainty, C::AlreadyKnown);
+        assert_eq!(a.recordings[11].certainty, C::AlreadyKnown);
+        assert_eq!(a.recordings[3].certainty, C::DurationConflict);
+        assert_eq!(a.recordings[4].certainty, C::ArtistUntrusted);
+        assert_eq!(a.recordings[6].certainty, C::ArtistUntrusted);
+    }
+    #[test]
+    fn freshman_year_placeholder_program_remains_sixteen_of_sixteen() {
+        assert_eq!(coverage(&audit("Freshman Year")), 16);
+    }
+    #[test]
+    fn ocdc_program_retains_eleven_of_eleven() {
+        assert_eq!(coverage(&audit("100 Onces")), 11);
+    }
+    #[test]
+    fn remaster_keeps_five_structural_but_zero_recording_assertions() {
+        let a = audit("More Skin With Milk-Mouth (2015 Remaster)");
+        assert_eq!(coverage(&a), 5);
+        assert!(
+            a.recordings
+                .iter()
+                .all(|r| r.certainty == C::VersionUncertain)
         );
     }
 }

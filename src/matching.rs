@@ -57,6 +57,133 @@ pub fn shared_title_span(left: &str, right: &str) -> Option<String> {
     })
 }
 
+/// Candidate layout, not a declaration that either part is an alias. Only the
+/// shared program policy can corroborate this interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AlternateTitleLayout {
+    SpacedHyphen,
+    SpacedEnDash,
+    SpacedEmDash,
+    WhitespaceBlocks,
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct AlternateTitleComponents {
+    pub layout: AlternateTitleLayout,
+    pub components: [String; 2],
+}
+/// Recognize possible separately expressed representations. Never split inside
+/// a word, at a script transition, or inside semantic parenthetical annotations.
+pub fn alternate_title_components(title: &str) -> Option<AlternateTitleComponents> {
+    let title = normalize_album_title(title);
+    if title.contains(['(', ')', '[', ']']) {
+        return None;
+    }
+    for (separator, layout) in [
+        (" - ", AlternateTitleLayout::SpacedHyphen),
+        (" – ", AlternateTitleLayout::SpacedEnDash),
+        (" — ", AlternateTitleLayout::SpacedEmDash),
+    ] {
+        if let Some((left, right)) = title.split_once(separator) {
+            if right.contains(separator)
+                || !left.chars().any(char::is_alphanumeric)
+                || !right.chars().any(char::is_alphanumeric)
+            {
+                return None;
+            }
+            return Some(AlternateTitleComponents {
+                layout,
+                components: [left.into(), right.into()],
+            });
+        }
+    }
+    // Whitespace is required in addition to two internally unmixed alphabet
+    // blocks. This proposes a layout only; neither scripts nor spaces confer
+    // equivalence. Whole-program corroboration below remains mandatory.
+    let alphabet = |word: &str| {
+        let mut latin = false;
+        let mut other = false;
+        for c in word.chars().filter(|c| c.is_alphabetic()) {
+            if c.is_ascii_alphabetic()
+                || ('\u{00c0}'..='\u{024f}').contains(&c)
+                || ('\u{1e00}'..='\u{1eff}').contains(&c)
+            {
+                latin = true;
+            } else {
+                other = true;
+            }
+        }
+        match (latin, other) {
+            (true, false) => Some(false),
+            (false, true) => Some(true),
+            _ => None,
+        }
+    };
+    let words = title.split_whitespace().collect::<Vec<_>>();
+    let alphabets = words
+        .iter()
+        .map(|w| alphabet(w))
+        .collect::<Option<Vec<_>>>()?;
+    let boundaries = (1..words.len())
+        .filter(|&i| alphabets[i] != alphabets[i - 1])
+        .collect::<Vec<_>>();
+    let [at] = boundaries.as_slice() else {
+        return None;
+    };
+    Some(AlternateTitleComponents {
+        layout: AlternateTitleLayout::WhitespaceBlocks,
+        components: [words[..*at].join(" "), words[*at..].join(" ")],
+    })
+}
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct AlternateComponentMatch {
+    pub layout: AlternateTitleLayout,
+    pub formatted_left: bool,
+    pub component_index: usize,
+    pub component: String,
+}
+/// Exact COMPLETE component equality. A one-character component is valid syntax;
+/// a one-character substring is not. This alone never establishes correspondence.
+pub fn exact_alternate_component(left: &str, right: &str) -> Option<AlternateComponentMatch> {
+    let a = normalize_album_title(left);
+    let b = normalize_album_title(right);
+    if a == b {
+        return None;
+    }
+    for (formatted_left, formatted, whole) in [(true, &a, &b), (false, &b, &a)] {
+        if let Some(parts) = alternate_title_components(formatted) {
+            if let Some(component_index) = parts.components.iter().position(|part| part == whole) {
+                return Some(AlternateComponentMatch {
+                    layout: parts.layout,
+                    formatted_left,
+                    component_index,
+                    component: whole.clone(),
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Negative evidence only: containment without a whole textual boundary is
+/// not a representation component. Never use this to infer correspondence.
+pub fn arbitrary_title_fragment(left: &str, right: &str) -> bool {
+    let a = normalize_album_title(left);
+    let b = normalize_album_title(right);
+    if a == b {
+        return false;
+    }
+    let (short, long) = if a.len() < b.len() {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    !short.is_empty()
+        && long.contains(short)
+        && exact_alternate_component(left, right).is_none()
+        && shared_title_span(left, right).is_none()
+}
+
 pub fn usable(value: &str) -> bool {
     !matches!(
         normalize(value).as_str(),
@@ -253,6 +380,7 @@ pub enum ContextualTitleClass {
     TokenBoundary,
     TinyTypo,
     AlbumVersion,
+    ArticleInProgram,
 }
 impl ContextualTitleClass {
     pub fn label(self) -> &'static str {
@@ -261,6 +389,7 @@ impl ContextualTitleClass {
             Self::TokenBoundary => "contextual token-boundary equivalence",
             Self::TinyTypo => "contextual tiny typo",
             Self::AlbumVersion => "weak Album Version annotation",
+            Self::ArticleInProgram => "contextual article difference under strong program evidence",
         }
     }
 }
@@ -301,7 +430,36 @@ pub fn contextual_title_class(left: &str, right: &str) -> Option<ContextualTitle
     {
         return Some(ContextualTitleClass::TokenBoundary);
     }
+    let aw: Vec<_> = a.split_whitespace().collect();
+    let bw: Vec<_> = b.split_whitespace().collect();
+    let article_difference = |long: &[&str], short: &[&str]| {
+        short.len() >= 6
+            && long.len() == short.len() + 1
+            && long.iter().enumerate().any(|(i, w)| {
+                i > 0
+                    && *w == "the"
+                    && long
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, w)| *w)
+                        .eq(short.iter().copied())
+            })
+    };
+    if article_difference(&aw, &bw) || article_difference(&bw, &aw) {
+        return Some(ContextualTitleClass::ArticleInProgram);
+    }
     if left.contains(['\'', '’']) || right.contains(['\'', '’']) {
+        return None;
+    }
+    if arbitrary_title_fragment(left, right)
+        && [left, right].iter().any(|s| {
+            s.split_whitespace().any(|w| {
+                w.chars().any(|c| c.is_ascii_alphabetic())
+                    && w.chars().any(|c| c.is_alphabetic() && !c.is_ascii())
+            })
+        })
+    {
         return None;
     }
     if crate::album_matching::edit_close(&a, &b, 1, 4) {

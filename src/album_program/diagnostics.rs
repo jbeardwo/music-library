@@ -261,6 +261,20 @@ fn inspect_positioned_program_context(
                         }
                     }
                     TitleRelation::Agrees => PositionDecision::ExactAnchor,
+                    TitleRelation::Uncorroborated
+                        if anchors.len() >= 3
+                            && (crate::matching::exact_alternate_component(
+                                t.evidence.title.as_deref().unwrap_or(""),
+                                c.title.as_deref().unwrap_or(""),
+                            )
+                            .is_some()
+                                || crate::matching::arbitrary_title_fragment(
+                                    t.evidence.title.as_deref().unwrap_or(""),
+                                    c.title.as_deref().unwrap_or(""),
+                                )) =>
+                    {
+                        PositionDecision::InsufficientAnchors
+                    }
                     TitleRelation::Uncorroborated if anchors.len() >= 3 => {
                         PositionDecision::CorroboratedPosition
                     }
@@ -416,7 +430,7 @@ fn inspect_program_context(
     // Full correspondence always wins. Only unmatched titles may use a contained
     // component, and only a unique, Artist/duration-compatible whole program
     // can corroborate that fallback. No script is designated canonical.
-    let mut shared_spans = vec![];
+    let mut shared_spans = alternate_components::apply(&mut known, &mut derived);
     let mut pairs = vec![];
     let mut contextual_pairs = vec![];
     for (i, t) in known.iter().enumerate() {
@@ -486,6 +500,13 @@ fn inspect_program_context(
                 && position(&t.evidence) == position(p)
             {
                 pairs.push((i, j, "contextual punctuation placeholder".into(), false));
+            } else if crate::matching::exact_alternate_component(a, b).is_some_and(|c| {
+                c.layout != crate::matching::AlternateTitleLayout::WhitespaceBlocks
+                    || c.component.chars().filter(|c| c.is_alphanumeric()).count() < 2
+            }) {
+                // An uncorroborated component must not sneak back in as a
+                // shared substring (notably an isolated ordinary Foo - Bar).
+                continue;
             } else if let Some(span) = crate::matching::shared_title_span(a, b) {
                 pairs.push((i, j, span, false));
             } else if playable {
@@ -535,6 +556,17 @@ fn inspect_program_context(
     if program.complete && anchors >= 3 && anchors * 4 >= known.len().max(derived.tracks.len()) * 3
     {
         for (i, j, class) in contextual_pairs {
+            if class == crate::matching::ContextualTitleClass::ArticleInProgram
+                && (anchors < 4
+                    || anchors * 5 < known.len().max(derived.tracks.len()) * 4
+                    || !known[i]
+                        .evidence
+                        .duration_ms
+                        .zip(derived.tracks[j].duration_ms)
+                        .is_some_and(|(a, b)| a.abs_diff(b) <= 3_000))
+            {
+                continue;
+            }
             let raw_local = known[i].evidence.title.as_deref().unwrap_or("");
             let raw_provider = derived.tracks[j].title.as_deref().unwrap_or("");
             shared_spans.push(format!("{raw_local} ↔ {raw_provider}: {}", class.label()));

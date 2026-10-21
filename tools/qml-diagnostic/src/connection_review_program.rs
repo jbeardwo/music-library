@@ -18,6 +18,20 @@ impl State {
 }
 impl Bridge {
     pub(super) fn connection_discovery_status(&self, target: &Target) -> String {
+        if target.provider == "musicbrainz" {
+            return self
+                .session
+                .library
+                .musicbrainz_review(&target.album)
+                .map(|r| {
+                    if r.candidates.is_empty() {
+                        r.reason.label().into()
+                    } else {
+                        format!("Retained candidates — {}", r.reason.label())
+                    }
+                })
+                .unwrap_or_else(|e| e.to_string());
+        }
         if target.provider != "spotify" || target.track.is_some() {
             return "No candidates found".into();
         }

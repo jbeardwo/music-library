@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// One title query, three ten-Group catalog pages, at most six Group ensembles.
 /// Each ensemble uses up to two bounded browse requests (official/fallback)
 /// and up to three Release details. Transport's existing retries stay separate.
+pub const POLICY_VERSION: i64 = 2;
 pub const MAX_PAGES: usize = 3;
 pub const MAX_GROUP_PROGRAMS: usize = 6;
 pub const MAX_PROGRAM_REQUESTS: usize = 5;
@@ -19,30 +20,39 @@ pub const MAX_REQUESTS: usize = 1 + MAX_PAGES + MAX_GROUP_PROGRAMS * MAX_PROGRAM
 #[serde(rename_all = "snake_case")]
 pub enum QueryVariantKind {
     PunctuationLayout,
+    EditionRepresentation,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueryVariant {
     pub kind: QueryVariantKind,
     pub title: String,
 }
-/// At most one punctuation-layout retrieval variant; text/scripts are preserved.
+/// At most one typed retrieval variant; original text and version semantics
+/// remain available to evaluation.
 pub fn title_query_variants(title: &str) -> Vec<QueryVariant> {
-    if !title.contains('/') {
-        return vec![];
-    }
+    let mut variants = vec![];
     let spaced = title
         .split('/')
         .map(str::trim)
         .collect::<Vec<_>>()
         .join(" / ");
-    if spaced == title {
-        vec![]
-    } else {
-        vec![QueryVariant {
+    if spaced != title {
+        variants.push(QueryVariant {
             kind: QueryVariantKind::PunctuationLayout,
             title: spaced,
-        }]
+        });
     }
+    if let Some(at) = title.rfind(" (") {
+        let base = &title[..at];
+        if title.ends_with(')') && crate::album_candidates::playable_edition_pair(title, base) {
+            variants.push(QueryVariant {
+                kind: QueryVariantKind::EditionRepresentation,
+                title: base.into(),
+            });
+        }
+    }
+    variants.truncate(1);
+    variants
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageObservation {
@@ -51,6 +61,10 @@ pub struct PageObservation {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub policy_version: i64,
+    #[serde(default)]
+    pub retained_candidates: Vec<AlbumCandidate>,
     #[serde(default)]
     pub title_variants: Vec<QueryVariant>,
     #[serde(default)]
@@ -258,6 +272,7 @@ fn candidates(s: &Snapshot) -> Vec<AlbumCandidate> {
         .iter()
         .flat_map(|p| p.items.clone())
         .chain(s.pages.iter().flat_map(|p| p.page.items.clone()))
+        .chain(s.retained_candidates.clone())
         .collect::<Vec<_>>();
     all.sort_by(|a, b| a.identity.external_id.cmp(&b.identity.external_id));
     all.dedup_by(|a, b| a.identity == b.identity);
@@ -287,6 +302,26 @@ pub fn discover(
     s.provider_error = None;
     s.budget_exhausted = false;
     s.requests_upper_bound = 0;
+    let local_result = finish(provider, input, artist, local, s.clone(), None);
+    let uninspected = candidates(&s).iter().any(|c| {
+        let r = rank(c, input, artist);
+        r.0 && r.3 && (r.1 || r.2) && !s.programs.iter().any(|p| p.album == c.identity)
+    });
+    let trusted_retained = input.evidence.titles.iter().any(|t| {
+        matches!(&t.origin, crate::canonical_evidence::Origin::Provider { identity }
+            if identity.provider == "musicbrainz" && identity.kind == "release_group" && s.programs.iter().any(|p| &p.album == identity))
+    });
+    if trusted_retained
+        || !uninspected && matches!(local_result.outcome, M::Matched(_) | M::MatchedClose(_))
+    {
+        return local_result;
+    }
+    if s.policy_version != POLICY_VERSION {
+        if let Some(page) = s.title_page.take() {
+            s.retained_candidates.extend(page.items);
+        }
+    }
+    s.policy_version = POLICY_VERSION;
     if s.title_page.is_none() {
         s.requests_upper_bound += 1;
         match provider.artist_albums(artist, &input.title) {
@@ -442,11 +477,14 @@ fn finish(
                 .and_then(|e| e.mappings.iter().max())
                 .copied()
                 .unwrap_or(0),
+            s.programs.iter().any(|p| p.album == c.identity),
             rank(c, input, artist),
         ))
     });
     let page = Page {
-        items: all.iter().map(artist_candidate).collect(),
+        // initial_report normalizes provider order. Apply the topology ranking
+        // bound first, so identifier sorting cannot evict a useful program.
+        items: all.iter().take(40).map(artist_candidate).collect(),
         next_offset: None,
     };
     let mut report = album_candidates::initial_report(
@@ -456,6 +494,7 @@ fn finish(
         &page,
         local,
     );
+    report.candidate_count = all.len();
     let strong = s
         .evaluations
         .iter()

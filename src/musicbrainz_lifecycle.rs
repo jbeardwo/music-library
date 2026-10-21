@@ -2,7 +2,7 @@
 use crate::{Error, Library, Result, album_program::Programs, catalog::AlbumCandidate, domain::*};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-pub const EVALUATION_VERSION: i64 = 2;
+pub const EVALUATION_VERSION: i64 = 4;
 fn run_id() -> &'static str {
     static RUN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     RUN.get_or_init(|| uuid::Uuid::new_v4().to_string())
@@ -152,8 +152,13 @@ pub(crate) fn observe(
             "Expected MusicBrainz Release Group candidate".into(),
         ));
     }
-    db.execute("INSERT INTO musicbrainz_candidate(album_id,group_id,candidate_json,origin,provider_rank,reason) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(album_id,group_id) DO UPDATE SET candidate_json=excluded.candidate_json,origin=excluded.origin,provider_rank=excluded.provider_rank,reason=excluded.reason,observed_at=unixepoch()",params![album.as_ref(),candidate.identity.external_id,encode(candidate)?,origin,rank,reason.code()])?;
-    db.execute("DELETE FROM musicbrainz_candidate WHERE album_id=?1 AND group_id NOT IN(SELECT group_id FROM musicbrainz_candidate WHERE album_id=?1 ORDER BY (programs_json IS NOT NULL OR inspection_json IS NOT NULL) DESC,provider_rank,group_id LIMIT 40)",params![album.as_ref()])?;
+    db.execute("INSERT INTO musicbrainz_candidate(album_id,group_id,candidate_json,origin,provider_rank,reason) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(album_id,group_id) DO UPDATE SET candidate_json=excluded.candidate_json,origin=excluded.origin,provider_rank=excluded.provider_rank,reason=CASE WHEN excluded.origin='manual' AND json_valid(musicbrainz_candidate.reason) THEN musicbrainz_candidate.reason ELSE excluded.reason END,observed_at=unixepoch()",params![album.as_ref(),candidate.identity.external_id,encode(candidate)?,origin,rank,reason.code()])?;
+    Ok(())
+}
+fn prune_candidates(db: &Connection, album: &AlbumId) -> Result<()> {
+    // Prune after the entire observation/program batch, so an incoming program
+    // cannot lose its provider metadata while other candidates are inserted.
+    db.execute("DELETE FROM musicbrainz_candidate WHERE album_id=?1 AND group_id NOT IN(SELECT group_id FROM musicbrainz_candidate WHERE album_id=?1 ORDER BY (programs_json IS NOT NULL OR inspection_json IS NOT NULL) DESC,COALESCE(json_extract(CASE WHEN json_valid(reason) THEN reason ELSE '{}' END,'$.application_rank'),100),provider_rank,group_id LIMIT 40)",[album.as_ref()])?;
     Ok(())
 }
 pub(crate) fn retain_programs(db: &Connection, album: &AlbumId, p: &Programs) -> Result<()> {
@@ -187,7 +192,10 @@ pub(crate) fn retain_programs(db: &Connection, album: &AlbumId, p: &Programs) ->
         observe(db, album, &c, "retained", 0, Reason::ProgramRetained)?;
     }
     db.execute("UPDATE musicbrainz_candidate SET programs_json=?3,program_observed_at=unixepoch(),reason=CASE WHEN json_valid(reason) THEN reason ELSE ?4 END WHERE album_id=?1 AND group_id=?2",params![album.as_ref(),p.album.external_id,encode(p)?,Reason::ProgramRetained.code()])?;
-    evaluate(db, album, p)?;
+    let alternate: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM album_external_identity WHERE album_id=?1 AND provider='musicbrainz' AND kind='release_group' AND external_id<>?2)",params![album.as_ref(),p.album.external_id],|r|r.get(0))?;
+    if !alternate {
+        evaluate(db, album, p)?;
+    }
     Ok(())
 }
 /// Re-evaluates current canonical evidence. No mapping decision is cached as immutable truth.
@@ -245,6 +253,32 @@ pub(crate) fn evaluate(db: &Connection, album: &AlbumId, p: &Programs) -> Result
     state(db, album, reason, &serde_json::Value::Object(reasons))
 }
 impl Library {
+    /// Bounded startup work, independent of manual inspection timestamps. Raw
+    /// observations survive policy changes; only automatic completion is versioned.
+    pub fn musicbrainz_policy_stale(&self, album: &AlbumId) -> Result<bool> {
+        Ok(!self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM musicbrainz_policy WHERE album_id=?1 AND evaluation_version=?2 AND discovery_version=?3)",params![album.as_ref(),EVALUATION_VERSION,crate::musicbrainz_discovery::POLICY_VERSION],|r|r.get::<_,bool>(0))?)
+    }
+    pub fn pending_musicbrainz_policy(&self, limit: u32) -> Result<Vec<AlbumId>> {
+        self.pending_musicbrainz_policy_after(None, limit)
+    }
+    pub fn pending_musicbrainz_policy_after(
+        &self,
+        after: Option<&AlbumId>,
+        limit: u32,
+    ) -> Result<Vec<AlbumId>> {
+        let mut q = self.store.connection.prepare("SELECT a.id FROM album a LEFT JOIN musicbrainz_policy p ON p.album_id=a.id WHERE (?4 IS NULL OR a.id>?4) AND (p.album_id IS NULL OR p.evaluation_version<>?1 OR p.discovery_version<>?2) AND EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=a.id AND NOT EXISTS(SELECT 1 FROM track_provider_exclusion x WHERE x.track_id=t.id AND x.provider='musicbrainz') AND NOT EXISTS(SELECT 1 FROM connected_musicbrainz_track c WHERE c.track_id=t.id)) ORDER BY a.id LIMIT ?3")?;
+        Ok(q.query_map(
+            params![
+                EVALUATION_VERSION,
+                crate::musicbrainz_discovery::POLICY_VERSION,
+                limit.min(256),
+                after.map(AsRef::as_ref)
+            ],
+            |r| Ok(AlbumId(r.get(0)?)),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn musicbrainz_review(&self, album: &AlbumId) -> Result<Review> {
         let db = &self.store.connection;
         let saved=db.query_row("SELECT fingerprint,reason,evaluation_version,updated_at,run_id FROM musicbrainz_match_state WHERE album_id=?1",[album.as_ref()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?))).optional()?;
@@ -307,6 +341,89 @@ impl Library {
             stale,
         })
     }
+    /// Review projection uses authoritative saved-Track connection state, never
+    /// structural matches as a proxy for persisted identity. Provider-only rows
+    /// are deliberately outside the Library denominator.
+    pub fn musicbrainz_program_review(
+        &self,
+        album: &AlbumId,
+        programs: &Programs,
+    ) -> Result<serde_json::Value> {
+        use crate::musicbrainz_recording::RecordingCertainty as C;
+        let local = self.local_album_tracks(album)?;
+        let title: String = self.store.connection.query_row(
+            "SELECT title FROM effective_album_metadata WHERE album_id=?1",
+            [album.as_ref()],
+            |r| r.get(0),
+        )?;
+        let assessment = crate::musicbrainz_recording::assess(&local, programs, &title);
+        let retained: Option<String> = self.store.connection.query_row("SELECT programs_json FROM musicbrainz_candidate WHERE album_id=?1 AND group_id=?2 AND program_observed_at>unixepoch()-?3",params![album.as_ref(),programs.album.external_id,OBSERVATION_TTL],|r|r.get(0)).optional()?.flatten();
+        let ensemble: Option<Programs> = retained.map(|s| decode(&s)).transpose()?;
+        let certainty_assessment = ensemble
+            .as_ref()
+            .map(|p| crate::musicbrainz_recording::assess(&local, p, &title));
+        let selected =
+            crate::musicbrainz_recording::review_program(&local, programs, &title).map(|(_, c)| c);
+        let best = selected.as_ref();
+        let trusted = self
+            .list_album_external_identities(album)?
+            .into_iter()
+            .find(|i| i.provider == "musicbrainz" && i.kind == "release_group");
+        let group_conflict = trusted.as_ref().is_some_and(|id| id != &programs.album);
+        let mut rows = vec![];
+        let mut connected = 0;
+        let mut corresponding = 0;
+        let saved = self.store.connection.prepare("SELECT m.track_id,EXISTS(SELECT 1 FROM connected_musicbrainz_track c WHERE c.track_id=m.track_id) FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1")?.query_map([album.as_ref()],|r|Ok((r.get::<_,String>(0)?,r.get::<_,bool>(1)?)))?.collect::<rusqlite::Result<std::collections::HashMap<_,_>>>()?;
+        for (index, t) in local.iter().enumerate() {
+            let Some(&is_connected) = saved.get(t.track_id.as_ref()) else {
+                continue;
+            };
+            connected += usize::from(is_connected);
+            let mapping = best.and_then(|p| p.program.tracks.get(index));
+            let structural = mapping.is_some_and(|r| r.decision.is_correspondence());
+            corresponding += usize::from(structural);
+            let certainty = &certainty_assessment
+                .as_ref()
+                .unwrap_or(&assessment)
+                .recordings[index];
+            let blocker = if group_conflict {
+                "trusted Group conflict"
+            } else if ensemble.is_none() {
+                "provider evidence incomplete"
+            } else {
+                match certainty.certainty {
+                    C::Supported | C::AlreadyKnown => "",
+                    C::ArtistUntrusted => "Artist certainty",
+                    C::DurationConflict => "duration conflict",
+                    C::VersionUncertain => "version uncertainty",
+                    C::RecordingAmbiguous => "Recording ambiguity",
+                    C::IncompleteEvidence => "provider evidence incomplete",
+                    C::ConflictingIdentity => "trusted Recording conflict",
+                    C::InsufficientContext => "insufficient program evidence",
+                    C::NoCorrespondence => "insufficient correspondence",
+                }
+            };
+            let status = if is_connected {
+                "Connected".into()
+            } else if structural && blocker.is_empty() {
+                "Proposed".into()
+            } else if structural || group_conflict || certainty.certainty != C::NoCorrespondence {
+                format!("Blocked — {blocker}")
+            } else {
+                "Unmatched — insufficient correspondence".into()
+            };
+            rows.push(serde_json::json!({"track_id":t.track_id,"library":t.evidence.title,"candidate":mapping.and_then(|r|r.provider.as_ref()).and_then(|p|p.title.as_ref()),"status":status,"connected":is_connected,"corresponding":structural,"recording":certainty.recording,"connected_recordings":t.evidence.recording.identities,"candidate_recordings":assessment.programs.iter().filter_map(|p|p.program.tracks.get(index)).filter_map(|r|r.provider.as_ref()).flat_map(|p|p.recording.identities.clone()).collect::<Vec<_>>(),"certainty":certainty.certainty,"local_evidence":t.evidence,"provider_evidence":mapping.and_then(|r|r.provider.as_ref())}));
+        }
+        let total = rows.len();
+        if let Some(best) = best {
+            for p in &best.provider_only {
+                rows.push(serde_json::json!({"library":"","candidate":p.title,"status":"Provider only","connected":false,"provider_evidence":p}));
+            }
+        }
+        Ok(
+            serde_json::json!({"connected":connected,"total":total,"corresponding":corresponding,"rows":rows}),
+        )
+    }
     pub fn musicbrainz_has_gaps(&self, album: &AlbumId) -> Result<bool> {
         Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM release r JOIN track t ON t.release_id=r.id JOIN library_membership m ON m.track_id=t.id WHERE r.album_id=?1 AND NOT EXISTS(SELECT 1 FROM recording_external_identity i WHERE i.recording_id=t.recording_id AND i.provider='musicbrainz' AND i.kind='recording'))",[album.as_ref()],|r|r.get(0))?)
     }
@@ -335,10 +452,11 @@ impl Library {
         let Some(artist) = input.known_artist else {
             return Ok(None);
         };
+        let mut retained = None;
         if let Some(json) = json {
             let snapshot: crate::musicbrainz_discovery::Snapshot = decode(&json)?;
             if snapshot.artist.as_ref() == Some(&artist) && snapshot.title == input.raw_title {
-                return Ok(Some(snapshot));
+                retained = Some(snapshot);
             }
         }
         let mut q=db.prepare("SELECT page_offset,page_json,observed_at FROM musicbrainz_artist_page WHERE artist_id=?1 AND unixepoch()-observed_at<?2 ORDER BY page_offset LIMIT 3")?;
@@ -347,6 +465,9 @@ impl Library {
             title: input.raw_title,
             ..Default::default()
         };
+        if let Some(saved) = retained {
+            snapshot = saved;
+        }
         for row in q.query_map(params![artist.external_id, OBSERVATION_TTL], |r| {
             Ok((
                 r.get::<_, u32>(0)?,
@@ -360,14 +481,45 @@ impl Library {
             } else {
                 snapshot.observed_at.min(at)
             };
-            snapshot
-                .pages
-                .push(crate::musicbrainz_discovery::PageObservation {
-                    offset,
-                    page: decode(&json)?,
-                });
+            if !snapshot.pages.iter().any(|p| p.offset == offset) {
+                snapshot
+                    .pages
+                    .push(crate::musicbrainz_discovery::PageObservation {
+                        offset,
+                        page: decode(&json)?,
+                    });
+            }
         }
-        Ok((!snapshot.pages.is_empty()).then_some(snapshot))
+        let now: i64 = db.query_row("SELECT unixepoch()", [], |r| r.get(0))?;
+        for c in self.musicbrainz_review(album)?.candidates {
+            if now - c.observed_at < OBSERVATION_TTL {
+                snapshot.observed_at = if snapshot.observed_at == 0 {
+                    c.observed_at
+                } else {
+                    snapshot.observed_at.min(c.observed_at)
+                };
+                snapshot
+                    .retained_candidates
+                    .retain(|old| old.identity != c.metadata.identity);
+                snapshot.retained_candidates.push(c.metadata.clone());
+            }
+            if c.program_observed_at
+                .is_some_and(|at| now - at < OBSERVATION_TTL)
+            {
+                if let Some(p) = c.programs {
+                    let at = c.program_observed_at.unwrap();
+                    snapshot.observed_at = if snapshot.observed_at == 0 {
+                        at
+                    } else {
+                        snapshot.observed_at.min(at)
+                    };
+                    if !snapshot.programs.iter().any(|other| other.album == p.album) {
+                        snapshot.programs.push(p);
+                    }
+                }
+            }
+        }
+        Ok(Some(snapshot))
     }
     pub fn has_musicbrainz_discovery(&self, album: &AlbumId) -> Result<bool> {
         Ok(self.store.connection.query_row("SELECT EXISTS(SELECT 1 FROM musicbrainz_discovery WHERE album_id=?1 AND unixepoch()-observed_at<?2)",params![album.as_ref(),OBSERVATION_TTL],|r|r.get(0))?)
@@ -479,22 +631,31 @@ impl Library {
                 Reason::CandidatesFound,
             )?;
         }
-        state(
-            &tx,
-            album,
-            if candidates.is_empty() {
-                Reason::NoCandidates
-            } else {
-                Reason::CandidatesFound
-            },
-            &serde_json::json!({}),
+        prune_candidates(&tx, album)?;
+        let evaluated: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM musicbrainz_policy WHERE album_id=?1)",
+            [album.as_ref()],
+            |r| r.get(0),
         )?;
+        if !manual || !evaluated {
+            state(
+                &tx,
+                album,
+                if candidates.is_empty() {
+                    Reason::NoCandidates
+                } else {
+                    Reason::CandidatesFound
+                },
+                &serde_json::json!({}),
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }
     pub fn retain_musicbrainz_programs(&mut self, album: &AlbumId, p: &Programs) -> Result<()> {
         let tx = self.store.connection.transaction()?;
         retain_programs(&tx, album, p)?;
+        prune_candidates(&tx, album)?;
         tx.commit()?;
         Ok(())
     }
@@ -545,6 +706,7 @@ impl Library {
                 .transpose()?
                 .unwrap_or_else(|| p.clone()),
         )?;
+        prune_candidates(&tx, album)?;
         tx.commit()?;
         Ok(())
     }
@@ -720,6 +882,13 @@ pub(crate) fn record_match(
                 .or_else(||s.pages.iter().find_map(|p|p.page.items.iter().position(|c|c.identity==row.identity).map(|n|serde_json::json!({"origin":"artist_catalog","offset":p.offset,"page":p.offset/10+1,"rank":n+1}))));
             db.execute("UPDATE musicbrainz_candidate SET reason=?3 WHERE album_id=?1 AND group_id=?2",params![album.as_ref(),row.identity.external_id,encode(&serde_json::json!({"application_rank":rank,"evaluation":evaluation,"discovery":discovery,"reasons":row.reasons}))?])?;
         }
+    }
+    prune_candidates(db, album)?;
+    if !matches!(
+        outcome,
+        M::Pending | M::Deferred(_) | M::Error(_) | M::ConfigurationError(_) | M::Skipped
+    ) {
+        db.execute("INSERT INTO musicbrainz_policy(album_id,evaluation_version,discovery_version) VALUES(?1,?2,?3) ON CONFLICT(album_id) DO UPDATE SET evaluation_version=excluded.evaluation_version,discovery_version=excluded.discovery_version,evaluated_at=unixepoch()",params![album.as_ref(),EVALUATION_VERSION,crate::musicbrainz_discovery::POLICY_VERSION])?;
     }
     state(db, album, reason, &serde_json::json!({}))
 }

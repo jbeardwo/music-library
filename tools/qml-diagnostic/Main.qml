@@ -335,6 +335,7 @@ ApplicationWindow {
                     visible:connectionReviewDialog.provider!=="local"&&!connectionReviewDialog.adjusting;Layout.fillWidth:true
                     TextField {id:manualQuery;objectName:"reviewManualQuery";placeholderText:connectionReviewDialog.trackId?"Track title / MusicBrainz query":"Album title / MusicBrainz query";Layout.fillWidth:true}
                     TextField {id:manualArtist;objectName:"reviewManualArtist";visible:connectionReviewDialog.provider==="spotify";placeholderText:"Artist";Layout.fillWidth:true}
+                    Button {text:"Search all Artists";visible:connectionReviewDialog.provider==="musicbrainz"&&!connectionReviewDialog.trackId;enabled:!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.manualAction("manual-search-global",0)}
                     Button {objectName:"reviewManualSearch";text:"Search";enabled:!connectionReviewDialog.review.pending;onClicked:connectionReviewDialog.manualAction("manual-search",0)}
                 }
                 RowLayout {
@@ -3223,7 +3224,7 @@ ApplicationWindow {
                             anchors.fill:parent;anchors.margins:6
                             ToolButton {id:expandButton;objectName:"connectionAlbumExpand";text:connectionGroup.expanded?"▼":"▶";onClicked:{connectionGroup.expanded=!connectionGroup.expanded;connectionsPage.expanded[connectionsPage.provider+connectionsPage.marked+connectionGroup.albumId]=connectionGroup.expanded;connectionGroup.refreshTracks();}}
                             Label {text:connectionGroup.artist+" — "+connectionGroup.title;Layout.fillWidth:true;elide:Text.ElideRight;textFormat:Text.PlainText}
-                            Label {text:connectionGroup.matched+" / "+connectionGroup.total+" matched"}
+                            Label {text:connectionGroup.matched+" / "+connectionGroup.total+" connected"}
                             Button {id:matchButton;objectName:"connectionAlbumMatch";visible:!connectionsPage.marked;text:"Match…";onClicked:connectionsPage.matchAlbum(connectionGroup.albumId)}
                             Button {id:markButton;objectName:"connectionAlbumMark";visible:!connectionsPage.marked;text:"Mark unavailable";onClicked:{connectionMarkDialog.albumId=connectionGroup.albumId;connectionMarkDialog.count=connectionGroup.relevant;connectionMarkDialog.open();}}
                         }

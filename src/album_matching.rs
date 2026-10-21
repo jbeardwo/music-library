@@ -936,7 +936,7 @@ impl AlbumMatcher {
             && self.scope.provider == "musicbrainz"
             && self.prepare_program(library, id)?.is_some()
             && library.musicbrainz_has_gaps(id)?
-            && !library.has_musicbrainz_discovery(id)?
+            && (!library.has_musicbrainz_discovery(id)? || library.musicbrainz_policy_stale(id)?)
         {
             if !self.queue.iter().any(|w| w.album_id() == id) {
                 self.queue.push_back(Work::Album(id.clone()));
@@ -1449,7 +1449,8 @@ impl AlbumMatcher {
             if self.structured_discovery
                 && self.scope.provider == "musicbrainz"
                 && matches!(preparation, Preparation::Done(MatchOutcome::AlreadyMatched))
-                && !library.has_musicbrainz_discovery(work.album_id())?
+                && (!library.has_musicbrainz_discovery(work.album_id())?
+                    || library.musicbrainz_policy_stale(work.album_id())?)
                 && library.musicbrainz_has_gaps(work.album_id())?
             {
                 preparation = library.prepare_musicbrainz_discovery(work.album_id())?;

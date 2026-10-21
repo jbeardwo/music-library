@@ -986,3 +986,71 @@ trusted Group automatically, global fuzzy/substring identity, exact edition
 selection, and changes to automatic Recording certainty (including disagreement
 exposed by shorter TTNG alternatives). Review remains available for retained
 candidates. **No commit was made.**
+
+
+### Real-profile reconciliation / Connections correctness follow-up
+
+Implemented 2026-10-19, without committing or mutating the real profile. The user
+confirmed `/tmp/music-library-fresh.sqlite` as the observed profile. Its WAL-inclusive
+read-only SQLite backup had schema 38, 930 saved Tracks, 96 MusicBrainz lifecycle
+rows, and **864/930 connected; 66 gaps across eight Albums**. This differs from the
+historical Phase 3 disposable audit baseline and must not be substituted for it.
+
+The actual persistent UI launch passed an empty import list; matching was scheduled
+only for imports. Several manual inspections had stamped evaluation generation 2
+without running automatic structured discovery. Angle/Dreams retained global text
+results instead of native candidates. A separate defect could lose native candidate
+metadata when identity-sorted report truncation and per-insert cache pruning occurred
+before program persistence. The UI also unconditionally reported “No candidates
+found” for non-Spotify discovery status, despite retained MusicBrainz candidates,
+and its final mapping projection replaced explicit connection state with structural
+labels. These were scheduling/projection defects, not evidence for another global
+matcher relaxation.
+
+Migration 39 stores automatic evaluation/discovery policy receipts separately from
+manual state and raw provider observations. Startup uses bounded, continuing keyset
+work through the existing worker; fresh ensembles are locally replayed, and an
+unchanged completed generation is not automatically repeated. Manual search uses
+trusted Artist context by default, with explicit broadening. Candidate ranking is
+bounded before report normalization; metadata/programs are pruned together after
+persistence. Review shows authoritative Connected counts, proposals/blockers and
+provider-only rows distinctly. Meaningful remaster/remix and trusted Group safety
+remain intact. A typed edition representation aids discovery only. A contextual
+internal-article relationship requires four independent sibling anchors, at least
+80% program coverage, trusted Artist, matching position, compatible measured duration
+and uniqueness; it is not a global title normalizer.
+
+Normal reconciliation on a fresh disposable copy and a separate actual QML startup
+copy both reached **897/930 connected; 33 gaps across five Albums**. OCDC was already
+connected in the source snapshot. Adebisi reached 4/4, Church 24/24, and Hippy 5/5.
+Angle/Dreams are retained review cases. Gaze remains 1/3 connected versus two structural
+correspondences; Underwater remains 9/12 connected versus twelve structural
+correspondences plus a separate provider-only remix. More Skin has five structural
+correspondences but zero original/remaster Recording assertions.
+
+The detailed preflight inventory, request accounting, per-Track Gaze/Underwater
+results and exact remaining blockers are in
+[musicbrainz-real-profile-reconciliation.md](musicbrainz-real-profile-reconciliation.md).
+The historical audit and Phases 1–3 results above remain unchanged.
+
+
+### Targeted follow-up — exact alternate title components
+
+Implemented 2026-10-20 without committing. The shared title/program layer now
+separates an exact complete alternate component from a shared substring. A
+one-character explicitly separated component can be corroborated by a repeated,
+unique, trusted-Artist whole program. Script transitions alone never split titles;
+isolated punctuation and semantic parentheses do not create aliases. The existing
+Recording-certainty policy and discovery/lifecycle design remain unchanged; the
+existing evaluation generation advances from 3 to 4 for local reconsideration.
+
+Angle's actual retained native program improves from 0/11 to 11/11 structural
+correspondence, and normal reconciliation safely connects all eleven Recordings.
+Dreams remains 0/12 connected with one structural correspondence. The prior
+retained validation cohort improves 897/930 → 908/930 using zero requests. The
+newer current actual profile has different canonical IDs and starts at 876/930;
+normal reconciliation reaches 890/930 (eleven Angle plus three existing TTNG
+reevaluations), with 40 remaining gaps. These cohorts must not be conflated.
+
+Full eleven-Track evidence, semantic safeguards, regression controls and provenance:
+[musicbrainz-multilingual-components.md](musicbrainz-multilingual-components.md).

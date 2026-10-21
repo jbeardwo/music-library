@@ -82,6 +82,8 @@ impl Bridge {
                 let raw = self.connection_catalog_impl(
                     if action == "manual-search" {
                         "search"
+                    } else if action == "manual-search-global" {
+                        "search-global"
                     } else {
                         "inspect"
                     },
@@ -399,70 +401,44 @@ impl Bridge {
         &self,
         target: &Target,
     ) -> Result<Vec<Value>, String> {
-        let Some(programs) = self.connection_review_state.programs.as_ref() else {
-            return Ok(vec![]);
+        let fallback = Programs {
+            album: self
+                .session
+                .library
+                .list_album_external_identities(&target.album)
+                .map_err(e_string)?
+                .into_iter()
+                .find(|id| id.provider == "musicbrainz" && id.kind == "release_group")
+                .unwrap_or(ExternalIdentity {
+                    provider: "musicbrainz".into(),
+                    kind: "release_group".into(),
+                    external_id: String::new(),
+                }),
+            programs: vec![],
+            note: "No retained provider program".into(),
         };
+        let programs = self
+            .connection_review_state
+            .programs
+            .as_ref()
+            .unwrap_or(&fallback);
         let mappings = self.musicbrainz_review_mappings()?;
-        let local = self
+        let projection = self
             .session
             .library
-            .local_album_tracks(&target.album)
+            .musicbrainz_program_review(&target.album, programs)
             .map_err(e_string)?;
-        let Some((selected, comparison)) = music_library::musicbrainz_recording::review_program(
-            &local,
-            programs,
-            self.connection_review_state.known["title"]
-                .as_str()
-                .unwrap_or(""),
-        ) else {
-            return Ok(vec![]);
-        };
-        let program = &programs.programs[selected];
-        let comparison = comparison.program;
-        let mut rows = Vec::new();
-        for t in local.iter().take(200) {
-            let mapped = mappings.iter().find(|(track, _)| track == &t.track_id);
-            let aligned = comparison
-                .tracks
-                .iter()
-                .find(|r| r.track_id == t.track_id.as_ref());
-            let trusted = aligned.and_then(|r| r.provider.as_ref()).filter(|p| {
-                p.recording
-                    .identities
-                    .iter()
-                    .any(|id| t.evidence.recording.identities.contains(id))
-            });
-            let provider = mapped
-                .and_then(|(_, id)| {
-                    program
-                        .tracks
-                        .iter()
-                        .find(|p| p.recording.identities.contains(id))
-                })
-                .or(trusted);
-            let status = if mapped.is_some() {
-                aligned
-                    .map(|r| r.decision.label())
-                    .unwrap_or("Proposed Recording connection")
-            } else if trusted.is_some() {
-                "Already trusted Recording; no new connection"
-            } else {
-                aligned.map(|r| r.decision.label()).unwrap_or("Unmapped")
-            };
-            rows.push(json!({"track":t.track_id,"library":format!("{}.{} {}",t.evidence.disc.unwrap_or(1),t.evidence.number.unwrap_or(0),t.evidence.title.as_deref().unwrap_or("—")),"candidate":provider.map(|p|format!("{}.{} {}",p.disc.unwrap_or(1),p.number.unwrap_or(0),p.title.as_deref().unwrap_or("—"))).unwrap_or_else(||"—".into()),"provider_id":provider.and_then(|p|p.recording.identities.first()).map(|id|id.external_id.as_str()),"connects":mapped.is_some(),"status":status}));
-        }
-        for t in &program.tracks {
-            if rows.len() >= 200 {
-                break;
-            }
-            if !rows.iter().any(|row| {
-                t.recording
-                    .identities
-                    .iter()
-                    .any(|id| row["provider_id"].as_str() == Some(id.external_id.as_str()))
-            }) {
-                rows.push(json!({"library":"—","candidate":format!("{}.{} {}",t.disc.unwrap_or(1),t.number.unwrap_or(0),t.title.as_deref().unwrap_or("—")),"status":"Provider-only; no safe Recording correspondence proposed","connects":false}));
-            }
+        let mut rows = projection["rows"].as_array().cloned().unwrap_or_default();
+        rows.truncate(200);
+        for row in &mut rows {
+            row["track"] = row["track_id"].clone();
+            row["connects"] = json!(
+                row["track_id"]
+                    .as_str()
+                    .is_some_and(|id| mappings.iter().any(|(track, _)| track.as_ref() == id))
+            );
+            row["provider_id"] =
+                row["provider_evidence"]["recording"]["identities"][0]["external_id"].clone();
         }
         Ok(rows)
     }

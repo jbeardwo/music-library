@@ -196,7 +196,9 @@ impl Bridge {
                     .find(|c| c.review_programs().is_some())
                     .or_else(|| r.candidates.first())
             });
-            let programs = best.and_then(|c| c.review_programs().cloned()).or(programs);
+            let programs = best
+                .and_then(|c| c.programs.as_ref().or(c.inspection.as_ref()).cloned())
+                .or(programs);
             let provider_header=best.map(|c|json!({"title":c.metadata.title,"album":c.metadata.title,"artist":c.metadata.artist,"date":c.metadata.date,"kind":c.metadata.primary_type})).unwrap_or(Value::Null);
             let generation = self.connection_review_state.generation.wrapping_add(1);
             self.connection_review_state = State {
@@ -843,23 +845,16 @@ impl Bridge {
             }
             if let Some(programs) = &self.connection_review_state.programs {
                 if target.track.is_none() {
-                    let local = self
+                    let projection = self
                         .session
                         .library
-                        .local_album_tracks(&target.album)
+                        .musicbrainz_program_review(&target.album, programs)
                         .map_err(e_string)?;
-                    for p in &programs.programs {
-                        let comparison = music_library::program_correspondence::correspond(
-                            &local,
-                            p,
-                            known["title"].as_str().unwrap_or(""),
-                        )
-                        .program;
-                        program.extend(rows_from_comparison(&json!([
-                            Self::spotify_program_comparison("MusicBrainz", &comparison)
-                        ])));
-                        evidence.extend(comparison.warnings.clone());
-                    }
+                    program.extend(projection["rows"].as_array().cloned().unwrap_or_default());
+                    evidence.push(format!(
+                        "{} / {} connected Library Tracks; {} structural correspondences",
+                        projection["connected"], projection["total"], projection["corresponding"]
+                    ));
                     can_connect = !self.musicbrainz_review_mappings()?.is_empty();
                 } else {
                     can_connect = candidate.is_some();
@@ -1044,6 +1039,31 @@ mod tests {
             disc: input.disc.unwrap_or(1),
             number: input.number.unwrap_or(1),
         }
+    }
+    #[test]
+    fn musicbrainz_without_candidates_still_labels_each_saved_track_offline() {
+        let (_temp, library) = sample::create().unwrap();
+        let group = library
+            .connection_groups("musicbrainz", false, None, 1)
+            .unwrap()
+            .remove(0);
+        let bridge = QObjectBox::new(Bridge::new(Session::new(library)));
+        let pinned = bridge.pinned();
+        let mut b = pinned.borrow_mut();
+        b.auto_match = false;
+        let review = begin(&mut b, "musicbrainz", &group.id, None);
+        assert_eq!(review["count"], 0);
+        assert_eq!(
+            review["program"].as_array().unwrap().len(),
+            group.total as usize
+        );
+        assert!(review["program"].as_array().unwrap().iter().all(|r| {
+            r["status"]
+                .as_str()
+                .is_some_and(|s| s == "Connected" || s.starts_with("Unmatched"))
+        }));
+        assert_eq!(review["can_connect"], false);
+        assert!(b.connection_catalog_state.idle());
     }
     #[test]
     fn persisted_track_candidates_open_ranked_and_navigation_has_no_side_effects() {

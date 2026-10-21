@@ -9,6 +9,8 @@ use rusqlite::{Connection, params};
 
 #[path = "album_program/alignment.rs"]
 mod alignment;
+#[path = "album_program/alternate_components.rs"]
+mod alternate_components;
 #[path = "album_program/diagnostics.rs"]
 mod diagnostics;
 #[allow(unused_imports)]
